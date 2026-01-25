@@ -4,7 +4,6 @@ Tests for the Action and ActionResult data structures.
 """
 
 import pytest
-
 from popctl.models.action import (
     Action,
     ActionResult,

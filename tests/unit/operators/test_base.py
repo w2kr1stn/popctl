@@ -4,7 +4,6 @@ Tests for the abstract Operator interface.
 """
 
 import pytest
-
 from popctl.models.action import Action, ActionResult, ActionType
 from popctl.models.package import PackageSource
 from popctl.operators.base import Operator
@@ -123,7 +122,11 @@ class TestOperatorBase:
         """execute() raises ValueError when action source doesn't match."""
         operator = ConcreteOperator()  # APT operator
         actions = [
-            Action(action_type=ActionType.INSTALL, package="com.spotify.Client", source=PackageSource.FLATPAK),
+            Action(
+                action_type=ActionType.INSTALL,
+                package="com.spotify.Client",
+                source=PackageSource.FLATPAK,
+            ),
         ]
 
         with pytest.raises(ValueError, match="doesn't match"):

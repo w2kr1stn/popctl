@@ -285,8 +285,7 @@ def _print_results_summary(results: list[ActionResult]) -> None:
         print_success(f"All {success_count} action(s) completed successfully.")
     else:
         console.print(
-            f"\n[success]{success_count} succeeded[/success], "
-            f"[error]{fail_count} failed[/error]"
+            f"\n[success]{success_count} succeeded[/success], [error]{fail_count} failed[/error]"
         )
 
 

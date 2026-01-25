@@ -8,11 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from typer.testing import CliRunner
-
 from popctl.cli.main import app
 from popctl.core.diff import DiffEntry, DiffResult, DiffType
-from popctl.models.action import ActionResult, ActionType, Action
 from popctl.models.manifest import (
     Manifest,
     ManifestMeta,
@@ -20,7 +17,7 @@ from popctl.models.manifest import (
     PackageEntry,
     SystemConfig,
 )
-from popctl.models.package import PackageSource
+from typer.testing import CliRunner
 
 runner = CliRunner()
 
@@ -232,9 +229,7 @@ class TestApplyConfirmation:
 class TestApplyExecution:
     """Tests for apply command execution."""
 
-    def test_apply_executes_install_actions(
-        self, sample_manifest: Manifest
-    ) -> None:
+    def test_apply_executes_install_actions(self, sample_manifest: Manifest) -> None:
         """Apply executes install actions for missing packages."""
         missing_only = DiffResult(
             new=(),
@@ -266,9 +261,7 @@ class TestApplyExecution:
         assert "install" in args
         assert "vim" in args
 
-    def test_apply_executes_remove_actions(
-        self, sample_manifest: Manifest
-    ) -> None:
+    def test_apply_executes_remove_actions(self, sample_manifest: Manifest) -> None:
         """Apply executes remove actions for extra packages."""
         extra_only = DiffResult(
             new=(),
@@ -300,9 +293,7 @@ class TestApplyExecution:
         assert "remove" in args
         assert "bloatware" in args
 
-    def test_apply_with_purge_uses_purge_command(
-        self, sample_manifest: Manifest
-    ) -> None:
+    def test_apply_with_purge_uses_purge_command(self, sample_manifest: Manifest) -> None:
         """Apply --purge uses apt-get purge instead of remove."""
         extra_only = DiffResult(
             new=(),
@@ -336,9 +327,7 @@ class TestApplyExecution:
 class TestApplyNewPackages:
     """Tests for NEW packages handling."""
 
-    def test_apply_ignores_new_packages(
-        self, sample_manifest: Manifest
-    ) -> None:
+    def test_apply_ignores_new_packages(self, sample_manifest: Manifest) -> None:
         """Apply does NOT remove NEW packages (not in manifest)."""
         new_only = DiffResult(
             new=(DiffEntry(name="htop", source="apt", diff_type=DiffType.NEW),),
@@ -366,9 +355,7 @@ class TestApplyNewPackages:
 class TestApplyProtectedPackages:
     """Tests for protected package handling."""
 
-    def test_apply_does_not_remove_protected(
-        self, sample_manifest: Manifest
-    ) -> None:
+    def test_apply_does_not_remove_protected(self, sample_manifest: Manifest) -> None:
         """Apply does not create remove actions for protected packages."""
         # Even if somehow a protected package ends up in EXTRA, it should be filtered
         protected_extra = DiffResult(
@@ -461,9 +448,7 @@ class TestApplySourceFilter:
 class TestApplyFailures:
     """Tests for apply command failure handling."""
 
-    def test_apply_reports_failures(
-        self, sample_manifest: Manifest
-    ) -> None:
+    def test_apply_reports_failures(self, sample_manifest: Manifest) -> None:
         """Apply reports failed actions in results."""
         missing_only = DiffResult(
             new=(),

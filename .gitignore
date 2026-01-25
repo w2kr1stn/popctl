@@ -17,7 +17,7 @@ htmlcov/
 # Coding Agents
 .claude/
 CLAUDE.md
-PLAN.md
+PLAN*.md
 PROJECT.md
 TASKS.yml
 SESSION*.md

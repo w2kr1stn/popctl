@@ -6,7 +6,6 @@ Tests for the APT package operator implementation.
 from unittest.mock import patch
 
 import pytest
-
 from popctl.models.action import ActionType
 from popctl.models.package import PackageSource
 from popctl.operators.apt import AptOperator

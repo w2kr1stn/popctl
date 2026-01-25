@@ -128,9 +128,7 @@ class TestAptScanner:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.apt.run_command") as mock_run,
         ):
-            mock_run.return_value = CommandResult(
-                stdout="", stderr="apt-mark error", returncode=1
-            )
+            mock_run.return_value = CommandResult(stdout="", stderr="apt-mark error", returncode=1)
 
             with pytest.raises(RuntimeError, match="apt-mark showauto failed"):
                 list(scanner.scan())
