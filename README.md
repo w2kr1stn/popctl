@@ -71,6 +71,22 @@ popctl init --output ~/my-manifest.toml
 popctl init --force
 ```
 
+### Compare System vs Manifest
+
+```bash
+# Show differences between manifest and system
+popctl diff
+
+# Summary only (counts)
+popctl diff --brief
+
+# Filter by source
+popctl diff --source apt
+
+# JSON output for scripting
+popctl diff --json
+```
+
 ### Command Line Options
 
 ```
@@ -78,6 +94,7 @@ popctl --help           # Show main help
 popctl --version        # Show version
 popctl scan --help      # Show scan command help
 popctl init --help      # Show init command help
+popctl diff --help      # Show diff command help
 ```
 
 ## Development
@@ -111,12 +128,14 @@ app/popctl/
 │   ├── main.py          # Typer app and global options
 │   └── commands/
 │       ├── scan.py      # Scan command implementation
-│       └── init.py      # Init command implementation
+│       ├── init.py      # Init command implementation
+│       └── diff.py      # Diff command implementation
 ├── core/
 │   ├── theme.py         # Theme management (TOML-based)
 │   ├── paths.py         # XDG-compliant path helpers
 │   ├── baseline.py      # Pop!_OS protected packages
-│   └── manifest.py      # Manifest TOML I/O
+│   ├── manifest.py      # Manifest TOML I/O
+│   └── diff.py          # DiffEngine for manifest comparison
 ├── data/
 │   └── theme.toml       # Default color theme
 ├── models/
@@ -134,10 +153,13 @@ app/popctl/
 
 ## Roadmap
 
+### PoC Phase (Complete ✅)
 - [x] PoC-1: Hello APT - Scan APT packages
 - [x] PoC-2: Multi-Source - Flatpak scanner + export
 - [x] PoC-3: Manifest Birth - Generate manifest from scan
-- [ ] PoC-4: Diff Engine - Compare manifest vs system
+- [x] PoC-4: Diff Engine - Compare manifest vs system
+
+### MVP Phase
 - [ ] MVP-1: First Apply - Install/remove packages
 - [ ] MVP-2: Claude Advisor - AI-assisted classification
 - [ ] MVP-3: Safety Net - History and undo
