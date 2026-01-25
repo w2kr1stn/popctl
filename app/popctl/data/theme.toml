@@ -1,0 +1,41 @@
+# popctl Theme Configuration
+# Custom color scheme for CLI output
+#
+# This file defines the color palette used throughout popctl.
+# Colors are specified as hex codes (#RRGGBB).
+#
+# To customize: Copy this file to ~/.config/popctl/theme.toml
+# and modify the colors to your preference.
+
+[colors]
+# === Base Colors ===
+text = "#ffffff"                # Default text color
+muted = "#b2bec3"               # Dimmed text, metadata, versions
+header = "#69B9A1"              # Table headers, titles (Primary)
+border = "#29526d"              # Table borders, separators (Tertiary)
+
+# === Semantic Colors ===
+success = "#03b971"             # Confirmations, "keep", installed
+warning = "#f5b332"             # Caution, needs attention
+error = "#f53263"               # Errors, "remove", critical actions
+info = "#0ec1c8"                # Neutral information, hints
+
+# === Diff/Action Colors ===
+added = "#c1ff62"               # New packages (in system, not in manifest)
+removed = "#f53263"             # Packages marked for removal
+changed = "#0e8ac8"             # Modified entries
+
+# === Confidence Levels (Claude Advisor) ===
+confidence_high = "#03b971"     # >90% confidence - trustworthy
+confidence_medium = "#faf870"   # 50-90% confidence - review recommended
+confidence_low = "#d44ebc"      # <50% confidence - manual decision needed
+
+# === Package Status ===
+package_manual = "#69B9A1"      # Manually installed (Primary)
+package_auto = "#226666"        # Auto-installed dependencies (Secondary/Petrol)
+
+# === Reserved (unused, available for future features) ===
+# primary = "#69B9A1"
+# secondary = "#226666"
+# tertiary = "#29526d"
+# quaternary = "#333676"
