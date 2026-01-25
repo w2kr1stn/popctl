@@ -3,13 +3,25 @@
 This module exports the core data structures used throughout the application.
 """
 
+from popctl.models.manifest import (
+    Manifest,
+    ManifestMeta,
+    PackageConfig,
+    PackageEntry,
+    SystemConfig,
+)
 from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
 from popctl.models.scan_result import ScanMetadata, ScanResult
 
 __all__ = [
+    "Manifest",
+    "ManifestMeta",
+    "PackageConfig",
+    "PackageEntry",
     "PackageSource",
     "PackageStatus",
     "ScannedPackage",
     "ScanMetadata",
     "ScanResult",
+    "SystemConfig",
 ]
