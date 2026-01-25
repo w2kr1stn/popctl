@@ -3,6 +3,9 @@
 Tests for the CLI scan command implementation.
 """
 
+import json
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -61,6 +64,7 @@ class TestScanCommand:
 
         with (
             patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.scanners.apt.run_command") as mock_run,
         ):
             mock_run.side_effect = [
@@ -68,7 +72,7 @@ class TestScanCommand:
                 CommandResult(stdout=mock_dpkg, stderr="", returncode=0),
             ]
 
-            result = runner.invoke(app, ["scan", "--count"])
+            result = runner.invoke(app, ["scan", "--count", "--source", "apt"])
 
         assert result.exit_code == 0
         assert "Total packages: 2" in result.stdout
@@ -82,6 +86,7 @@ class TestScanCommand:
 
         with (
             patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.scanners.apt.run_command") as mock_run,
         ):
             mock_run.side_effect = [
@@ -89,7 +94,7 @@ class TestScanCommand:
                 CommandResult(stdout=mock_dpkg, stderr="", returncode=0),
             ]
 
-            result = runner.invoke(app, ["scan", "--manual-only"])
+            result = runner.invoke(app, ["scan", "--manual-only", "--source", "apt"])
 
         assert result.exit_code == 0
         assert "firefox" in result.stdout
@@ -102,6 +107,7 @@ class TestScanCommand:
 
         with (
             patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.scanners.apt.run_command") as mock_run,
         ):
             mock_run.side_effect = [
@@ -109,7 +115,7 @@ class TestScanCommand:
                 CommandResult(stdout=mock_dpkg, stderr="", returncode=0),
             ]
 
-            result = runner.invoke(app, ["scan", "--limit", "2"])
+            result = runner.invoke(app, ["scan", "--limit", "2", "--source", "apt"])
 
         assert result.exit_code == 0
         assert "pkg1" in result.stdout
@@ -123,6 +129,7 @@ class TestScanCommand:
 
         with (
             patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.scanners.apt.run_command") as mock_run,
         ):
             mock_run.side_effect = [
@@ -130,7 +137,7 @@ class TestScanCommand:
                 CommandResult(stdout=mock_dpkg, stderr="", returncode=0),
             ]
 
-            result = runner.invoke(app, ["scan"])
+            result = runner.invoke(app, ["scan", "--source", "apt"])
 
         assert result.exit_code == 0
         assert "firefox" in result.stdout
@@ -138,18 +145,19 @@ class TestScanCommand:
         assert "Mozilla Firefox" in result.stdout
 
     def test_scan_apt_unavailable(self) -> None:
-        """Scan fails gracefully when APT is unavailable."""
+        """Scan fails gracefully when APT is unavailable (when APT explicitly requested)."""
         with patch("popctl.scanners.apt.command_exists", return_value=False):
-            result = runner.invoke(app, ["scan"])
+            result = runner.invoke(app, ["scan", "--source", "apt"])
 
         assert result.exit_code == 1
-        # Error message may be in output or exception
-        assert result.output == "" or "not available" in result.output
+        # Error message about no available package managers
+        assert "not available" in (result.stdout + result.stderr)
 
     def test_scan_dpkg_error(self) -> None:
         """Scan handles dpkg-query errors gracefully."""
         with (
             patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.scanners.apt.run_command") as mock_run,
         ):
             mock_run.side_effect = [
@@ -157,11 +165,11 @@ class TestScanCommand:
                 CommandResult(stdout="", stderr="dpkg error", returncode=1),
             ]
 
-            result = runner.invoke(app, ["scan"])
+            result = runner.invoke(app, ["scan", "--source", "apt"])
 
         assert result.exit_code == 1
-        # Error message may be in output or exception
-        assert result.output == "" or "dpkg-query failed" in result.output
+        # Error message may be in output or stderr
+        assert "dpkg-query failed" in (result.stdout + result.stderr)
 
 
 class TestScanOutputFormat:
@@ -174,6 +182,7 @@ class TestScanOutputFormat:
 
         with (
             patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.scanners.apt.run_command") as mock_run,
         ):
             mock_run.side_effect = [
@@ -181,8 +190,219 @@ class TestScanOutputFormat:
                 CommandResult(stdout=mock_dpkg, stderr="", returncode=0),
             ]
 
-            result = runner.invoke(app, ["scan"])
+            result = runner.invoke(app, ["scan", "--source", "apt"])
 
         assert result.exit_code == 0
         assert "Showing 2 of 2 packages" in result.stdout
         assert "(1 manual, 1 auto)" in result.stdout
+
+
+class TestScanSourceOption:
+    """Tests for --source option."""
+
+    def test_scan_source_apt_only(self) -> None:
+        """Scan --source apt scans only APT packages."""
+        mock_dpkg = "firefox\t128.0\t204800\tFirefox"
+        mock_auto = ""
+
+        with (
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.apt.run_command") as mock_run,
+        ):
+            mock_run.side_effect = [
+                CommandResult(stdout=mock_auto, stderr="", returncode=0),
+                CommandResult(stdout=mock_dpkg, stderr="", returncode=0),
+            ]
+
+            result = runner.invoke(app, ["scan", "--source", "apt"])
+
+        assert result.exit_code == 0
+        assert "firefox" in result.stdout
+        assert "(APT)" in result.stdout
+
+    def test_scan_source_flatpak_only(self) -> None:
+        """Scan --source flatpak scans only Flatpak apps."""
+        mock_flatpak = "com.spotify.Client\t1.2.31\t1.2 GB\tMusic"
+
+        with (
+            patch("popctl.scanners.flatpak.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.run_command") as mock_run,
+        ):
+            mock_run.return_value = CommandResult(
+                stdout=mock_flatpak, stderr="", returncode=0
+            )
+
+            result = runner.invoke(app, ["scan", "--source", "flatpak"])
+
+        assert result.exit_code == 0
+        assert "com.spotify.Client" in result.stdout
+        assert "(FLATPAK)" in result.stdout
+
+    def test_scan_source_all(self) -> None:
+        """Scan --source all scans both APT and Flatpak."""
+        mock_dpkg = "firefox\t128.0\t204800\tFirefox"
+        mock_auto = ""
+        mock_flatpak = "com.spotify.Client\t1.2.31\t1.2 GB\tMusic"
+
+        with (
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=True),
+            patch("popctl.scanners.apt.run_command") as mock_apt_run,
+            patch("popctl.scanners.flatpak.run_command") as mock_flatpak_run,
+        ):
+            mock_apt_run.side_effect = [
+                CommandResult(stdout=mock_auto, stderr="", returncode=0),
+                CommandResult(stdout=mock_dpkg, stderr="", returncode=0),
+            ]
+            mock_flatpak_run.return_value = CommandResult(
+                stdout=mock_flatpak, stderr="", returncode=0
+            )
+
+            result = runner.invoke(app, ["scan", "--source", "all"])
+
+        assert result.exit_code == 0
+        assert "firefox" in result.stdout
+        assert "com.spotify.Client" in result.stdout
+
+    def test_scan_flatpak_unavailable_warning(self) -> None:
+        """Scan shows warning when Flatpak is unavailable but continues with APT."""
+        mock_dpkg = "firefox\t128.0\t204800\tFirefox"
+        mock_auto = ""
+
+        with (
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch("popctl.scanners.apt.run_command") as mock_run,
+        ):
+            mock_run.side_effect = [
+                CommandResult(stdout=mock_auto, stderr="", returncode=0),
+                CommandResult(stdout=mock_dpkg, stderr="", returncode=0),
+            ]
+
+            result = runner.invoke(app, ["scan", "--source", "all"])
+
+        assert result.exit_code == 0
+        assert "firefox" in result.stdout
+        # Warning about Flatpak in stderr
+        assert "FLATPAK" in result.stderr and "not available" in result.stderr
+
+
+class TestScanExportOption:
+    """Tests for --export option."""
+
+    def test_scan_export_creates_json_file(self) -> None:
+        """Scan --export creates JSON file with scan results."""
+        mock_dpkg = "firefox\t128.0\t204800\tFirefox"
+        mock_auto = ""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            export_path = Path(tmpdir) / "scan.json"
+
+            with (
+                patch("popctl.scanners.apt.command_exists", return_value=True),
+                patch("popctl.scanners.flatpak.command_exists", return_value=False),
+                patch("popctl.scanners.apt.run_command") as mock_run,
+            ):
+                mock_run.side_effect = [
+                    CommandResult(stdout=mock_auto, stderr="", returncode=0),
+                    CommandResult(stdout=mock_dpkg, stderr="", returncode=0),
+                ]
+
+                result = runner.invoke(
+                    app, ["scan", "--source", "apt", "--export", str(export_path)]
+                )
+
+            assert result.exit_code == 0
+            assert export_path.exists()
+
+            # Verify JSON structure
+            data = json.loads(export_path.read_text())
+            assert "metadata" in data
+            assert "packages" in data
+            assert "summary" in data
+            assert data["metadata"]["sources"] == ["apt"]
+            assert len(data["packages"]) == 1
+            assert data["packages"][0]["name"] == "firefox"
+
+    def test_scan_export_includes_metadata(self) -> None:
+        """Exported JSON includes proper metadata."""
+        mock_dpkg = "firefox\t128.0\t204800\tFirefox"
+        mock_auto = ""
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            export_path = Path(tmpdir) / "scan.json"
+
+            with (
+                patch("popctl.scanners.apt.command_exists", return_value=True),
+                patch("popctl.scanners.flatpak.command_exists", return_value=False),
+                patch("popctl.scanners.apt.run_command") as mock_run,
+            ):
+                mock_run.side_effect = [
+                    CommandResult(stdout=mock_auto, stderr="", returncode=0),
+                    CommandResult(stdout=mock_dpkg, stderr="", returncode=0),
+                ]
+
+                result = runner.invoke(
+                    app, ["scan", "--source", "apt", "--export", str(export_path)]
+                )
+
+            assert result.exit_code == 0
+            data = json.loads(export_path.read_text())
+
+            metadata = data["metadata"]
+            assert "timestamp" in metadata
+            assert "hostname" in metadata
+            assert "popctl_version" in metadata
+            assert metadata["popctl_version"] == "0.1.0"
+
+
+class TestScanFormatOption:
+    """Tests for --format option."""
+
+    def test_scan_format_json(self) -> None:
+        """Scan --format json outputs JSON to stdout."""
+        mock_dpkg = "firefox\t128.0\t204800\tFirefox"
+        mock_auto = ""
+
+        with (
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch("popctl.scanners.apt.run_command") as mock_run,
+        ):
+            mock_run.side_effect = [
+                CommandResult(stdout=mock_auto, stderr="", returncode=0),
+                CommandResult(stdout=mock_dpkg, stderr="", returncode=0),
+            ]
+
+            result = runner.invoke(app, ["scan", "--source", "apt", "--format", "json"])
+
+        assert result.exit_code == 0
+        # Should be valid JSON
+        data = json.loads(result.stdout)
+        assert "metadata" in data
+        assert "packages" in data
+        assert len(data["packages"]) == 1
+
+    def test_scan_format_table_default(self) -> None:
+        """Scan defaults to table format."""
+        mock_dpkg = "firefox\t128.0\t204800\tFirefox"
+        mock_auto = ""
+
+        with (
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch("popctl.scanners.apt.run_command") as mock_run,
+        ):
+            mock_run.side_effect = [
+                CommandResult(stdout=mock_auto, stderr="", returncode=0),
+                CommandResult(stdout=mock_dpkg, stderr="", returncode=0),
+            ]
+
+            result = runner.invoke(app, ["scan", "--source", "apt"])
+
+        assert result.exit_code == 0
+        # Table format contains package names and dividers
+        assert "firefox" in result.stdout
+        # Should not be pure JSON
+        with pytest.raises(json.JSONDecodeError):
+            json.loads(result.stdout)
