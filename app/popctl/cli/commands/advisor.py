@@ -308,6 +308,177 @@ def classify(
         _show_interactive_instructions(exchange_dir, config)
 
 
+@app.command()
+def apply(
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            "-n",
+            help="Preview changes without modifying manifest.",
+        ),
+    ] = False,
+    input_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--input",
+            "-i",
+            help="Path to decisions.toml (default: exchange dir).",
+        ),
+    ] = None,
+) -> None:
+    """Apply AI classification decisions to manifest.
+
+    Reads decisions.toml from the last classification and updates
+    the manifest accordingly.
+
+    Examples:
+        popctl advisor apply              # Apply from exchange dir
+        popctl advisor apply --dry-run    # Preview only
+        popctl advisor apply -i dec.toml  # From specific file
+    """
+    from datetime import UTC, datetime
+
+    from rich.table import Table
+
+    from popctl.advisor import import_decisions
+    from popctl.core.manifest import (
+        ManifestError,
+        ManifestNotFoundError,
+        load_manifest,
+        save_manifest,
+    )
+    from popctl.core.paths import get_exchange_dir
+    from popctl.models.manifest import PackageEntry
+
+    # Step 1: Determine decisions.toml path
+    decisions_path = input_file if input_file is not None else get_exchange_dir() / "decisions.toml"
+
+    print_info(f"Decisions from: {decisions_path}")
+
+    # Step 2: Load decisions
+    # import_decisions expects the directory containing decisions.toml
+    try:
+        decisions = import_decisions(decisions_path.parent)
+    except FileNotFoundError as err:
+        print_error(f"decisions.toml not found at {decisions_path}")
+        print_info("Run 'popctl advisor classify' first to generate classifications.")
+        raise typer.Exit(code=1) from err
+    except ValueError as e:
+        print_error(f"Invalid decisions.toml: {e}")
+        raise typer.Exit(code=1) from e
+
+    # Step 3: Load current manifest
+    try:
+        manifest = load_manifest()
+    except ManifestNotFoundError as err:
+        print_error("No manifest found. Run 'popctl init' first to create a manifest.")
+        raise typer.Exit(code=1) from err
+    except ManifestError as e:
+        print_error(f"Failed to load manifest: {e}")
+        raise typer.Exit(code=1) from e
+
+    # Step 4: Apply decisions and collect statistics
+    stats: dict[str, dict[str, int]] = {}
+    ask_packages: list[tuple[str, str, str, float]] = []  # (name, source, reason, confidence)
+
+    for source in ("apt", "flatpak"):
+        source_decisions = decisions.packages.get(source)
+        if source_decisions is None:
+            continue
+
+        stats[source] = {"keep": 0, "remove": 0, "ask": 0}
+
+        # Process keep decisions
+        for decision in source_decisions.keep:
+            manifest.packages.keep[decision.name] = PackageEntry(
+                source=source,  # type: ignore[arg-type]
+                status="keep",
+                reason=decision.reason,
+            )
+            stats[source]["keep"] += 1
+
+        # Process remove decisions
+        for decision in source_decisions.remove:
+            manifest.packages.remove[decision.name] = PackageEntry(
+                source=source,  # type: ignore[arg-type]
+                status="remove",
+                reason=decision.reason,
+            )
+            stats[source]["remove"] += 1
+
+        # Process ask decisions (skip but collect for display)
+        for decision in source_decisions.ask:
+            ask_packages.append((decision.name, source, decision.reason, decision.confidence))
+            stats[source]["ask"] += 1
+
+    # Step 5: Display summary
+    console.print()
+
+    # Create summary table
+    table = Table(title="Classification Summary", show_header=True)
+    table.add_column("Source", style="cyan")
+    table.add_column("Keep", style="green", justify="right")
+    table.add_column("Remove", style="red", justify="right")
+    table.add_column("Ask", style="yellow", justify="right")
+
+    total_keep = 0
+    total_remove = 0
+    total_ask = 0
+
+    for source, counts in stats.items():
+        table.add_row(
+            source.upper(),
+            str(counts["keep"]),
+            str(counts["remove"]),
+            str(counts["ask"]),
+        )
+        total_keep += counts["keep"]
+        total_remove += counts["remove"]
+        total_ask += counts["ask"]
+
+    if stats:
+        table.add_row("", "", "", "", style="dim")
+        table.add_row(
+            "Total",
+            str(total_keep),
+            str(total_remove),
+            str(total_ask),
+            style="bold",
+        )
+
+    console.print(table)
+    console.print()
+
+    # Show packages requiring manual decision
+    if ask_packages:
+        console.print("[yellow]Packages requiring manual decision:[/yellow]")
+        for name, source, reason, confidence in ask_packages:
+            console.print(f"  [dim]-[/dim] {name} ({source}): {reason} [{confidence:.2f}]")
+        console.print()
+        console.print(
+            "[dim]Run 'popctl advisor classify' again to re-evaluate, "
+            "or manually add to manifest.[/dim]"
+        )
+        console.print()
+
+    # Step 6: Save manifest (unless dry-run)
+    manifest_path = get_manifest_path()
+
+    if dry_run:
+        console.print(f"[cyan][dry-run][/cyan] Would update manifest at {manifest_path}")
+    else:
+        # Update manifest timestamp
+        manifest.meta.updated = datetime.now(UTC)
+
+        try:
+            save_manifest(manifest)
+            print_success(f"Manifest updated at {manifest_path}")
+        except ManifestError as e:
+            print_error(f"Failed to save manifest: {e}")
+            raise typer.Exit(code=1) from e
+
+
 @app.callback(invoke_without_command=True)
 def advisor_callback(ctx: typer.Context) -> None:
     """AI-assisted package classification.

@@ -475,3 +475,478 @@ class TestAdvisorScannerAvailability:
 
         assert result.exit_code == 1
         assert "not available" in (result.stdout + (result.stderr or "")).lower()
+
+
+# =============================================================================
+# Tests for advisor apply command
+# =============================================================================
+
+
+@pytest.fixture
+def sample_manifest(tmp_path: Path) -> Path:
+    """Create a sample manifest file for testing."""
+    from datetime import UTC, datetime
+    from typing import Any
+
+    import tomli_w
+
+    manifest_data: dict[str, Any] = {
+        "meta": {
+            "version": "1.0",
+            "created": datetime.now(UTC).isoformat(),
+            "updated": datetime.now(UTC).isoformat(),
+        },
+        "system": {
+            "name": "test-machine",
+            "base": "pop-os-24.04",
+        },
+        "packages": {
+            "keep": {},
+            "remove": {},
+        },
+    }
+    manifest_path = tmp_path / "manifest.toml"
+    with manifest_path.open("wb") as f:
+        tomli_w.dump(manifest_data, f)
+    return manifest_path
+
+
+@pytest.fixture
+def sample_decisions_toml(tmp_path: Path) -> Path:
+    """Create a sample decisions.toml file for testing."""
+    decisions_content = """\
+[packages.apt.keep]
+[[packages.apt.keep]]
+name = "firefox"
+reason = "Essential web browser"
+confidence = 0.95
+category = "browser"
+
+[[packages.apt.keep]]
+name = "vim"
+reason = "Essential editor"
+confidence = 0.90
+category = "development"
+
+[packages.apt.remove]
+[[packages.apt.remove]]
+name = "bloatware"
+reason = "Unused application"
+confidence = 0.85
+category = "other"
+
+[packages.apt.ask]
+[[packages.apt.ask]]
+name = "unknown-tool"
+reason = "Unclear if needed"
+confidence = 0.45
+category = "other"
+
+[packages.flatpak.keep]
+[[packages.flatpak.keep]]
+name = "com.spotify.Client"
+reason = "Music streaming app"
+confidence = 0.88
+category = "media"
+"""
+    decisions_path = tmp_path / "decisions.toml"
+    decisions_path.write_text(decisions_content)
+    return decisions_path
+
+
+class TestAdvisorApplyHelp:
+    """Tests for advisor apply command help."""
+
+    def test_apply_help(self) -> None:
+        """Apply command shows help."""
+        result = runner.invoke(app, ["advisor", "apply", "--help"])
+        assert result.exit_code == 0
+        assert "Apply" in result.stdout
+        assert "--dry-run" in result.stdout
+        assert "--input" in result.stdout
+
+    def test_apply_help_shows_examples(self) -> None:
+        """Apply help shows usage examples."""
+        result = runner.invoke(app, ["advisor", "apply", "--help"])
+        assert "popctl advisor apply" in result.stdout
+
+
+class TestAdvisorApplyWithValidDecisions:
+    """Tests for advisor apply with valid decisions.toml."""
+
+    def test_apply_with_valid_decisions(
+        self,
+        tmp_path: Path,
+        sample_manifest: Path,
+        sample_decisions_toml: Path,
+    ) -> None:
+        """Apply updates manifest with decisions."""
+        from popctl.advisor import DecisionsResult, PackageDecision, SourceDecisions
+
+        mock_decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    keep=[
+                        PackageDecision(
+                            name="firefox",
+                            reason="Essential desktop application",
+                            confidence=0.95,
+                            category="desktop",
+                        ),
+                    ],
+                    remove=[
+                        PackageDecision(
+                            name="bloatware",
+                            reason="Unused",
+                            confidence=0.85,
+                            category="other",
+                        ),
+                    ],
+                    ask=[],
+                ),
+                "flatpak": SourceDecisions(keep=[], remove=[], ask=[]),
+            }
+        )
+
+        from datetime import UTC, datetime
+
+        from popctl.models.manifest import (
+            Manifest,
+            ManifestMeta,
+            PackageConfig,
+            SystemConfig,
+        )
+
+        mock_manifest = Manifest(
+            meta=ManifestMeta(
+                version="1.0",
+                created=datetime.now(UTC),
+                updated=datetime.now(UTC),
+            ),
+            system=SystemConfig(name="test", base="pop-os-24.04"),
+            packages=PackageConfig(keep={}, remove={}),
+        )
+
+        with (
+            patch(
+                "popctl.advisor.import_decisions",
+                return_value=mock_decisions,
+            ),
+            patch(
+                "popctl.core.paths.get_exchange_dir",
+                return_value=tmp_path,
+            ),
+            patch(
+                "popctl.core.manifest.load_manifest",
+                return_value=mock_manifest,
+            ),
+            patch(
+                "popctl.core.manifest.save_manifest",
+            ) as mock_save,
+            patch(
+                "popctl.core.paths.get_manifest_path",
+                return_value=sample_manifest,
+            ),
+        ):
+            result = runner.invoke(app, ["advisor", "apply"])
+
+        assert result.exit_code == 0
+        assert "updated" in result.stdout.lower() or "summary" in result.stdout.lower()
+        mock_save.assert_called_once()
+
+
+class TestAdvisorApplyDryRun:
+    """Tests for advisor apply --dry-run option."""
+
+    def test_apply_dry_run_does_not_modify_manifest(
+        self,
+        tmp_path: Path,
+        sample_manifest: Path,
+    ) -> None:
+        """Apply --dry-run shows changes without modifying manifest."""
+        from popctl.advisor import DecisionsResult, PackageDecision, SourceDecisions
+
+        mock_decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    keep=[
+                        PackageDecision(
+                            name="firefox",
+                            reason="Desktop application",
+                            confidence=0.95,
+                            category="desktop",
+                        ),
+                    ],
+                    remove=[],
+                    ask=[],
+                ),
+                "flatpak": SourceDecisions(keep=[], remove=[], ask=[]),
+            }
+        )
+
+        from datetime import UTC, datetime
+
+        from popctl.models.manifest import (
+            Manifest,
+            ManifestMeta,
+            PackageConfig,
+            SystemConfig,
+        )
+
+        mock_manifest = Manifest(
+            meta=ManifestMeta(
+                version="1.0",
+                created=datetime.now(UTC),
+                updated=datetime.now(UTC),
+            ),
+            system=SystemConfig(name="test", base="pop-os-24.04"),
+            packages=PackageConfig(keep={}, remove={}),
+        )
+
+        with (
+            patch(
+                "popctl.advisor.import_decisions",
+                return_value=mock_decisions,
+            ),
+            patch(
+                "popctl.core.paths.get_exchange_dir",
+                return_value=tmp_path,
+            ),
+            patch(
+                "popctl.core.manifest.load_manifest",
+                return_value=mock_manifest,
+            ),
+            patch(
+                "popctl.core.manifest.save_manifest",
+            ) as mock_save,
+            patch(
+                "popctl.core.paths.get_manifest_path",
+                return_value=sample_manifest,
+            ),
+        ):
+            result = runner.invoke(app, ["advisor", "apply", "--dry-run"])
+
+        assert result.exit_code == 0
+        # dry-run mode shows "Would update" instead of "updated"
+        assert "would update" in result.stdout.lower()
+        # save_manifest should NOT be called in dry-run mode
+        mock_save.assert_not_called()
+
+
+class TestAdvisorApplyErrors:
+    """Tests for advisor apply error handling."""
+
+    def test_apply_without_decisions_toml(self, tmp_path: Path) -> None:
+        """Apply fails when decisions.toml is not found."""
+        with (
+            patch(
+                "popctl.core.paths.get_exchange_dir",
+                return_value=tmp_path,
+            ),
+            patch(
+                "popctl.advisor.import_decisions",
+                side_effect=FileNotFoundError("decisions.toml not found"),
+            ),
+        ):
+            result = runner.invoke(app, ["advisor", "apply"])
+
+        assert result.exit_code == 1
+        combined = result.stdout + (result.stderr or "")
+        assert "not found" in combined.lower() or "decisions.toml" in combined.lower()
+
+    def test_apply_without_manifest(self, tmp_path: Path) -> None:
+        """Apply fails when manifest is not found."""
+        from popctl.advisor import DecisionsResult, SourceDecisions
+        from popctl.core.manifest import ManifestNotFoundError
+
+        mock_decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(keep=[], remove=[], ask=[]),
+                "flatpak": SourceDecisions(keep=[], remove=[], ask=[]),
+            }
+        )
+
+        with (
+            patch(
+                "popctl.core.paths.get_exchange_dir",
+                return_value=tmp_path,
+            ),
+            patch(
+                "popctl.advisor.import_decisions",
+                return_value=mock_decisions,
+            ),
+            patch(
+                "popctl.core.manifest.load_manifest",
+                side_effect=ManifestNotFoundError("Manifest not found"),
+            ),
+        ):
+            result = runner.invoke(app, ["advisor", "apply"])
+
+        assert result.exit_code == 1
+        combined = result.stdout + (result.stderr or "")
+        assert "manifest" in combined.lower() and (
+            "not found" in combined.lower() or "init" in combined.lower()
+        )
+
+    def test_apply_with_invalid_decisions_toml(self, tmp_path: Path) -> None:
+        """Apply fails when decisions.toml is invalid."""
+        with (
+            patch(
+                "popctl.core.paths.get_exchange_dir",
+                return_value=tmp_path,
+            ),
+            patch(
+                "popctl.advisor.import_decisions",
+                side_effect=ValueError("Invalid TOML syntax"),
+            ),
+        ):
+            result = runner.invoke(app, ["advisor", "apply"])
+
+        assert result.exit_code == 1
+        combined = result.stdout + (result.stderr or "")
+        assert "invalid" in combined.lower()
+
+
+class TestAdvisorApplyWithInputFile:
+    """Tests for advisor apply with custom input file."""
+
+    def test_apply_with_custom_input_path(
+        self,
+        tmp_path: Path,
+        sample_manifest: Path,
+    ) -> None:
+        """Apply --input uses specified decisions file."""
+        from popctl.advisor import DecisionsResult, SourceDecisions
+
+        custom_decisions_path = tmp_path / "custom" / "decisions.toml"
+        custom_decisions_path.parent.mkdir(parents=True)
+        custom_decisions_path.touch()
+
+        mock_decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(keep=[], remove=[], ask=[]),
+                "flatpak": SourceDecisions(keep=[], remove=[], ask=[]),
+            }
+        )
+
+        from datetime import UTC, datetime
+
+        from popctl.models.manifest import (
+            Manifest,
+            ManifestMeta,
+            PackageConfig,
+            SystemConfig,
+        )
+
+        mock_manifest = Manifest(
+            meta=ManifestMeta(
+                version="1.0",
+                created=datetime.now(UTC),
+                updated=datetime.now(UTC),
+            ),
+            system=SystemConfig(name="test", base="pop-os-24.04"),
+            packages=PackageConfig(keep={}, remove={}),
+        )
+
+        with (
+            patch(
+                "popctl.advisor.import_decisions",
+                return_value=mock_decisions,
+            ),
+            patch(
+                "popctl.core.manifest.load_manifest",
+                return_value=mock_manifest,
+            ),
+            patch(
+                "popctl.core.manifest.save_manifest",
+            ),
+            patch(
+                "popctl.core.paths.get_manifest_path",
+                return_value=sample_manifest,
+            ),
+        ):
+            result = runner.invoke(app, ["advisor", "apply", "--input", str(custom_decisions_path)])
+
+        assert result.exit_code == 0
+
+
+class TestAdvisorApplyAskPackages:
+    """Tests for advisor apply handling of 'ask' packages."""
+
+    def test_apply_shows_ask_packages(
+        self,
+        tmp_path: Path,
+        sample_manifest: Path,
+    ) -> None:
+        """Apply displays packages that need manual decision."""
+        from popctl.advisor import DecisionsResult, PackageDecision, SourceDecisions
+
+        mock_decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    keep=[],
+                    remove=[],
+                    ask=[
+                        PackageDecision(
+                            name="unknown-tool",
+                            reason="Unclear if needed",
+                            confidence=0.45,
+                            category="other",
+                        ),
+                        PackageDecision(
+                            name="maybe-useful",
+                            reason="Optional dependency",
+                            confidence=0.55,
+                            category="development",
+                        ),
+                    ],
+                ),
+                "flatpak": SourceDecisions(keep=[], remove=[], ask=[]),
+            }
+        )
+
+        from datetime import UTC, datetime
+
+        from popctl.models.manifest import (
+            Manifest,
+            ManifestMeta,
+            PackageConfig,
+            SystemConfig,
+        )
+
+        mock_manifest = Manifest(
+            meta=ManifestMeta(
+                version="1.0",
+                created=datetime.now(UTC),
+                updated=datetime.now(UTC),
+            ),
+            system=SystemConfig(name="test", base="pop-os-24.04"),
+            packages=PackageConfig(keep={}, remove={}),
+        )
+
+        with (
+            patch(
+                "popctl.advisor.import_decisions",
+                return_value=mock_decisions,
+            ),
+            patch(
+                "popctl.core.paths.get_exchange_dir",
+                return_value=tmp_path,
+            ),
+            patch(
+                "popctl.core.manifest.load_manifest",
+                return_value=mock_manifest,
+            ),
+            patch(
+                "popctl.core.manifest.save_manifest",
+            ),
+            patch(
+                "popctl.core.paths.get_manifest_path",
+                return_value=sample_manifest,
+            ),
+        ):
+            result = runner.invoke(app, ["advisor", "apply", "--dry-run"])
+
+        assert result.exit_code == 0
+        # Should show packages requiring manual decision
+        assert "manual" in result.stdout.lower() or "ask" in result.stdout.lower()
