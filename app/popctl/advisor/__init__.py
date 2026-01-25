@@ -12,6 +12,10 @@ Public API:
 - AgentRunner: Runs AI agents for package classification
 - build_headless_prompt: Build prompt for headless classification
 - build_interactive_instructions: Build instructions.md for interactive mode
+- export_scan_for_advisor: Export scan results for AI agent
+- export_prompt_files: Export prompt files to exchange directory
+- import_decisions: Import and validate decisions.toml
+- cleanup_exchange_dir: Remove files from exchange directory
 """
 
 from popctl.advisor.config import (
@@ -20,6 +24,19 @@ from popctl.advisor.config import (
     is_running_in_container,
     load_advisor_config,
     save_advisor_config,
+)
+from popctl.advisor.exchange import (
+    DecisionsResult,
+    PackageDecision,
+    PackageScanEntry,
+    ScanExport,
+    SourceDecisions,
+    cleanup_exchange_dir,
+    export_prompt_files,
+    export_scan_for_advisor,
+    get_decisions_path,
+    get_scan_json_path,
+    import_decisions,
 )
 from popctl.advisor.prompts import (
     CATEGORIES,
@@ -37,11 +54,22 @@ __all__ = [
     "AgentResult",
     "AgentRunner",
     "CATEGORIES",
+    "DecisionsResult",
+    "PackageDecision",
+    "PackageScanEntry",
+    "ScanExport",
+    "SourceDecisions",
     "build_headless_prompt",
     "build_interactive_instructions",
+    "cleanup_exchange_dir",
+    "export_prompt_files",
+    "export_scan_for_advisor",
+    "get_decisions_path",
     "get_decisions_schema",
     "get_instructions_file_path",
     "get_prompt_file_path",
+    "get_scan_json_path",
+    "import_decisions",
     "is_running_in_container",
     "load_advisor_config",
     "save_advisor_config",
