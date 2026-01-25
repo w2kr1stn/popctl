@@ -8,3 +8,14 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Test/Coverage artifacts
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Coding Agents
+PLAN.md
+PROJECT.md
+TASKS.yml
+SESSION*.md

@@ -22,10 +22,10 @@ def format_code() -> None:
     """Format the codebase with Ruff."""
     _run(
         [
-            ["echo", "🎨 [Native Task] Formatting with Ruff..."],
+            ["echo", "🎨 [Native Task] Formatting with Ruff...\n"],
             ["ruff", "format", "."],
             ["ruff", "check", "--fix", "."],
-            ["echo", "🟢 Made everything pretty → ✅ Code clean."],
+            ["echo", "\n🟢 Made everything pretty → ✅ Code clean."],
         ]
     )
 
@@ -34,9 +34,9 @@ def test() -> None:
     """Run tests with PyTest."""
     _run(
         [
-            ["echo", "🧪 [Native Task] Testing with PyTest..."],
+            ["echo", "🧪 [Native Task] Testing with PyTest...\n"],
             ["uv", "run", "pytest", "-q"],
-            ["echo", "🟢 Test Coverage → ✅ Test coverage sufficient"],
+            ["echo", "\n🟢 Test Coverage → ✅ Test coverage sufficient"],
         ]
     )
 
@@ -45,15 +45,15 @@ def clean() -> None:
     """Clean up the project."""
     _run(
         [
-            ["echo", "🧹 [Native Task] Cleaning the Project..."],
+            ["echo", "🧹 [Native Task] Cleaning the Project...\n"],
             # ---------------------
             # Basic clean up
-            #----------------------
+            # ----------------------
             ["find", ".", "-type", "d", "-name", "__pycache__", "-exec", "rm", "-rf", "{}", "+"],
             ["find", ".", "-type", "f", "-name", "*.pyc", "-delete"],
-            #----------------------
+            # ----------------------
             # Extended clean up
-            #----------------------
+            # ----------------------
             ## Python cache files
             # ["find", ".", "-type", "d", "-name", "__pycache__", "-exec", "rm", "-rf", "{}", "+"],
             # ["find", ".", "-type", "f", "-name", "*.pyc", "-delete"],
@@ -70,6 +70,6 @@ def clean() -> None:
             # ["rm", "-rf", "dist"],
             # ["rm", "-rf", "build"],
             # ["find", ".", "-type", "d", "-name", "*.egg-info", "-exec", "rm", "-rf", "{}", "+"],
-            ["echo", "🟢 Caches & Artifacts → ✅ All fresh now"],
+            ["echo", "\n🟢 Caches & Artifacts → ✅ All fresh now"],
         ]
     )
