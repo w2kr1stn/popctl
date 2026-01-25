@@ -3,6 +3,6 @@
 This package contains all subcommand implementations.
 """
 
-from popctl.cli.commands import scan
+from popctl.cli.commands import advisor, apply, diff, init, scan
 
-__all__ = ["scan"]
+__all__ = ["advisor", "apply", "diff", "init", "scan"]
