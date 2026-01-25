@@ -119,25 +119,21 @@ class TestAptScanner:
             with pytest.raises(RuntimeError, match="dpkg-query failed"):
                 list(scanner.scan())
 
-    def test_scan_handles_apt_mark_failure(
+    def test_scan_raises_on_apt_mark_failure(
         self,
         scanner: AptScanner,
-        mock_dpkg_output: str,
     ) -> None:
-        """Scan treats all packages as manual if apt-mark fails."""
+        """Scan raises RuntimeError if apt-mark fails to avoid unreliable data."""
         with (
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.apt.run_command") as mock_run,
         ):
-            mock_run.side_effect = [
-                CommandResult(stdout="", stderr="error", returncode=1),  # apt-mark fails
-                CommandResult(stdout=mock_dpkg_output, stderr="", returncode=0),
-            ]
+            mock_run.return_value = CommandResult(
+                stdout="", stderr="apt-mark error", returncode=1
+            )
 
-            packages = list(scanner.scan())
-
-        # All should be treated as manual
-        assert all(p.status == PackageStatus.MANUAL for p in packages)
+            with pytest.raises(RuntimeError, match="apt-mark showauto failed"):
+                list(scanner.scan())
 
     def test_scan_handles_empty_output(self, scanner: AptScanner) -> None:
         """Scan handles empty dpkg-query output."""

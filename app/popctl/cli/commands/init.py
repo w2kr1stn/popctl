@@ -259,6 +259,6 @@ def init_manifest(
     try:
         saved_path = save_manifest(manifest, output_path)
         print_success(f"Manifest created: {saved_path}")
-    except Exception as e:
+    except (OSError, PermissionError) as e:
         print_error(f"Failed to save manifest: {e}")
         raise typer.Exit(code=1) from e

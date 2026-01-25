@@ -4,11 +4,14 @@ Scans installed packages using dpkg-query and determines
 installation status using apt-mark.
 """
 
+import logging
 from collections.abc import Iterator
 
 from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
 from popctl.scanners.base import Scanner
 from popctl.utils.shell import command_exists, run_command
+
+logger = logging.getLogger(__name__)
 
 
 class AptScanner(Scanner):
@@ -68,11 +71,15 @@ class AptScanner(Scanner):
 
         Returns:
             Set of package names marked as automatically installed.
+
+        Raises:
+            RuntimeError: If apt-mark showauto command fails.
         """
         result = run_command(["apt-mark", "showauto"])
         if not result.success:
-            # If apt-mark fails, assume all packages are manual
-            return set()
+            # Do not silently continue - the data would be unreliable
+            msg = f"apt-mark showauto failed: {result.stderr.strip() or 'unknown error'}"
+            raise RuntimeError(msg)
 
         return {pkg.strip() for pkg in result.stdout.strip().split("\n") if pkg.strip()}
 
@@ -92,12 +99,14 @@ class AptScanner(Scanner):
         """
         parts = line.split("\t")
         if len(parts) < 2:
+            logger.debug("Skipping malformed dpkg line (parts=%d): %r", len(parts), line[:100])
             return None
 
         name = parts[0].strip()
         version = parts[1].strip()
 
         if not name or not version:
+            logger.debug("Skipping dpkg line with empty name/version: %r", line[:100])
             return None
 
         # Parse optional fields

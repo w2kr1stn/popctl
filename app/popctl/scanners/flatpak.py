@@ -3,12 +3,15 @@
 Scans installed Flatpak applications using the flatpak CLI.
 """
 
+import logging
 import re
 from collections.abc import Iterator
 
 from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
 from popctl.scanners.base import Scanner
 from popctl.utils.shell import command_exists, run_command
+
+logger = logging.getLogger(__name__)
 
 
 class FlatpakScanner(Scanner):
@@ -90,12 +93,14 @@ class FlatpakScanner(Scanner):
         """
         parts = line.split("\t")
         if len(parts) < 2:
+            logger.debug("Skipping malformed flatpak line (parts=%d): %r", len(parts), line[:100])
             return None
 
         name = parts[0].strip()
         version = parts[1].strip()
 
         if not name or not version:
+            logger.debug("Skipping flatpak line with empty name/version: %r", line[:100])
             return None
 
         # Parse optional fields
@@ -133,6 +138,7 @@ class FlatpakScanner(Scanner):
 
         match = self._SIZE_PATTERN.match(size_str)
         if not match:
+            logger.debug("Could not parse size string: %r", size_str)
             return None
 
         try:
@@ -140,5 +146,6 @@ class FlatpakScanner(Scanner):
             unit = match.group(2).upper()
             multiplier = self._SIZE_MULTIPLIERS.get(unit, 1)
             return int(value * multiplier)
-        except (ValueError, OverflowError):
+        except (ValueError, OverflowError) as e:
+            logger.warning("Failed to parse size %r: %s", size_str, e)
             return None

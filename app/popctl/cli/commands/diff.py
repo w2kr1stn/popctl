@@ -15,7 +15,6 @@ from popctl.core.manifest import (
     ManifestError,
     ManifestNotFoundError,
     load_manifest,
-    manifest_exists,
 )
 from popctl.core.paths import get_manifest_path
 from popctl.scanners.apt import AptScanner
@@ -206,18 +205,11 @@ def diff_packages(
     if ctx.invoked_subcommand is not None:
         return
 
-    # Check if manifest exists
-    manifest_path = get_manifest_path()
-    if not manifest_exists():
-        print_error(f"Manifest not found: {manifest_path}")
-        print_info("Run 'popctl init' to create a manifest from your current system.")
-        raise typer.Exit(code=1)
-
-    # Load manifest
+    # Load manifest (handles not-found case directly, avoiding TOCTOU race)
     try:
         manifest = load_manifest()
     except ManifestNotFoundError as e:
-        print_error(f"Manifest not found: {manifest_path}")
+        print_error(f"Manifest not found: {get_manifest_path()}")
         print_info("Run 'popctl init' to create a manifest from your current system.")
         raise typer.Exit(code=1) from e
     except ManifestError as e:

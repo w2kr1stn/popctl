@@ -197,6 +197,11 @@ class DiffEngine:
 
                 installed[pkg.name] = (source_name, pkg.version, pkg.description)
 
+        # Validate source_filter
+        if source_filter is not None and source_filter not in ("apt", "flatpak"):
+            msg = f"Invalid source filter: {source_filter}"
+            raise ValueError(msg)
+
         # Get packages from manifest
         keep_packages = self.manifest.get_keep_packages(source_filter)  # type: ignore[arg-type]
         remove_packages = self.manifest.get_remove_packages(source_filter)  # type: ignore[arg-type]

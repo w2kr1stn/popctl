@@ -207,6 +207,12 @@ def scan_packages(
 
     # Handle export (always JSON regardless of format option)
     if export_path is not None:
+        # Validate export path
+        export_path = export_path.resolve()
+        if export_path.is_dir():
+            print_error(f"Export path is a directory: {export_path}")
+            raise typer.Exit(code=1)
+
         scan_result = ScanResult.create(
             packages=packages,
             sources=available_sources,
