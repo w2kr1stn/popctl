@@ -131,9 +131,7 @@ single_field"""
             patch("popctl.scanners.flatpak.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.run_command") as mock_run,
         ):
-            mock_run.return_value = CommandResult(
-                stdout=malformed, stderr="", returncode=0
-            )
+            mock_run.return_value = CommandResult(stdout=malformed, stderr="", returncode=0)
 
             packages = list(scanner.scan())
 
@@ -147,9 +145,7 @@ single_field"""
             patch("popctl.scanners.flatpak.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.run_command") as mock_run,
         ):
-            mock_run.return_value = CommandResult(
-                stdout=minimal, stderr="", returncode=0
-            )
+            mock_run.return_value = CommandResult(stdout=minimal, stderr="", returncode=0)
 
             packages = list(scanner.scan())
 
@@ -164,9 +160,7 @@ single_field"""
             patch("popctl.scanners.flatpak.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.run_command") as mock_run,
         ):
-            mock_run.return_value = CommandResult(
-                stdout=no_size, stderr="", returncode=0
-            )
+            mock_run.return_value = CommandResult(stdout=no_size, stderr="", returncode=0)
 
             packages = list(scanner.scan())
 

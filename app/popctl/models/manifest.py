@@ -127,9 +127,7 @@ class Manifest(BaseModel):
         """
         if source is None:
             return self.packages.keep
-        return {
-            name: entry for name, entry in self.packages.keep.items() if entry.source == source
-        }
+        return {name: entry for name, entry in self.packages.keep.items() if entry.source == source}
 
     def get_remove_packages(
         self, source: PackageSourceType | None = None
