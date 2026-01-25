@@ -106,15 +106,40 @@ popctl apply --source apt
 popctl apply --purge
 ```
 
+### AI-Assisted Classification (MVP-2)
+
+The advisor feature uses AI agents (Claude Code or Gemini CLI) to classify packages as keep, remove, or ask.
+
+```bash
+# Interactive mode: Prepares files, you run the AI agent manually
+popctl advisor classify
+
+# Headless mode: Runs AI classification autonomously
+popctl advisor classify --auto
+
+# Use Gemini instead of Claude
+popctl advisor classify --provider gemini --auto
+
+# Use specific model
+popctl advisor classify --model opus --auto
+
+# Apply classification decisions to manifest
+popctl advisor apply
+
+# Preview changes without modifying manifest
+popctl advisor apply --dry-run
+```
+
 ### Command Line Options
 
 ```
-popctl --help           # Show main help
-popctl --version        # Show version
-popctl scan --help      # Show scan command help
-popctl init --help      # Show init command help
-popctl diff --help      # Show diff command help
-popctl apply --help     # Show apply command help
+popctl --help              # Show main help
+popctl --version           # Show version
+popctl scan --help         # Show scan command help
+popctl init --help         # Show init command help
+popctl diff --help         # Show diff command help
+popctl apply --help        # Show apply command help
+popctl advisor --help      # Show advisor command help
 ```
 
 ## Development
@@ -150,7 +175,13 @@ app/popctl/
 │       ├── scan.py      # Scan command implementation
 │       ├── init.py      # Init command implementation
 │       ├── diff.py      # Diff command implementation
-│       └── apply.py     # Apply command implementation
+│       ├── apply.py     # Apply command implementation
+│       └── advisor.py   # Advisor command (AI classification)
+├── advisor/
+│   ├── config.py        # AdvisorConfig and provider settings
+│   ├── runner.py        # AgentRunner for AI execution
+│   ├── prompts.py       # Prompt templates for classification
+│   └── exchange.py      # File exchange with AI agents
 ├── core/
 │   ├── theme.py         # Theme management (TOML-based)
 │   ├── paths.py         # XDG-compliant path helpers
@@ -158,7 +189,8 @@ app/popctl/
 │   ├── manifest.py      # Manifest TOML I/O
 │   └── diff.py          # DiffEngine for manifest comparison
 ├── data/
-│   └── theme.toml       # Default color theme
+│   ├── theme.toml       # Default color theme
+│   └── advisor.toml     # Default advisor configuration
 ├── models/
 │   ├── package.py       # PackageSource, PackageStatus, ScannedPackage
 │   ├── scan_result.py   # ScanResult, ScanMetadata for JSON export
@@ -187,7 +219,7 @@ app/popctl/
 
 ### MVP Phase
 - [x] MVP-1: First Apply - Install/remove packages
-- [ ] MVP-2: Claude Advisor - AI-assisted classification
+- [x] MVP-2: Claude Advisor - AI-assisted classification
 - [ ] MVP-3: Safety Net - History and undo
 
 ## License

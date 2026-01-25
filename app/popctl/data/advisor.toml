@@ -1,0 +1,24 @@
+# Default configuration for Claude Advisor
+# Copy to ~/.config/popctl/advisor.toml to customize
+
+[advisor]
+# Default AI provider: "claude" or "gemini"
+default_provider = "claude"
+
+# Timeout for headless mode in seconds (default: 600 = 10 min)
+timeout_seconds = 600
+
+[advisor.models]
+# Default model per provider
+claude = "sonnet"
+gemini = "gemini-2.5-pro"
+
+[advisor.confidence]
+# Confidence thresholds for classification
+auto_keep_threshold = 0.90    # Above: auto-keep
+auto_remove_threshold = 0.90  # Above: auto-remove
+ask_threshold = 0.70          # Below: always ask user
+
+# [advisor.container]
+# Uncomment and set path to use ai-dev-base container mode
+# dev_script = "~/projects/ai-dev-base/scripts/dev.sh"
