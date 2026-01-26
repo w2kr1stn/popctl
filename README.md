@@ -106,6 +106,31 @@ popctl apply --source apt
 popctl apply --purge
 ```
 
+### History and Undo (MVP-3)
+
+```bash
+# View history of package changes
+popctl history
+
+# Limit to last N entries
+popctl history -n 50
+
+# Filter by date
+popctl history --since 2026-01-01
+
+# JSON output for scripting
+popctl history --json
+
+# Undo the last reversible action
+popctl undo
+
+# Preview what would be undone
+popctl undo --dry-run
+
+# Skip confirmation prompt
+popctl undo --yes
+```
+
 ### AI-Assisted Classification (MVP-2)
 
 The advisor feature uses AI agents (Claude Code or Gemini CLI) to classify packages as keep, remove, or ask.
@@ -140,6 +165,8 @@ popctl init --help         # Show init command help
 popctl diff --help         # Show diff command help
 popctl apply --help        # Show apply command help
 popctl advisor --help      # Show advisor command help
+popctl history --help      # Show history command help
+popctl undo --help         # Show undo command help
 ```
 
 ## Development
@@ -176,7 +203,9 @@ app/popctl/
 │       ├── init.py      # Init command implementation
 │       ├── diff.py      # Diff command implementation
 │       ├── apply.py     # Apply command implementation
-│       └── advisor.py   # Advisor command (AI classification)
+│       ├── advisor.py   # Advisor command (AI classification)
+│       ├── history.py   # History command (view past actions)
+│       └── undo.py      # Undo command (revert last action)
 ├── advisor/
 │   ├── config.py        # AdvisorConfig and provider settings
 │   ├── runner.py        # AgentRunner for AI execution
@@ -187,7 +216,8 @@ app/popctl/
 │   ├── paths.py         # XDG-compliant path helpers
 │   ├── baseline.py      # Pop!_OS protected packages
 │   ├── manifest.py      # Manifest TOML I/O
-│   └── diff.py          # DiffEngine for manifest comparison
+│   ├── diff.py          # DiffEngine for manifest comparison
+│   └── state.py         # StateManager for history persistence
 ├── data/
 │   ├── theme.toml       # Default color theme
 │   └── advisor.toml     # Default advisor configuration
@@ -195,7 +225,8 @@ app/popctl/
 │   ├── package.py       # PackageSource, PackageStatus, ScannedPackage
 │   ├── scan_result.py   # ScanResult, ScanMetadata for JSON export
 │   ├── manifest.py      # Manifest schema (Pydantic)
-│   └── action.py        # Action, ActionResult, ActionType
+│   ├── action.py        # Action, ActionResult, ActionType
+│   └── history.py       # HistoryEntry, HistoryItem, HistoryActionType
 ├── operators/
 │   ├── base.py          # Operator ABC
 │   ├── apt.py           # AptOperator implementation
@@ -217,10 +248,10 @@ app/popctl/
 - [x] PoC-3: Manifest Birth - Generate manifest from scan
 - [x] PoC-4: Diff Engine - Compare manifest vs system
 
-### MVP Phase
+### MVP Phase (Complete ✅)
 - [x] MVP-1: First Apply - Install/remove packages
 - [x] MVP-2: Claude Advisor - AI-assisted classification
-- [ ] MVP-3: Safety Net - History and undo
+- [x] MVP-3: Safety Net - History and undo
 
 ## License
 
