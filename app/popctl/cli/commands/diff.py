@@ -4,12 +4,12 @@ Compares the manifest with the current system state to show differences.
 """
 
 import json
-from enum import Enum
 from typing import Annotated
 
 import typer
 from rich.table import Table
 
+from popctl.cli.types import SourceChoice, get_scanners
 from popctl.core.diff import DiffEngine, DiffEntry, DiffResult, DiffType
 from popctl.core.manifest import (
     ManifestError,
@@ -17,9 +17,7 @@ from popctl.core.manifest import (
     load_manifest,
 )
 from popctl.core.paths import get_manifest_path
-from popctl.scanners.apt import AptScanner
 from popctl.scanners.base import Scanner
-from popctl.scanners.flatpak import FlatpakScanner
 from popctl.utils.formatting import (
     console,
     print_error,
@@ -32,34 +30,6 @@ app = typer.Typer(
     help="Compare manifest with current system state.",
     invoke_without_command=True,
 )
-
-
-class SourceChoice(str, Enum):
-    """Available package sources for diff filtering."""
-
-    APT = "apt"
-    FLATPAK = "flatpak"
-    ALL = "all"
-
-
-def _get_scanners(source: SourceChoice) -> list[Scanner]:
-    """Get scanner instances based on source selection.
-
-    Args:
-        source: The source choice (apt, flatpak, or all).
-
-    Returns:
-        List of scanner instances.
-    """
-    scanners: list[Scanner] = []
-
-    if source in (SourceChoice.APT, SourceChoice.ALL):
-        scanners.append(AptScanner())
-
-    if source in (SourceChoice.FLATPAK, SourceChoice.ALL):
-        scanners.append(FlatpakScanner())
-
-    return scanners
 
 
 def _get_status_display(diff_type: DiffType) -> tuple[str, str]:
@@ -217,7 +187,7 @@ def diff_packages(
         raise typer.Exit(code=1) from e
 
     # Get scanners
-    scanners = _get_scanners(source)
+    scanners = get_scanners(source)
     available_scanners: list[Scanner] = []
 
     for scanner in scanners:

@@ -10,11 +10,9 @@ from typing import Annotated
 
 import typer
 
+from popctl.cli.types import SourceChoice, get_scanners
 from popctl.models.package import PackageStatus, ScannedPackage
 from popctl.models.scan_result import ScanResult
-from popctl.scanners.apt import AptScanner
-from popctl.scanners.base import Scanner
-from popctl.scanners.flatpak import FlatpakScanner
 from popctl.utils.formatting import (
     console,
     create_package_table,
@@ -30,39 +28,11 @@ app = typer.Typer(
 )
 
 
-class SourceChoice(str, Enum):
-    """Available package sources for scanning."""
-
-    APT = "apt"
-    FLATPAK = "flatpak"
-    ALL = "all"
-
-
 class OutputFormat(str, Enum):
     """Output format options."""
 
     TABLE = "table"
     JSON = "json"
-
-
-def _get_scanners(source: SourceChoice) -> list[Scanner]:
-    """Get scanner instances based on source selection.
-
-    Args:
-        source: The source choice (apt, flatpak, or all).
-
-    Returns:
-        List of scanner instances.
-    """
-    scanners: list[Scanner] = []
-
-    if source in (SourceChoice.APT, SourceChoice.ALL):
-        scanners.append(AptScanner())
-
-    if source in (SourceChoice.FLATPAK, SourceChoice.ALL):
-        scanners.append(FlatpakScanner())
-
-    return scanners
 
 
 def _get_source_title(source: SourceChoice, manual_only: bool) -> str:
@@ -153,7 +123,7 @@ def scan_packages(
     if ctx.invoked_subcommand is not None:
         return
 
-    scanners = _get_scanners(source)
+    scanners = get_scanners(source)
     available_sources: list[str] = []
 
     # Check availability of requested scanners
