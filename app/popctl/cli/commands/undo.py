@@ -143,6 +143,7 @@ def _execute_undo(entry: HistoryEntry) -> bool:
     Returns:
         True if all operations succeeded, False otherwise.
     """
+    from popctl.core.baseline import is_protected
     from popctl.models.action import ActionResult
 
     # Group items by source
@@ -156,6 +157,10 @@ def _execute_undo(entry: HistoryEntry) -> bool:
         inverse_action = ActionType.REMOVE
     else:  # REMOVE or PURGE
         inverse_action = ActionType.INSTALL
+
+    # Filter out protected packages for REMOVE actions (defense in depth)
+    if inverse_action == ActionType.REMOVE:
+        apt_items = [i for i in apt_items if not is_protected(i.name)]
 
     # Execute APT
     if apt_items:
