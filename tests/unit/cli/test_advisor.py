@@ -1027,9 +1027,7 @@ class TestAdvisorApplyHistory:
                 "popctl.core.paths.get_manifest_path",
                 return_value=sample_manifest,
             ),
-            patch(
-                "popctl.cli.commands.advisor._record_advisor_apply_to_history"
-            ) as mock_record,
+            patch("popctl.cli.commands.advisor._record_advisor_apply_to_history") as mock_record,
         ):
             result = runner.invoke(app, ["advisor", "apply"])
 
@@ -1104,9 +1102,7 @@ class TestAdvisorApplyHistory:
                 "popctl.core.paths.get_manifest_path",
                 return_value=sample_manifest,
             ),
-            patch(
-                "popctl.cli.commands.advisor._record_advisor_apply_to_history"
-            ) as mock_record,
+            patch("popctl.cli.commands.advisor._record_advisor_apply_to_history") as mock_record,
         ):
             result = runner.invoke(app, ["advisor", "apply", "--dry-run"])
 
