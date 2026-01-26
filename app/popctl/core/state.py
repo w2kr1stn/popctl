@@ -96,6 +96,7 @@ class StateManager:
             return []
 
         entries: list[HistoryEntry] = []
+        corrupt_count = 0
 
         with self.history_path.open(encoding="utf-8") as f:
             for line_num, line in enumerate(f, start=1):
@@ -112,7 +113,16 @@ class StateManager:
                         line_num,
                         str(e),
                     )
+                    corrupt_count += 1
                     continue
+
+        # Log summary of corrupt lines if any were found
+        if corrupt_count > 0:
+            logger.warning(
+                "Found %d corrupt line(s) in history file: %s",
+                corrupt_count,
+                self.history_path,
+            )
 
         # Reverse for newest first
         entries.reverse()

@@ -143,11 +143,13 @@ def _execute_undo(entry: HistoryEntry) -> bool:
     Returns:
         True if all operations succeeded, False otherwise.
     """
+    from popctl.models.action import ActionResult
+
     # Group items by source
     apt_items = [i for i in entry.items if i.source == PackageSource.APT]
     flatpak_items = [i for i in entry.items if i.source == PackageSource.FLATPAK]
 
-    success = True
+    all_results: list[ActionResult] = []
 
     # Determine inverse action type
     if entry.action_type == HistoryActionType.INSTALL:
@@ -163,8 +165,7 @@ def _execute_undo(entry: HistoryEntry) -> bool:
             for item in apt_items
         ]
         results = operator.execute(actions)
-        if any(not r.success for r in results):
-            success = False
+        all_results.extend(results)
 
     # Execute Flatpak
     if flatpak_items:
@@ -174,7 +175,15 @@ def _execute_undo(entry: HistoryEntry) -> bool:
             for item in flatpak_items
         ]
         results = operator.execute(actions)
-        if any(not r.success for r in results):
-            success = False
+        all_results.extend(results)
 
-    return success
+    # Report failed packages
+    failed_results = [r for r in all_results if not r.success]
+    if failed_results:
+        console.print("\n[error]Failed packages:[/error]")
+        for result in failed_results:
+            error_msg = result.error or "Unknown error"
+            console.print(f"  - {result.action.package}: {error_msg}")
+        console.print()
+
+    return len(failed_results) == 0
