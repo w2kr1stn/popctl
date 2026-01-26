@@ -91,6 +91,30 @@ def get_last_scan_path() -> Path:
     return get_state_dir() / "last-scan.json"
 
 
+def _ensure_dir(path: Path, name: str) -> Path:
+    """Create directory if it doesn't exist.
+
+    Args:
+        path: Directory path to create.
+        name: Human-readable name for error messages.
+
+    Returns:
+        The created/existing directory path.
+
+    Raises:
+        RuntimeError: If directory cannot be created.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except PermissionError as e:
+        msg = f"Cannot create {name} directory {path}: Permission denied"
+        raise RuntimeError(msg) from e
+    except OSError as e:
+        msg = f"Cannot create {name} directory {path}: {e}"
+        raise RuntimeError(msg) from e
+    return path
+
+
 def ensure_config_dir() -> Path:
     """Create the configuration directory if it doesn't exist.
 
@@ -100,16 +124,7 @@ def ensure_config_dir() -> Path:
     Raises:
         RuntimeError: If the directory cannot be created.
     """
-    config_dir = get_config_dir()
-    try:
-        config_dir.mkdir(parents=True, exist_ok=True)
-    except PermissionError as e:
-        msg = f"Cannot create config directory {config_dir}: Permission denied"
-        raise RuntimeError(msg) from e
-    except OSError as e:
-        msg = f"Cannot create config directory {config_dir}: {e}"
-        raise RuntimeError(msg) from e
-    return config_dir
+    return _ensure_dir(get_config_dir(), "config")
 
 
 def ensure_state_dir() -> Path:
@@ -121,16 +136,7 @@ def ensure_state_dir() -> Path:
     Raises:
         RuntimeError: If the directory cannot be created.
     """
-    state_dir = get_state_dir()
-    try:
-        state_dir.mkdir(parents=True, exist_ok=True)
-    except PermissionError as e:
-        msg = f"Cannot create state directory {state_dir}: Permission denied"
-        raise RuntimeError(msg) from e
-    except OSError as e:
-        msg = f"Cannot create state directory {state_dir}: {e}"
-        raise RuntimeError(msg) from e
-    return state_dir
+    return _ensure_dir(get_state_dir(), "state")
 
 
 def ensure_cache_dir() -> Path:
@@ -142,16 +148,7 @@ def ensure_cache_dir() -> Path:
     Raises:
         RuntimeError: If the directory cannot be created.
     """
-    cache_dir = get_cache_dir()
-    try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-    except PermissionError as e:
-        msg = f"Cannot create cache directory {cache_dir}: Permission denied"
-        raise RuntimeError(msg) from e
-    except OSError as e:
-        msg = f"Cannot create cache directory {cache_dir}: {e}"
-        raise RuntimeError(msg) from e
-    return cache_dir
+    return _ensure_dir(get_cache_dir(), "cache")
 
 
 def ensure_dirs() -> None:
@@ -198,16 +195,7 @@ def ensure_exchange_dir() -> Path:
     Raises:
         RuntimeError: If the directory cannot be created.
     """
-    exchange_dir = get_exchange_dir()
-    try:
-        exchange_dir.mkdir(parents=True, exist_ok=True)
-    except PermissionError as e:
-        msg = f"Cannot create exchange directory {exchange_dir}: Permission denied"
-        raise RuntimeError(msg) from e
-    except OSError as e:
-        msg = f"Cannot create exchange directory {exchange_dir}: {e}"
-        raise RuntimeError(msg) from e
-    return exchange_dir
+    return _ensure_dir(get_exchange_dir(), "exchange")
 
 
 def get_advisor_config_path() -> Path:
