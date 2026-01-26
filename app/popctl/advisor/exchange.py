@@ -20,13 +20,12 @@ File Exchange Protocol:
 
 from __future__ import annotations
 
-import contextlib
 import json
 import socket
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -41,6 +40,9 @@ from popctl.core.paths import get_exchange_dir
 
 if TYPE_CHECKING:
     from popctl.models.scan_result import ScanResult
+
+# Type alias for package source keys in decisions
+PackageSourceKey = Literal["apt", "flatpak"]
 
 
 # =============================================================================
@@ -158,7 +160,7 @@ class DecisionsResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    packages: dict[str, SourceDecisions]  # "apt", "flatpak"
+    packages: dict[PackageSourceKey, SourceDecisions]
 
 
 # =============================================================================
@@ -452,7 +454,7 @@ def _parse_decisions_data(data: dict[str, Any]) -> DecisionsResult:
             ask=ask_list,
         )
 
-    return DecisionsResult(packages=parsed_packages)
+    return DecisionsResult(packages=cast(dict[PackageSourceKey, SourceDecisions], parsed_packages))
 
 
 def _parse_decision_list(items: Any) -> list[PackageDecision]:
@@ -521,10 +523,18 @@ def cleanup_exchange_dir(exchange_dir: Path) -> None:
         "instructions.md",
     ]
 
+    import logging
+
+    logger = logging.getLogger(__name__)
+
     for filename in exchange_files:
         file_path = exchange_dir / filename
-        with contextlib.suppress(OSError):
+        try:
             file_path.unlink(missing_ok=True)
+        except PermissionError as e:
+            logger.warning("Permission denied when deleting %s: %s", file_path, e)
+        except OSError as e:
+            logger.warning("Failed to delete %s: %s", file_path, e)
 
 
 def get_scan_json_path(exchange_dir: Path | None = None) -> Path:
