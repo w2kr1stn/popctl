@@ -19,7 +19,7 @@ class SourceChoice(str, Enum):
     ALL = "all"
 
 
-def get_scanners(source: SourceChoice) -> list[Scanner]:
+def get_scanners(source: SourceChoice = SourceChoice.ALL) -> list[Scanner]:
     """Get scanner instances based on source selection.
 
     Args:
@@ -37,3 +37,17 @@ def get_scanners(source: SourceChoice) -> list[Scanner]:
         scanners.append(FlatpakScanner())
 
     return scanners
+
+
+def get_available_scanners(source: SourceChoice = SourceChoice.ALL) -> list[Scanner]:
+    """Get available scanner instances based on source selection.
+
+    Only returns scanners that are available on the system.
+
+    Args:
+        source: The source choice (apt, flatpak, or all).
+
+    Returns:
+        List of available scanner instances.
+    """
+    return [s for s in get_scanners(source) if s.is_available()]

@@ -21,9 +21,7 @@ from popctl.models.manifest import (
     SystemConfig,
 )
 from popctl.models.package import PackageStatus
-from popctl.scanners.apt import AptScanner
 from popctl.scanners.base import Scanner
-from popctl.scanners.flatpak import FlatpakScanner
 from popctl.utils.formatting import (
     console,
     print_error,
@@ -36,25 +34,6 @@ app = typer.Typer(
     help="Initialize manifest from current system state.",
     invoke_without_command=True,
 )
-
-
-def _get_available_scanners() -> list[Scanner]:
-    """Get list of available scanners for the current system.
-
-    Returns:
-        List of Scanner instances that are available.
-    """
-    scanners: list[Scanner] = []
-
-    apt_scanner = AptScanner()
-    if apt_scanner.is_available():
-        scanners.append(apt_scanner)
-
-    flatpak_scanner = FlatpakScanner()
-    if flatpak_scanner.is_available():
-        scanners.append(flatpak_scanner)
-
-    return scanners
 
 
 def _collect_manual_packages(
@@ -222,7 +201,9 @@ def init_manifest(
             print_warning(f"Overwriting existing manifest: {output_path}")
 
     # Get available scanners
-    scanners = _get_available_scanners()
+    from popctl.cli.types import get_available_scanners
+
+    scanners = get_available_scanners()
     if not scanners:
         print_error("No package managers available (APT or Flatpak required).")
         raise typer.Exit(code=1)
