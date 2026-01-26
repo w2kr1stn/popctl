@@ -33,6 +33,7 @@ def run_command(
     *,
     check: bool = False,
     timeout: float | None = 60.0,
+    cwd: str | None = None,
 ) -> CommandResult:
     """Execute a shell command and return the result.
 
@@ -40,6 +41,7 @@ def run_command(
         args: Command and arguments to execute.
         check: If True, raise CalledProcessError on non-zero exit.
         timeout: Maximum time in seconds to wait for command.
+        cwd: Working directory for the command. If None, uses current directory.
 
     Returns:
         CommandResult with stdout, stderr, and returncode.
@@ -55,6 +57,7 @@ def run_command(
         text=True,
         check=check,
         timeout=timeout,
+        cwd=cwd,
     )
     return CommandResult(
         stdout=result.stdout,
