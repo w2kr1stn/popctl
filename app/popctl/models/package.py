@@ -17,7 +17,6 @@ class PackageSource(Enum):
 
     APT = "apt"
     FLATPAK = "flatpak"
-    SNAP = "snap"
 
 
 class PackageStatus(Enum):

@@ -174,7 +174,7 @@ class TestAptOperator:
         ):
             mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
-            results = dry_run_operator.remove(["bloatware"])
+            dry_run_operator.remove(["bloatware"])
 
         args = mock_run.call_args[0][0]
         assert "--dry-run" in args

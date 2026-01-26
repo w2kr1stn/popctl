@@ -24,7 +24,6 @@ ColorSystem = Literal["auto", "standard", "256", "truecolor", "windows"]
 SOURCE_ICONS: dict[PackageSource, str] = {
     PackageSource.APT: "📦",
     PackageSource.FLATPAK: "📀",
-    PackageSource.SNAP: "🔶",
 }
 
 
@@ -100,23 +99,6 @@ def format_package_row(pkg: ScannedPackage) -> tuple[str, str, str, str, str, st
     desc = f"[text]{pkg.description or '-'}[/]"
 
     return (status_icon, source_icon, name, version, size, desc)
-
-
-def format_status(is_manual: bool) -> str:
-    """Format package status with color markup.
-
-    .. deprecated::
-        Use :func:`format_package_row` instead for full row formatting.
-
-    Args:
-        is_manual: True if package was manually installed.
-
-    Returns:
-        Rich markup string for status display.
-    """
-    if is_manual:
-        return "[package.manual]manual[/]"
-    return "[package.auto]auto[/]"
 
 
 def print_info(message: str) -> None:
