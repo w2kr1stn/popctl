@@ -950,3 +950,170 @@ class TestAdvisorApplyAskPackages:
         assert result.exit_code == 0
         # Should show packages requiring manual decision
         assert "manual" in result.stdout.lower() or "ask" in result.stdout.lower()
+
+
+class TestAdvisorApplyHistory:
+    """Tests for advisor apply history tracking."""
+
+    def test_apply_records_history_on_success(
+        self,
+        tmp_path: Path,
+        sample_manifest: Path,
+    ) -> None:
+        """Advisor apply records classifications to history."""
+        from popctl.advisor import DecisionsResult, PackageDecision, SourceDecisions
+
+        mock_decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    keep=[
+                        PackageDecision(
+                            name="firefox",
+                            reason="Desktop application",
+                            confidence=0.95,
+                            category="desktop",
+                        ),
+                    ],
+                    remove=[
+                        PackageDecision(
+                            name="bloatware",
+                            reason="Unused",
+                            confidence=0.85,
+                            category="other",
+                        ),
+                    ],
+                    ask=[],
+                ),
+                "flatpak": SourceDecisions(keep=[], remove=[], ask=[]),
+            }
+        )
+
+        from datetime import UTC, datetime
+
+        from popctl.models.manifest import (
+            Manifest,
+            ManifestMeta,
+            PackageConfig,
+            SystemConfig,
+        )
+
+        mock_manifest = Manifest(
+            meta=ManifestMeta(
+                version="1.0",
+                created=datetime.now(UTC),
+                updated=datetime.now(UTC),
+            ),
+            system=SystemConfig(name="test", base="pop-os-24.04"),
+            packages=PackageConfig(keep={}, remove={}),
+        )
+
+        with (
+            patch(
+                "popctl.advisor.import_decisions",
+                return_value=mock_decisions,
+            ),
+            patch(
+                "popctl.core.paths.get_exchange_dir",
+                return_value=tmp_path,
+            ),
+            patch(
+                "popctl.core.manifest.load_manifest",
+                return_value=mock_manifest,
+            ),
+            patch(
+                "popctl.core.manifest.save_manifest",
+            ),
+            patch(
+                "popctl.core.paths.get_manifest_path",
+                return_value=sample_manifest,
+            ),
+            patch(
+                "popctl.cli.commands.advisor._record_advisor_apply_to_history"
+            ) as mock_record,
+        ):
+            result = runner.invoke(app, ["advisor", "apply"])
+
+        assert result.exit_code == 0
+        # _record_advisor_apply_to_history should have been called
+        mock_record.assert_called_once()
+        # History message should appear in output
+        assert "history" in result.stdout.lower()
+
+    def test_apply_does_not_record_history_on_dry_run(
+        self,
+        tmp_path: Path,
+        sample_manifest: Path,
+    ) -> None:
+        """Advisor apply --dry-run does NOT record history."""
+        from popctl.advisor import DecisionsResult, PackageDecision, SourceDecisions
+
+        mock_decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    keep=[
+                        PackageDecision(
+                            name="firefox",
+                            reason="Desktop application",
+                            confidence=0.95,
+                            category="desktop",
+                        ),
+                    ],
+                    remove=[],
+                    ask=[],
+                ),
+                "flatpak": SourceDecisions(keep=[], remove=[], ask=[]),
+            }
+        )
+
+        from datetime import UTC, datetime
+
+        from popctl.models.manifest import (
+            Manifest,
+            ManifestMeta,
+            PackageConfig,
+            SystemConfig,
+        )
+
+        mock_manifest = Manifest(
+            meta=ManifestMeta(
+                version="1.0",
+                created=datetime.now(UTC),
+                updated=datetime.now(UTC),
+            ),
+            system=SystemConfig(name="test", base="pop-os-24.04"),
+            packages=PackageConfig(keep={}, remove={}),
+        )
+
+        with (
+            patch(
+                "popctl.advisor.import_decisions",
+                return_value=mock_decisions,
+            ),
+            patch(
+                "popctl.core.paths.get_exchange_dir",
+                return_value=tmp_path,
+            ),
+            patch(
+                "popctl.core.manifest.load_manifest",
+                return_value=mock_manifest,
+            ),
+            patch(
+                "popctl.core.manifest.save_manifest",
+            ) as mock_save,
+            patch(
+                "popctl.core.paths.get_manifest_path",
+                return_value=sample_manifest,
+            ),
+            patch(
+                "popctl.cli.commands.advisor._record_advisor_apply_to_history"
+            ) as mock_record,
+        ):
+            result = runner.invoke(app, ["advisor", "apply", "--dry-run"])
+
+        assert result.exit_code == 0
+        # _record_advisor_apply_to_history should NOT be called in dry-run mode
+        mock_record.assert_not_called()
+        # save_manifest should also NOT be called
+        mock_save.assert_not_called()
+        # dry-run message should appear
+        assert "would update" in result.stdout.lower()

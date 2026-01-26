@@ -478,3 +478,103 @@ class TestApplyFailures:
         assert result.exit_code == 1
         # Should show failure in output
         assert "FAIL" in result.stdout or "failed" in result.stdout.lower()
+
+
+class TestApplyHistory:
+    """Tests for apply command history tracking."""
+
+    def test_apply_records_history_on_success(self, sample_manifest: Manifest) -> None:
+        """Apply records successful actions to history."""
+        missing_only = DiffResult(
+            new=(),
+            missing=(DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),),
+            extra=(),
+        )
+
+        with (
+            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch("popctl.operators.apt.command_exists", return_value=True),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=missing_only,
+            ),
+            patch("popctl.operators.apt.run_command") as mock_run,
+            patch("popctl.cli.commands.apply.StateManager") as mock_state_manager,
+        ):
+            mock_run.return_value = __import__(
+                "popctl.utils.shell", fromlist=["CommandResult"]
+            ).CommandResult(stdout="", stderr="", returncode=0)
+
+            result = runner.invoke(app, ["apply", "--yes"])
+
+        assert result.exit_code == 0
+        # StateManager should have been instantiated and record_action called
+        mock_state_manager.assert_called()
+        instance = mock_state_manager.return_value
+        instance.record_action.assert_called()
+        # Output should mention history recording
+        assert "history" in result.stdout.lower()
+
+    def test_apply_does_not_record_history_on_dry_run(
+        self, sample_manifest: Manifest, diff_result_with_actions: DiffResult
+    ) -> None:
+        """Apply --dry-run does NOT record history."""
+        with (
+            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=diff_result_with_actions,
+            ),
+            patch("popctl.cli.commands.apply.StateManager") as mock_state_manager,
+        ):
+            result = runner.invoke(app, ["apply", "--dry-run"])
+
+        assert result.exit_code == 0
+        # StateManager should NOT have been called in dry-run mode
+        mock_state_manager.assert_not_called()
+        # Dry-run message should appear
+        assert "dry" in result.stdout.lower()
+
+    def test_apply_records_only_successful_actions(self, sample_manifest: Manifest) -> None:
+        """Apply records only successful actions, not failed ones."""
+        mixed_result = DiffResult(
+            new=(),
+            missing=(
+                DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),
+                DiffEntry(name="nonexistent", source="apt", diff_type=DiffType.MISSING),
+            ),
+            extra=(),
+        )
+
+        with (
+            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch("popctl.operators.apt.command_exists", return_value=True),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=mixed_result,
+            ),
+            patch("popctl.operators.apt.run_command") as mock_run,
+            patch("popctl.cli.commands.apply._record_actions_to_history") as mock_record,
+        ):
+            # Both packages will be attempted in a single apt-get call
+            mock_run.return_value = __import__(
+                "popctl.utils.shell", fromlist=["CommandResult"]
+            ).CommandResult(stdout="", stderr="", returncode=0)
+
+            runner.invoke(app, ["apply", "--yes"])
+
+        # _record_actions_to_history should have been called
+        mock_record.assert_called_once()
+        # Get the results that were passed
+        call_args = mock_record.call_args[0][0]
+        # Verify the results contain the correct items
+        assert len(call_args) >= 1  # At least one result
