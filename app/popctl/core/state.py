@@ -146,8 +146,8 @@ class StateManager:
         # Get all history (newest first)
         history = self.get_history()
 
-        # Collect IDs of entries that have been reversed
-        reversed_ids = self._get_reversed_entry_ids()
+        # Collect IDs of entries that have been reversed (from loaded history)
+        reversed_ids = self._extract_reversed_ids(history)
 
         # Find first reversible entry that hasn't been reversed
         for entry in history:
@@ -156,19 +156,21 @@ class StateManager:
 
         return None
 
-    def _get_reversed_entry_ids(self) -> set[str]:
-        """Get IDs of entries that have been marked as reversed.
+    def _extract_reversed_ids(self, entries: list[HistoryEntry]) -> set[str]:
+        """Extract IDs of entries that have been marked as reversed.
 
         Reversal entries have action_type REVERSAL (which doesn't exist yet)
         or have metadata indicating they are reversals.
 
+        Args:
+            entries: List of history entries to extract reversed IDs from.
+
         Returns:
             Set of entry IDs that have been reversed.
         """
-        history = self.get_history()
         reversed_ids: set[str] = set()
 
-        for entry in history:
+        for entry in entries:
             # Check if this entry is a reversal marker
             reversed_id = entry.metadata.get("reversed_entry_id")
             if reversed_id:

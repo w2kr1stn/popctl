@@ -12,12 +12,6 @@ from rich.table import Table
 from popctl.cli.types import SourceChoice, get_scanners
 from popctl.core.baseline import is_protected
 from popctl.core.diff import DiffEngine, DiffResult
-from popctl.core.manifest import (
-    ManifestError,
-    ManifestNotFoundError,
-    load_manifest,
-)
-from popctl.core.paths import get_manifest_path
 from popctl.core.state import StateManager
 from popctl.models.action import (
     Action,
@@ -440,16 +434,10 @@ def apply_manifest(
     if ctx.invoked_subcommand is not None:
         return
 
-    # Load manifest
-    try:
-        manifest = load_manifest()
-    except ManifestNotFoundError as e:
-        print_error(f"Manifest not found: {get_manifest_path()}")
-        print_info("Run 'popctl init' to create a manifest from your current system.")
-        raise typer.Exit(code=1) from e
-    except ManifestError as e:
-        print_error(f"Failed to load manifest: {e}")
-        raise typer.Exit(code=1) from e
+    # Load manifest (exits with helpful message if not found)
+    from popctl.core.manifest import require_manifest
+
+    manifest = require_manifest()
 
     # Get scanners and check availability
     scanners = get_scanners(source)

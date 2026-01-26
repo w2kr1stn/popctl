@@ -91,13 +91,11 @@ class TestApplyNoManifest:
         """Apply shows error when manifest doesn't exist."""
         from popctl.core.manifest import ManifestNotFoundError
 
-        with patch("popctl.cli.commands.apply.get_manifest_path") as mock_path:
-            mock_path.return_value = tmp_path / "nonexistent.toml"
-            with patch(
-                "popctl.cli.commands.apply.load_manifest",
-                side_effect=ManifestNotFoundError("Manifest not found"),
-            ):
-                result = runner.invoke(app, ["apply"])
+        with patch(
+            "popctl.core.manifest.load_manifest",
+            side_effect=ManifestNotFoundError("Manifest not found"),
+        ):
+            result = runner.invoke(app, ["apply"])
 
         assert result.exit_code == 1
         assert "Manifest not found" in (result.stdout + result.stderr)
@@ -112,7 +110,7 @@ class TestApplyInSync:
     ) -> None:
         """Apply shows success message when in sync."""
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch.object(
@@ -135,7 +133,7 @@ class TestApplyDryRun:
     ) -> None:
         """Dry-run shows planned actions without executing."""
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch.object(
@@ -158,7 +156,7 @@ class TestApplyDryRun:
     ) -> None:
         """Dry-run does not call operators."""
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
@@ -184,7 +182,7 @@ class TestApplyConfirmation:
     ) -> None:
         """Apply prompts for confirmation by default."""
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch.object(
@@ -205,7 +203,7 @@ class TestApplyConfirmation:
     ) -> None:
         """Apply --yes skips confirmation prompt."""
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
@@ -238,7 +236,7 @@ class TestApplyExecution:
         )
 
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
@@ -253,7 +251,7 @@ class TestApplyExecution:
                 "popctl.utils.shell", fromlist=["CommandResult"]
             ).CommandResult(stdout="", stderr="", returncode=0)
 
-            result = runner.invoke(app, ["apply", "--yes"])
+            runner.invoke(app, ["apply", "--yes"])
 
         # Should have called apt-get install
         mock_run.assert_called_once()
@@ -270,7 +268,7 @@ class TestApplyExecution:
         )
 
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
@@ -285,7 +283,7 @@ class TestApplyExecution:
                 "popctl.utils.shell", fromlist=["CommandResult"]
             ).CommandResult(stdout="", stderr="", returncode=0)
 
-            result = runner.invoke(app, ["apply", "--yes"])
+            runner.invoke(app, ["apply", "--yes"])
 
         # Should have called apt-get remove
         mock_run.assert_called_once()
@@ -302,7 +300,7 @@ class TestApplyExecution:
         )
 
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
@@ -317,7 +315,7 @@ class TestApplyExecution:
                 "popctl.utils.shell", fromlist=["CommandResult"]
             ).CommandResult(stdout="", stderr="", returncode=0)
 
-            result = runner.invoke(app, ["apply", "--yes", "--purge"])
+            runner.invoke(app, ["apply", "--yes", "--purge"])
 
         # Should have called apt-get purge
         args = mock_run.call_args[0][0]
@@ -336,7 +334,7 @@ class TestApplyNewPackages:
         )
 
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch.object(
@@ -368,7 +366,7 @@ class TestApplyProtectedPackages:
         )
 
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
@@ -383,7 +381,7 @@ class TestApplyProtectedPackages:
                 "popctl.utils.shell", fromlist=["CommandResult"]
             ).CommandResult(stdout="", stderr="", returncode=0)
 
-            result = runner.invoke(app, ["apply", "--yes"])
+            runner.invoke(app, ["apply", "--yes"])
 
         # Should only have bloatware in the remove call, not systemd
         args = mock_run.call_args[0][0]
@@ -397,7 +395,7 @@ class TestApplyScannerAvailability:
     def test_apply_no_scanners_available(self, sample_manifest: Manifest) -> None:
         """Apply fails gracefully when no scanners available."""
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=False),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
         ):
@@ -419,7 +417,7 @@ class TestApplySourceFilter:
         )
 
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=True),
             patch("popctl.operators.apt.command_exists", return_value=True),
@@ -457,7 +455,7 @@ class TestApplyFailures:
         )
 
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
@@ -492,7 +490,7 @@ class TestApplyHistory:
         )
 
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
@@ -523,7 +521,7 @@ class TestApplyHistory:
     ) -> None:
         """Apply --dry-run does NOT record history."""
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch.object(
@@ -553,7 +551,7 @@ class TestApplyHistory:
         )
 
         with (
-            patch("popctl.cli.commands.apply.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),

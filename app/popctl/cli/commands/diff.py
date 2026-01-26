@@ -11,17 +11,11 @@ from rich.table import Table
 
 from popctl.cli.types import SourceChoice, get_scanners
 from popctl.core.diff import DiffEngine, DiffEntry, DiffResult, DiffType
-from popctl.core.manifest import (
-    ManifestError,
-    ManifestNotFoundError,
-    load_manifest,
-)
-from popctl.core.paths import get_manifest_path
+from popctl.core.manifest import require_manifest
 from popctl.scanners.base import Scanner
 from popctl.utils.formatting import (
     console,
     print_error,
-    print_info,
     print_success,
     print_warning,
 )
@@ -175,16 +169,8 @@ def diff_packages(
     if ctx.invoked_subcommand is not None:
         return
 
-    # Load manifest (handles not-found case directly, avoiding TOCTOU race)
-    try:
-        manifest = load_manifest()
-    except ManifestNotFoundError as e:
-        print_error(f"Manifest not found: {get_manifest_path()}")
-        print_info("Run 'popctl init' to create a manifest from your current system.")
-        raise typer.Exit(code=1) from e
-    except ManifestError as e:
-        print_error(f"Failed to load manifest: {e}")
-        raise typer.Exit(code=1) from e
+    # Load manifest (exits with helpful message if not found)
+    manifest = require_manifest()
 
     # Get scanners
     scanners = get_scanners(source)
