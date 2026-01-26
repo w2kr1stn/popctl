@@ -6,6 +6,10 @@ packages from various sources (APT, Flatpak, Snap).
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Literal
+
+# Type alias for classification values
+ClassificationType = Literal["keep", "remove", "ask"]
 
 
 class PackageSource(Enum):
@@ -56,7 +60,7 @@ class ScannedPackage:
     size_bytes: int | None = field(default=None)
     install_date: str | None = field(default=None)
     # Classification fields (populated by Claude Advisor)
-    classification: str | None = field(default=None)
+    classification: ClassificationType | None = field(default=None)
     confidence: float | None = field(default=None)
     reason: str | None = field(default=None)
     category: str | None = field(default=None)

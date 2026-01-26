@@ -48,6 +48,9 @@ class Action:
         if not self.package:
             msg = "Package name cannot be empty"
             raise ValueError(msg)
+        if self.action_type == ActionType.PURGE and self.source != PackageSource.APT:
+            msg = "PURGE action is only valid for APT packages"
+            raise ValueError(msg)
 
     @property
     def is_install(self) -> bool:
