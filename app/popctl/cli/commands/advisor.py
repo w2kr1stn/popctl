@@ -4,9 +4,10 @@ This module provides CLI commands for the Claude Advisor feature,
 which uses AI agents (Claude Code or Gemini CLI) to classify packages
 as keep, remove, or ask.
 
-Two execution modes are supported:
-- Interactive (default): Prepares files and shows instructions for manual agent execution
-- Headless (--auto): Runs the AI agent autonomously for classification
+Commands:
+- classify: Headless batch classification
+- session: Interactive AI session
+- apply: Apply classification decisions to manifest
 """
 
 from enum import Enum
@@ -19,8 +20,8 @@ from popctl.advisor import (
     AdvisorConfig,
     AgentRunner,
     DecisionsResult,
-    export_prompt_files,
-    export_scan_for_advisor,
+    create_session_workspace,
+    find_latest_decisions,
     is_running_in_container,
 )
 from popctl.advisor.config import (
@@ -30,7 +31,7 @@ from popctl.advisor.config import (
     load_advisor_config,
     save_advisor_config,
 )
-from popctl.core.paths import ensure_exchange_dir, get_manifest_path
+from popctl.core.paths import ensure_advisor_sessions_dir, get_manifest_path
 from popctl.models.package import PackageSource
 from popctl.models.scan_result import ScanResult
 from popctl.scanners.apt import AptScanner
@@ -96,14 +97,14 @@ def _load_or_create_config(
         print_warning(f"Error loading config, using defaults: {e}")
         config = get_default_config()
 
-    # Apply CLI overrides by creating a new config with specific fields
+    # Apply CLI overrides
     if provider is not None or model is not None:
-        config = AdvisorConfig(
-            provider=provider.value if provider is not None else config.provider,
-            model=model if model is not None else config.model,
-            dev_script=config.dev_script,
-            timeout_seconds=config.timeout_seconds,
-        )
+        updates: dict[str, str] = {}
+        if provider is not None:
+            updates["provider"] = provider.value
+        if model is not None:
+            updates["model"] = model
+        config = config.model_copy(update=updates)
 
     return config
 
@@ -188,24 +189,8 @@ def _scan_system(input_file: Path | None = None) -> ScanResult:
     return ScanResult.create(packages, sources)
 
 
-def _show_interactive_instructions(exchange_dir: Path, config: AdvisorConfig) -> None:
-    """Display instructions for interactive mode.
-
-    Args:
-        exchange_dir: Path to exchange directory.
-        config: Advisor configuration.
-    """
-    runner = AgentRunner(config)
-    instructions = runner.prepare_interactive(exchange_dir)
-
-    console.print()
-    console.print("[bold]Interactive Mode[/bold]")
-    console.print()
-    console.print(instructions)
-
-
 def _record_advisor_apply_to_history(
-    decisions: DecisionsResult,  # noqa: F821 - imported locally in apply()
+    decisions: DecisionsResult,
 ) -> None:
     """Record advisor apply decisions to history.
 
@@ -262,16 +247,28 @@ def _record_advisor_apply_to_history(
         print_warning(f"Could not record classifications to history: {e}")
 
 
+def _create_workspace(scan_result: ScanResult) -> Path:
+    """Create a session workspace for the scan result.
+
+    Args:
+        scan_result: Scan result with package data.
+
+    Returns:
+        Path to the created workspace directory.
+    """
+    sessions_dir = ensure_advisor_sessions_dir()
+    manifest_path = get_manifest_path()
+    manifest_for_workspace = manifest_path if manifest_path.exists() else None
+
+    return create_session_workspace(
+        scan_result,
+        sessions_dir,
+        manifest_path=manifest_for_workspace,
+    )
+
+
 @app.command()
 def classify(
-    auto: Annotated[
-        bool,
-        typer.Option(
-            "--auto",
-            "-a",
-            help="Headless mode: run classification autonomously.",
-        ),
-    ] = False,
     provider: Annotated[
         ProviderChoice | None,
         typer.Option(
@@ -297,14 +294,13 @@ def classify(
         ),
     ] = None,
 ) -> None:
-    """Classify packages using AI assistance.
+    """Classify packages using AI assistance (headless mode).
 
-    Default: Interactive mode - prepares files and shows instructions.
-    With --auto: Headless mode - runs classification autonomously.
+    Scans the system, creates a session workspace, and runs the AI agent
+    autonomously. After classification, run 'popctl advisor apply'.
 
     Examples:
-        popctl advisor classify              # Interactive mode
-        popctl advisor classify --auto       # Headless mode
+        popctl advisor classify              # Headless classification
         popctl advisor classify -p gemini    # Use Gemini
         popctl advisor classify -m opus      # Use Claude Opus
     """
@@ -315,57 +311,113 @@ def classify(
     config = _load_or_create_config(provider, model)
     print_info(f"Using provider: {config.provider}, model: {config.effective_model}")
 
-    # Step 3: Scan system or load from file
+    # Step 3: Scan system and create workspace
     scan_result = _scan_system(input_file)
+    workspace_dir = _create_workspace(scan_result)
+    print_info(f"Workspace: {workspace_dir}")
 
-    # Step 4: Ensure exchange directory exists
-    exchange_dir = ensure_exchange_dir()
-    print_info(f"Exchange directory: {exchange_dir}")
+    # Step 4: Run headless agent
+    print_info("Running AI agent in headless mode...")
+    console.print()
 
-    # Step 5: Export scan data for advisor
-    manifest_path = get_manifest_path()
-    manifest_for_export = manifest_path if manifest_path.exists() else None
-    scan_json_path = export_scan_for_advisor(scan_result, exchange_dir, manifest_for_export)
-    print_success(f"Exported scan data to: {scan_json_path}")
+    runner = AgentRunner(config)
+    result = runner.run_headless(workspace_dir)
 
-    # Step 6: Export prompt files
-    prompt_path, instructions_path = export_prompt_files(
-        exchange_dir,
-        manifest_path=manifest_for_export,
-        headless=auto,
-    )
-    print_success(f"Exported prompt to: {prompt_path}")
-    if instructions_path:
-        print_success(f"Exported instructions to: {instructions_path}")
-
-    if auto:
-        # Headless mode: run agent autonomously
-        print_info("Running AI agent in headless mode...")
-        console.print()
-
-        runner = AgentRunner(config)
-        result = runner.run_headless(prompt_path, exchange_dir)
-
-        if result.success:
-            print_success("Classification completed successfully.")
-            if result.decisions_path:
-                print_info(f"Decisions written to: {result.decisions_path}")
-            if result.output:
-                console.print()
-                console.print("[dim]Agent output:[/dim]")
-                console.print(result.output[:500])  # Limit output display
+    if result.success:
+        print_success("Classification completed successfully.")
+        if result.decisions_path:
+            print_info(f"Decisions written to: {result.decisions_path}")
+        if result.output:
             console.print()
-            print_info("Run 'popctl advisor apply' to apply the classifications.")
-        else:
-            print_error(f"Classification failed: {result.error}")
-            if result.output:
-                console.print()
-                console.print("[dim]Agent output:[/dim]")
-                console.print(result.output[:500])
-            raise typer.Exit(code=1)
+            console.print("[dim]Agent output:[/dim]")
+            console.print(result.output[:500])  # Limit output display
+        console.print()
+        print_info("Run 'popctl advisor apply' to apply the classifications.")
     else:
-        # Interactive mode: show instructions
-        _show_interactive_instructions(exchange_dir, config)
+        print_error(f"Classification failed: {result.error}")
+        if result.output:
+            console.print()
+            console.print("[dim]Agent output:[/dim]")
+            console.print(result.output[:500])
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def session(
+    provider: Annotated[
+        ProviderChoice | None,
+        typer.Option(
+            "--provider",
+            "-p",
+            help="AI provider to use (claude or gemini).",
+        ),
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            "-m",
+            help="Model to use (e.g., sonnet, opus, gemini-2.5-pro).",
+        ),
+    ] = None,
+    input_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--input",
+            "-i",
+            help="Use existing scan.json instead of scanning.",
+        ),
+    ] = None,
+    host: Annotated[
+        bool,
+        typer.Option(
+            "--host",
+            help="Force host-mode (skip container).",
+        ),
+    ] = False,
+) -> None:
+    """Start an interactive AI session for package classification.
+
+    Prepares a workspace with CLAUDE.md and scan data, then launches
+    Claude Code interactively. After the session, run 'popctl advisor apply'.
+
+    Examples:
+        popctl advisor session               # Interactive session
+        popctl advisor session --host        # Force host-mode
+        popctl advisor session -p gemini     # Use Gemini
+    """
+    # Step 1: Check container warning
+    _show_container_warning()
+
+    # Step 2: Load/create config with CLI overrides
+    config = _load_or_create_config(provider, model)
+
+    # Override container_mode if --host flag is set
+    if host:
+        config = config.model_copy(update={"container_mode": False})
+
+    print_info(f"Using provider: {config.provider}, model: {config.effective_model}")
+
+    # Step 3: Scan system and create workspace
+    scan_result = _scan_system(input_file)
+    workspace_dir = _create_workspace(scan_result)
+    print_info(f"Session workspace: {workspace_dir}")
+
+    # Step 4: Launch interactive session
+    runner = AgentRunner(config)
+    result = runner.launch_interactive(workspace_dir)
+
+    if result.success:
+        print_success("Session completed.")
+        if result.decisions_path:
+            print_info(f"Decisions written to: {result.decisions_path}")
+            print_info("Run 'popctl advisor apply' to apply the classifications.")
+    elif result.error == "manual_mode":
+        console.print()
+        console.print(result.output)
+    else:
+        print_error(f"Session failed: {result.error}")
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -383,17 +435,17 @@ def apply(
         typer.Option(
             "--input",
             "-i",
-            help="Path to decisions.toml (default: exchange dir).",
+            help="Path to decisions.toml (default: latest session).",
         ),
     ] = None,
 ) -> None:
     """Apply AI classification decisions to manifest.
 
-    Reads decisions.toml from the last classification and updates
+    Reads decisions.toml from the last classification session and updates
     the manifest accordingly.
 
     Examples:
-        popctl advisor apply              # Apply from exchange dir
+        popctl advisor apply              # Apply from latest session
         popctl advisor apply --dry-run    # Preview only
         popctl advisor apply -i dec.toml  # From specific file
     """
@@ -412,7 +464,13 @@ def apply(
     from popctl.models.manifest import PackageEntry
 
     # Step 1: Determine decisions.toml path
-    decisions_path = input_file if input_file is not None else get_exchange_dir() / "decisions.toml"
+    if input_file is not None:
+        decisions_path = input_file
+    else:
+        # Try latest session workspace first, then legacy exchange dir
+        sessions_dir = ensure_advisor_sessions_dir()
+        latest = find_latest_decisions(sessions_dir)
+        decisions_path = latest if latest is not None else get_exchange_dir() / "decisions.toml"
 
     print_info(f"Decisions from: {decisions_path}")
 

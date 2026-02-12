@@ -20,5 +20,5 @@ auto_remove_threshold = 0.90  # Above: auto-remove
 ask_threshold = 0.70          # Below: always ask user
 
 # [advisor.container]
-# Uncomment and set path to use ai-dev-base container mode
-# dev_script = "~/projects/ai-dev-base/scripts/dev.sh"
+# Enable container mode to route headless runs through codeagent
+# container_mode = true
