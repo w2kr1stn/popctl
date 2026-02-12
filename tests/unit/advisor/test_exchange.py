@@ -436,30 +436,20 @@ class TestExportPromptFiles:
 
     def test_export_creates_prompt_txt(self, tmp_path: Path) -> None:
         """export_prompt_files creates prompt.txt."""
-        prompt_path, _ = export_prompt_files(tmp_path, headless=True)
+        prompt_path = export_prompt_files(tmp_path)
 
         assert prompt_path.exists()
         assert prompt_path.name == "prompt.txt"
 
-    def test_export_headless_mode_no_instructions(self, tmp_path: Path) -> None:
-        """export_prompt_files in headless mode doesn't create instructions.md."""
-        _, instructions_path = export_prompt_files(tmp_path, headless=True)
+    def test_export_returns_path(self, tmp_path: Path) -> None:
+        """export_prompt_files returns Path (not tuple)."""
+        result = export_prompt_files(tmp_path)
 
-        assert instructions_path is None
-        assert not (tmp_path / "instructions.md").exists()
-
-    def test_export_interactive_mode_creates_instructions(self, tmp_path: Path) -> None:
-        """export_prompt_files in interactive mode creates instructions.md."""
-        prompt_path, instructions_path = export_prompt_files(tmp_path, headless=False)
-
-        assert prompt_path.exists()
-        assert instructions_path is not None
-        assert instructions_path.exists()
-        assert instructions_path.name == "instructions.md"
+        assert isinstance(result, Path)
 
     def test_prompt_contains_file_paths(self, tmp_path: Path) -> None:
         """export_prompt_files includes correct file paths in prompt."""
-        prompt_path, _ = export_prompt_files(tmp_path)
+        prompt_path = export_prompt_files(tmp_path)
 
         content = prompt_path.read_text()
 
@@ -468,7 +458,7 @@ class TestExportPromptFiles:
 
     def test_prompt_contains_system_info(self, tmp_path: Path) -> None:
         """export_prompt_files includes system info in prompt."""
-        prompt_path, _ = export_prompt_files(tmp_path)
+        prompt_path = export_prompt_files(tmp_path)
 
         content = prompt_path.read_text()
 
@@ -477,17 +467,6 @@ class TestExportPromptFiles:
 
         hostname = socket.gethostname()
         assert hostname in content
-
-    def test_export_includes_manifest_path_in_instructions(self, tmp_path: Path) -> None:
-        """export_prompt_files includes manifest path in interactive mode."""
-        manifest_path = Path("/home/user/.config/popctl/manifest.toml")
-        _, instructions_path = export_prompt_files(
-            tmp_path, manifest_path=manifest_path, headless=False
-        )
-
-        assert instructions_path is not None
-        content = instructions_path.read_text()
-        assert str(manifest_path) in content
 
     def test_export_creates_dir_if_not_exists(self, tmp_path: Path) -> None:
         """export_prompt_files creates directory if needed."""
@@ -649,14 +628,12 @@ class TestCleanupExchangeDir:
         (tmp_path / "scan.json").write_text("{}")
         (tmp_path / "decisions.toml").write_text("")
         (tmp_path / "prompt.txt").write_text("")
-        (tmp_path / "instructions.md").write_text("")
 
         cleanup_exchange_dir(tmp_path)
 
         assert not (tmp_path / "scan.json").exists()
         assert not (tmp_path / "decisions.toml").exists()
         assert not (tmp_path / "prompt.txt").exists()
-        assert not (tmp_path / "instructions.md").exists()
 
     def test_cleanup_preserves_directory(self, tmp_path: Path) -> None:
         """cleanup_exchange_dir preserves the directory itself."""

@@ -33,7 +33,7 @@ class TestAdvisorConfig:
 
         assert config.provider == "claude"
         assert config.model is None
-        assert config.dev_script is None
+        assert config.container_mode is False
         assert config.timeout_seconds == 600
 
     def test_custom_values(self) -> None:
@@ -41,13 +41,13 @@ class TestAdvisorConfig:
         config = AdvisorConfig(
             provider="gemini",
             model="gemini-2.5-flash",
-            dev_script=Path("/opt/ai-dev/dev.sh"),
+            container_mode=True,
             timeout_seconds=300,
         )
 
         assert config.provider == "gemini"
         assert config.model == "gemini-2.5-flash"
-        assert config.dev_script == Path("/opt/ai-dev/dev.sh")
+        assert config.container_mode is True
         assert config.timeout_seconds == 300
 
     def test_timeout_minimum_validation(self) -> None:
@@ -205,16 +205,72 @@ class TestSaveAdvisorConfig:
         # Should NOT have default timeout
         assert "timeout_seconds" not in content
 
-    def test_save_with_dev_script(self, tmp_path: Path) -> None:
-        """save_advisor_config saves dev_script path as string."""
+    def test_save_with_container_mode(self, tmp_path: Path) -> None:
+        """save_advisor_config saves container_mode when True."""
         config_file = tmp_path / "advisor.toml"
-        config = AdvisorConfig(dev_script=Path("/opt/ai-dev/dev.sh"))
+        config = AdvisorConfig(container_mode=True)
 
         save_advisor_config(config, config_file)
 
         content = config_file.read_text()
-        assert "dev_script" in content
-        assert "/opt/ai-dev/dev.sh" in content
+        assert "container_mode" in content
+
+        loaded = load_advisor_config(config_file)
+        assert loaded.container_mode is True
+
+    def test_save_omits_container_mode_when_false(self, tmp_path: Path) -> None:
+        """save_advisor_config omits container_mode when False (default)."""
+        config_file = tmp_path / "advisor.toml"
+        config = AdvisorConfig()  # container_mode defaults to False
+
+        save_advisor_config(config, config_file)
+
+        content = config_file.read_text()
+        assert "container_mode" not in content
+
+
+class TestConfigMigration:
+    """Tests for dev_script → container_mode migration."""
+
+    def test_migrates_dev_script_to_container_mode(self, tmp_path: Path) -> None:
+        """load_advisor_config migrates dev_script to container_mode."""
+        config_file = tmp_path / "advisor.toml"
+        config_file.write_text("""
+provider = "claude"
+dev_script = "/opt/ai-dev/dev.sh"
+""")
+
+        config = load_advisor_config(config_file)
+
+        assert config.container_mode is True
+
+    def test_migration_removes_dev_script(self, tmp_path: Path) -> None:
+        """Migrated config does not contain dev_script field."""
+        config_file = tmp_path / "advisor.toml"
+        config_file.write_text("""
+provider = "claude"
+dev_script = "/opt/ai-dev/dev.sh"
+timeout_seconds = 300
+""")
+
+        config = load_advisor_config(config_file)
+
+        assert config.provider == "claude"
+        assert config.container_mode is True
+        assert config.timeout_seconds == 300
+
+    def test_migration_logs_warning(self, tmp_path: Path) -> None:
+        """Migration logs a deprecation warning."""
+        config_file = tmp_path / "advisor.toml"
+        config_file.write_text('provider = "claude"\ndev_script = "/opt/dev.sh"\n')
+
+        import logging
+
+        with patch.object(logging.getLogger("popctl.advisor.config"), "warning") as mock_warn:
+            load_advisor_config(config_file)
+
+        mock_warn.assert_called_once()
+        assert "dev_script" in mock_warn.call_args[0][0]
 
 
 class TestGetDefaultConfig:

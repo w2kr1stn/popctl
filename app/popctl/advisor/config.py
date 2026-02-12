@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import tomli_w
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from popctl.core.paths import get_advisor_config_path
 
@@ -38,7 +38,7 @@ class AdvisorConfig(BaseModel):
     Attributes:
         provider: AI provider to use ("claude" or "gemini").
         model: Model name to use. If None, uses default per provider.
-        dev_script: Path to ai-dev-base dev.sh script for container execution.
+        container_mode: Route headless agent runs through codeagent container.
         timeout_seconds: Maximum time for advisor operations (default: 600s / 10 min).
     """
 
@@ -52,10 +52,10 @@ class AdvisorConfig(BaseModel):
         str | None,
         Field(description="Model name (None = use default per provider)"),
     ] = None
-    dev_script: Annotated[
-        Path | None,
-        Field(description="Path to ai-dev-base dev.sh script"),
-    ] = None
+    container_mode: Annotated[
+        bool,
+        Field(description="Route headless agent runs through codeagent container"),
+    ] = False
     timeout_seconds: Annotated[
         int,
         Field(ge=60, le=3600, description="Timeout in seconds (60-3600)"),
@@ -115,9 +115,23 @@ def load_advisor_config(path: Path | None = None) -> AdvisorConfig:
     except OSError as e:
         raise AdvisorConfigError(f"Failed to read advisor config: {e}") from e
 
+    # Migration: dev_script → container_mode
+    if "dev_script" in data:
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "Deprecated 'dev_script' in advisor.toml. "
+            "Migrating to 'container_mode = true'. "
+            "Remove 'dev_script' from %s",
+            config_path,
+        )
+        data.pop("dev_script")
+        data["container_mode"] = True
+
     try:
         return AdvisorConfig.model_validate(data)
-    except Exception as e:
+    except (ValueError, ValidationError) as e:
         raise AdvisorConfigError(f"Invalid advisor config content: {e}") from e
 
 
@@ -186,8 +200,8 @@ def _config_to_dict(config: AdvisorConfig) -> dict[str, object]:
     if config.model is not None:
         result["model"] = config.model
 
-    if config.dev_script is not None:
-        result["dev_script"] = str(config.dev_script)
+    if config.container_mode:
+        result["container_mode"] = config.container_mode
 
     if config.timeout_seconds != 600:  # Only include if non-default
         result["timeout_seconds"] = config.timeout_seconds

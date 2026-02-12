@@ -4,7 +4,7 @@ This module handles the file-based communication protocol between popctl
 and AI advisors (Claude Code / Gemini CLI). It provides functions to:
 
 - Export scan data to scan.json for the AI agent
-- Export prompt files (prompt.txt, instructions.md)
+- Export prompt files (prompt.txt)
 - Import and validate decisions.toml from the AI agent
 - Clean up exchange directory after processing
 
@@ -12,7 +12,6 @@ File Exchange Protocol:
     popctl writes:
       - /tmp/popctl-exchange/scan.json       (package data)
       - /tmp/popctl-exchange/prompt.txt      (headless mode prompt)
-      - /tmp/popctl-exchange/instructions.md (interactive mode, optional)
 
     AI agent writes:
       - /tmp/popctl-exchange/decisions.toml  (classification results)
@@ -32,8 +31,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from popctl.advisor.prompts import (
     CATEGORIES,
     build_headless_prompt,
-    build_interactive_instructions,
-    get_instructions_file_path,
     get_prompt_file_path,
 )
 from popctl.core.paths import get_exchange_dir
@@ -274,31 +271,20 @@ def export_scan_for_advisor(
 def export_prompt_files(
     exchange_dir: Path,
     manifest_path: Path | None = None,
-    headless: bool = True,
-) -> tuple[Path, Path | None]:
-    """Export prompt files to exchange directory.
+) -> Path:
+    """Export prompt file to exchange directory.
 
-    Creates prompt files for the AI agent:
-    - prompt.txt: Headless mode prompt (always created)
-    - instructions.md: Interactive mode instructions (if not headless)
+    Creates prompt.txt for the AI agent in headless mode.
 
     Args:
         exchange_dir: Directory for file exchange with AI agent.
         manifest_path: Optional path to manifest file for reference.
-        headless: If True, only create headless prompt. If False, also
-            create interactive instructions.
 
     Returns:
-        Tuple of (prompt_path, instructions_path or None).
+        Path to the created prompt.txt file.
 
     Raises:
-        RuntimeError: If files cannot be written.
-
-    Example:
-        >>> from popctl.core.paths import ensure_exchange_dir
-        >>> prompt_path, instructions_path = export_prompt_files(
-        ...     ensure_exchange_dir(), headless=False
-        ... )
+        RuntimeError: If file cannot be written.
     """
     # Ensure exchange directory exists
     exchange_dir.mkdir(parents=True, exist_ok=True)
@@ -306,7 +292,6 @@ def export_prompt_files(
     # Standard file paths
     scan_json_path = str(exchange_dir / "scan.json")
     decisions_path = str(exchange_dir / "decisions.toml")
-    manifest_str = str(manifest_path) if manifest_path else "~/.config/popctl/manifest.toml"
 
     # Build system info for prompt
     system_info: dict[str, str] = {
@@ -329,23 +314,7 @@ def export_prompt_files(
         msg = f"Failed to write prompt.txt to {prompt_path}: {e}"
         raise RuntimeError(msg) from e
 
-    # Optionally create interactive instructions
-    instructions_path: Path | None = None
-    if not headless:
-        instructions_content = build_interactive_instructions(
-            scan_json_path=scan_json_path,
-            manifest_path=manifest_str,
-            decisions_output_path=decisions_path,
-        )
-
-        instructions_path = get_instructions_file_path(exchange_dir)
-        try:
-            instructions_path.write_text(instructions_content, encoding="utf-8")
-        except OSError as e:
-            msg = f"Failed to write instructions.md to {instructions_path}: {e}"
-            raise RuntimeError(msg) from e
-
-    return prompt_path, instructions_path
+    return prompt_path
 
 
 # =============================================================================
@@ -396,7 +365,7 @@ def import_decisions(exchange_dir: Path) -> DecisionsResult:
     # Validate and convert to model
     try:
         return _parse_decisions_data(data)
-    except Exception as e:
+    except (ValueError, KeyError, TypeError) as e:
         msg = f"Invalid decisions.toml schema: {e}"
         raise ValueError(msg) from e
 
@@ -520,7 +489,6 @@ def cleanup_exchange_dir(exchange_dir: Path) -> None:
         "scan.json",
         "decisions.toml",
         "prompt.txt",
-        "instructions.md",
     ]
 
     import logging

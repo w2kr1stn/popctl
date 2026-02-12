@@ -1,7 +1,7 @@
 """Unit tests for prompt templates and builders.
 
 Tests for the advisor prompts module that provides prompt templates for
-AI-assisted package classification in both headless and interactive modes.
+AI-assisted package classification in headless and workspace-based session modes.
 """
 
 import re
@@ -11,11 +11,12 @@ from popctl.advisor.prompts import (
     CATEGORIES,
     DECISIONS_SCHEMA,
     HEADLESS_PROMPT,
-    INTERACTIVE_INSTRUCTIONS,
+    INITIAL_PROMPT,
+    SESSION_CLAUDE_MD,
     build_headless_prompt,
-    build_interactive_instructions,
+    build_initial_prompt,
+    build_session_claude_md,
     get_decisions_schema,
-    get_instructions_file_path,
     get_prompt_file_path,
 )
 
@@ -88,39 +89,64 @@ class TestHeadlessPromptTemplate:
         assert "Pop!_OS" in HEADLESS_PROMPT or "pop-os" in HEADLESS_PROMPT.lower()
 
 
-class TestInteractiveInstructionsTemplate:
-    """Tests for the INTERACTIVE_INSTRUCTIONS template string."""
+class TestSessionClaudeMdTemplate:
+    """Tests for the SESSION_CLAUDE_MD template string."""
 
-    def test_interactive_instructions_is_markdown(self) -> None:
-        """INTERACTIVE_INSTRUCTIONS is valid Markdown with headers."""
-        assert "# " in INTERACTIVE_INSTRUCTIONS
-        assert "## " in INTERACTIVE_INSTRUCTIONS
+    def test_session_claude_md_is_markdown(self) -> None:
+        """SESSION_CLAUDE_MD is valid Markdown with headers."""
+        assert "# " in SESSION_CLAUDE_MD
+        assert "## " in SESSION_CLAUDE_MD
 
-    def test_interactive_instructions_has_placeholders(self) -> None:
-        """INTERACTIVE_INSTRUCTIONS has required format placeholders."""
-        assert "{scan_json_path}" in INTERACTIVE_INSTRUCTIONS
-        assert "{manifest_path}" in INTERACTIVE_INSTRUCTIONS
-        assert "{decisions_output_path}" in INTERACTIVE_INSTRUCTIONS
-        assert "{categories}" in INTERACTIVE_INSTRUCTIONS
-        assert "{timestamp}" in INTERACTIVE_INSTRUCTIONS
+    def test_session_claude_md_has_placeholders(self) -> None:
+        """SESSION_CLAUDE_MD has required format placeholders."""
+        assert "{system_context}" in SESSION_CLAUDE_MD
+        assert "{categories}" in SESSION_CLAUDE_MD
 
-    def test_interactive_instructions_has_classification_guidelines(self) -> None:
-        """INTERACTIVE_INSTRUCTIONS contains classification guidelines."""
-        assert "KEEP" in INTERACTIVE_INSTRUCTIONS
-        assert "REMOVE" in INTERACTIVE_INSTRUCTIONS
-        assert "ASK" in INTERACTIVE_INSTRUCTIONS
+    def test_session_claude_md_has_classification_rules(self) -> None:
+        """SESSION_CLAUDE_MD contains classification guidelines."""
+        assert "KEEP" in SESSION_CLAUDE_MD
+        assert "REMOVE" in SESSION_CLAUDE_MD
+        assert "ASK" in SESSION_CLAUDE_MD
 
-    def test_interactive_instructions_has_workflow(self) -> None:
-        """INTERACTIVE_INSTRUCTIONS describes the workflow."""
-        assert (
-            "Workflow" in INTERACTIVE_INSTRUCTIONS or "workflow" in INTERACTIVE_INSTRUCTIONS.lower()
-        )
+    def test_session_claude_md_mentions_files(self) -> None:
+        """SESSION_CLAUDE_MD mentions input/output files."""
+        assert "scan.json" in SESSION_CLAUDE_MD
+        assert "manifest" in SESSION_CLAUDE_MD.lower()
+        assert "decisions.toml" in SESSION_CLAUDE_MD
 
-    def test_interactive_instructions_mentions_files(self) -> None:
-        """INTERACTIVE_INSTRUCTIONS mentions input/output files."""
-        assert "scan.json" in INTERACTIVE_INSTRUCTIONS
-        assert "manifest" in INTERACTIVE_INSTRUCTIONS.lower()
-        assert "decisions.toml" in INTERACTIVE_INSTRUCTIONS
+    def test_session_claude_md_mentions_output_dir(self) -> None:
+        """SESSION_CLAUDE_MD specifies output directory."""
+        assert "output/decisions.toml" in SESSION_CLAUDE_MD
+
+    def test_session_claude_md_has_protected_packages(self) -> None:
+        """SESSION_CLAUDE_MD lists protected package patterns."""
+        assert "linux-*" in SESSION_CLAUDE_MD
+        assert "systemd" in SESSION_CLAUDE_MD
+
+    def test_session_claude_md_emphasizes_conservative(self) -> None:
+        """SESSION_CLAUDE_MD emphasizes conservative classification."""
+        assert "conservative" in SESSION_CLAUDE_MD.lower()
+
+
+class TestInitialPrompt:
+    """Tests for the INITIAL_PROMPT constant."""
+
+    def test_initial_prompt_is_string(self) -> None:
+        """INITIAL_PROMPT is a non-empty string."""
+        assert isinstance(INITIAL_PROMPT, str)
+        assert len(INITIAL_PROMPT) > 0
+
+    def test_initial_prompt_mentions_scan_json(self) -> None:
+        """INITIAL_PROMPT references scan.json."""
+        assert "scan.json" in INITIAL_PROMPT
+
+    def test_initial_prompt_mentions_decisions(self) -> None:
+        """INITIAL_PROMPT references decisions output."""
+        assert "decisions.toml" in INITIAL_PROMPT
+
+    def test_initial_prompt_mentions_claude_md(self) -> None:
+        """INITIAL_PROMPT references CLAUDE.md."""
+        assert "CLAUDE.md" in INITIAL_PROMPT
 
 
 class TestDecisionsSchema:
@@ -235,77 +261,91 @@ class TestBuildHeadlessPrompt:
         assert "telemetry" in prompt.lower()
 
 
-class TestBuildInteractiveInstructions:
-    """Tests for build_interactive_instructions function."""
+class TestBuildSessionClaudeMd:
+    """Tests for build_session_claude_md function."""
 
-    def test_build_interactive_includes_all_paths(self) -> None:
-        """build_interactive_instructions includes all file paths."""
-        instructions = build_interactive_instructions(
-            "/tmp/exchange/scan.json",
-            "~/.config/popctl/manifest.toml",
-            "/tmp/exchange/decisions.toml",
-        )
+    def test_build_session_claude_md_returns_markdown(self) -> None:
+        """build_session_claude_md returns valid Markdown."""
+        result = build_session_claude_md()
 
-        assert "/tmp/exchange/scan.json" in instructions
-        assert "~/.config/popctl/manifest.toml" in instructions
-        assert "/tmp/exchange/decisions.toml" in instructions
+        assert result.startswith("#")
+        assert "## " in result
 
-    def test_build_interactive_includes_categories(self) -> None:
-        """build_interactive_instructions includes categories."""
-        instructions = build_interactive_instructions(
-            "/tmp/scan.json",
-            "/tmp/manifest.toml",
-            "/tmp/decisions.toml",
-        )
+    def test_build_session_claude_md_includes_categories(self) -> None:
+        """build_session_claude_md includes all categories."""
+        result = build_session_claude_md()
 
-        # Categories should be formatted with backticks
         for category in CATEGORIES:
-            assert f"`{category}`" in instructions
+            assert f"`{category}`" in result
 
-    def test_build_interactive_includes_timestamp(self) -> None:
-        """build_interactive_instructions includes a timestamp."""
-        instructions = build_interactive_instructions(
-            "/tmp/scan.json",
-            "/tmp/manifest.toml",
-            "/tmp/decisions.toml",
-        )
+    def test_build_session_claude_md_with_system_info(self) -> None:
+        """build_session_claude_md includes system context."""
+        system_info = {"hostname": "pop-desktop", "os": "Pop!_OS 24.04"}
+
+        result = build_session_claude_md(system_info=system_info)
+
+        assert "pop-desktop" in result
+        assert "Pop!_OS 24.04" in result
+
+    def test_build_session_claude_md_with_summary(self) -> None:
+        """build_session_claude_md includes package summary."""
+        summary = {"total": 500, "manual": 150}
+
+        result = build_session_claude_md(summary=summary)
+
+        assert "500" in result
+        assert "150" in result
+
+    def test_build_session_claude_md_without_args(self) -> None:
+        """build_session_claude_md works without arguments."""
+        result = build_session_claude_md()
+
+        assert "scan.json" in result
+        assert "decisions.toml" in result
+
+    def test_build_session_claude_md_includes_timestamp(self) -> None:
+        """build_session_claude_md includes a timestamp."""
+        result = build_session_claude_md()
 
         timestamp_pattern = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
-        assert re.search(timestamp_pattern, instructions) is not None
+        assert re.search(timestamp_pattern, result) is not None
 
-    def test_build_interactive_is_markdown(self) -> None:
-        """build_interactive_instructions returns valid Markdown."""
-        instructions = build_interactive_instructions(
-            "/tmp/scan.json",
-            "/tmp/manifest.toml",
-            "/tmp/decisions.toml",
-        )
+    def test_build_session_claude_md_has_output_format(self) -> None:
+        """build_session_claude_md includes output format specification."""
+        result = build_session_claude_md()
 
-        # Should have Markdown headers
-        assert instructions.startswith("#")
-        assert "## " in instructions
-        assert "### " in instructions
+        assert "output/decisions.toml" in result
+        assert "[packages.apt]" in result
 
-    def test_build_interactive_has_table(self) -> None:
-        """build_interactive_instructions includes a Markdown table."""
-        instructions = build_interactive_instructions(
-            "/tmp/scan.json",
-            "/tmp/manifest.toml",
-            "/tmp/decisions.toml",
-        )
+    def test_build_session_claude_md_has_protected_packages(self) -> None:
+        """build_session_claude_md lists protected package patterns."""
+        result = build_session_claude_md()
 
-        # Markdown table syntax
-        assert "| File |" in instructions or "|---" in instructions
+        assert "linux-*" in result
+        assert "systemd" in result
 
-    def test_build_interactive_mentions_conservative_approach(self) -> None:
-        """build_interactive_instructions emphasizes conservative classification."""
-        instructions = build_interactive_instructions(
-            "/tmp/scan.json",
-            "/tmp/manifest.toml",
-            "/tmp/decisions.toml",
-        )
 
-        assert "conservative" in instructions.lower()
+class TestBuildInitialPrompt:
+    """Tests for build_initial_prompt function."""
+
+    def test_build_initial_prompt_returns_string(self) -> None:
+        """build_initial_prompt returns a non-empty string."""
+        result = build_initial_prompt()
+
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_build_initial_prompt_returns_constant(self) -> None:
+        """build_initial_prompt returns the INITIAL_PROMPT constant."""
+        assert build_initial_prompt() == INITIAL_PROMPT
+
+    def test_build_initial_prompt_mentions_key_files(self) -> None:
+        """build_initial_prompt references key files."""
+        result = build_initial_prompt()
+
+        assert "scan.json" in result
+        assert "CLAUDE.md" in result
+        assert "decisions.toml" in result
 
 
 class TestGetDecisionsSchema:
@@ -351,22 +391,13 @@ class TestPathHelpers:
         assert result == tmp_path / "prompt.txt"
         assert result.name == "prompt.txt"
 
-    def test_get_instructions_file_path(self, tmp_path: Path) -> None:
-        """get_instructions_file_path returns correct path."""
-        result = get_instructions_file_path(tmp_path)
-
-        assert result == tmp_path / "instructions.md"
-        assert result.name == "instructions.md"
-
     def test_path_helpers_with_nested_path(self, tmp_path: Path) -> None:
         """Path helpers work with nested directories."""
         exchange_dir = tmp_path / "nested" / "exchange"
 
         prompt_path = get_prompt_file_path(exchange_dir)
-        instructions_path = get_instructions_file_path(exchange_dir)
 
         assert prompt_path.parent == exchange_dir
-        assert instructions_path.parent == exchange_dir
 
 
 class TestPromptContentQuality:
@@ -384,43 +415,25 @@ class TestPromptContentQuality:
         matches = sum(1 for kw in protected_keywords if kw in prompt.lower())
         assert matches >= 2, "Prompt should mention protected package categories"
 
-    def test_interactive_instructions_mentions_protected_patterns(self) -> None:
-        """Interactive instructions list protected package patterns."""
-        instructions = build_interactive_instructions(
-            "/tmp/scan.json",
-            "/tmp/manifest.toml",
-            "/tmp/decisions.toml",
-        )
+    def test_session_claude_md_mentions_protected_patterns(self) -> None:
+        """Session CLAUDE.md lists protected package patterns."""
+        content = build_session_claude_md()
 
-        # Should explicitly list some protected patterns
-        assert "linux-*" in instructions or "systemd" in instructions
+        assert "linux-*" in content or "systemd" in content
 
     def test_both_prompts_emphasize_valid_toml(self) -> None:
         """Both prompts emphasize that output must be valid TOML."""
         headless = build_headless_prompt("/tmp/scan.json", "/tmp/decisions.toml")
-        interactive = build_interactive_instructions(
-            "/tmp/scan.json",
-            "/tmp/manifest.toml",
-            "/tmp/decisions.toml",
-        )
+        session_md = build_session_claude_md()
 
         assert "valid TOML" in headless or "TOML syntax" in headless
-        assert "valid TOML" in interactive or "TOML syntax" in interactive
+        assert "valid TOML" in session_md or "TOML syntax" in session_md
 
-    def test_prompts_include_example_output(self) -> None:
-        """Both prompts include example decisions.toml output."""
+    def test_headless_prompt_includes_example_output(self) -> None:
+        """Headless prompt includes example decisions.toml output."""
         headless = build_headless_prompt("/tmp/scan.json", "/tmp/decisions.toml")
-        interactive = build_interactive_instructions(
-            "/tmp/scan.json",
-            "/tmp/manifest.toml",
-            "/tmp/decisions.toml",
-        )
 
-        # Both should have toml code blocks with examples
         assert "```toml" in headless
-        assert "```toml" in interactive
-
-        # Examples should show the structure
         assert "name =" in headless or 'name = "' in headless
         assert "reason =" in headless or 'reason = "' in headless
         assert "confidence =" in headless
@@ -435,30 +448,30 @@ class TestModuleExports:
         from popctl.advisor import prompts
 
         assert hasattr(prompts, "HEADLESS_PROMPT")
-        assert hasattr(prompts, "INTERACTIVE_INSTRUCTIONS")
+        assert hasattr(prompts, "SESSION_CLAUDE_MD")
+        assert hasattr(prompts, "INITIAL_PROMPT")
         assert hasattr(prompts, "CATEGORIES")
         assert hasattr(prompts, "DECISIONS_SCHEMA")
         assert hasattr(prompts, "build_headless_prompt")
-        assert hasattr(prompts, "build_interactive_instructions")
+        assert hasattr(prompts, "build_session_claude_md")
+        assert hasattr(prompts, "build_initial_prompt")
         assert hasattr(prompts, "get_decisions_schema")
         assert hasattr(prompts, "get_prompt_file_path")
-        assert hasattr(prompts, "get_instructions_file_path")
 
     def test_advisor_init_exports_prompts(self) -> None:
         """advisor __init__ exports prompt functions."""
         from popctl.advisor import (
             CATEGORIES,
             build_headless_prompt,
-            build_interactive_instructions,
+            build_initial_prompt,
+            build_session_claude_md,
             get_decisions_schema,
-            get_instructions_file_path,
             get_prompt_file_path,
         )
 
-        # Just verify imports work
         assert callable(build_headless_prompt)
-        assert callable(build_interactive_instructions)
+        assert callable(build_session_claude_md)
+        assert callable(build_initial_prompt)
         assert callable(get_decisions_schema)
         assert callable(get_prompt_file_path)
-        assert callable(get_instructions_file_path)
         assert isinstance(CATEGORIES, tuple)
