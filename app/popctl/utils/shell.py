@@ -76,3 +76,74 @@ def command_exists(name: str) -> bool:
         True if command exists, False otherwise.
     """
     return shutil.which(name) is not None
+
+
+def run_interactive(
+    args: list[str],
+    *,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+) -> int:
+    """Execute a command interactively, inheriting the terminal.
+
+    Unlike run_command(), this does NOT capture stdout/stderr,
+    allowing the subprocess to interact with the user's terminal
+    directly. Suitable for launching interactive CLI tools.
+
+    Args:
+        args: Command and arguments to execute.
+        cwd: Working directory for the command.
+        env: Additional environment variables (merged with current env).
+
+    Returns:
+        Exit code of the command.
+
+    Raises:
+        FileNotFoundError: If command executable is not found.
+        OSError: If command cannot be executed.
+    """
+    import os
+
+    full_env = {**os.environ, **(env or {})}
+    result = subprocess.run(
+        args,
+        check=False,
+        cwd=cwd,
+        env=full_env,
+    )
+    return result.returncode
+
+
+def is_container_running(name: str = "ai-dev") -> bool:
+    """Check if a Docker container is running.
+
+    Args:
+        name: Container name to check.
+
+    Returns:
+        True if the container is running, False otherwise.
+    """
+    try:
+        result = run_command(
+            ["docker", "ps", "--filter", f"name={name}", "--format", "{{.Names}}"],
+            timeout=10.0,
+        )
+        return result.success and name in result.stdout.strip().splitlines()
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def docker_cp(src: str, dest: str) -> CommandResult:
+    """Copy files between host and a Docker container.
+
+    Args:
+        src: Source path (host path or container:path).
+        dest: Destination path (host path or container:path).
+
+    Returns:
+        CommandResult with stdout, stderr, and returncode.
+
+    Raises:
+        FileNotFoundError: If docker is not found.
+    """
+    return run_command(["docker", "cp", src, dest], timeout=60.0)
