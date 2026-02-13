@@ -374,31 +374,44 @@ class TestAgentRunnerLaunchInteractive:
         assert result.workspace_path == workspace_dir
 
     def test_launch_interactive_container_not_running_tries_codeagent(self, tmp_path: Path) -> None:
-        """launch_interactive tries codeagent when container not running."""
+        """launch_interactive starts container via codeagent, then delegates to container exec."""
         workspace_dir = tmp_path / "workspace"
         workspace_dir.mkdir()
-        (workspace_dir / "output").mkdir()
+        output_dir = workspace_dir / "output"
+        output_dir.mkdir()
 
         config = AdvisorConfig(provider="claude", container_mode=True)
         runner = AgentRunner(config=config)
+
+        def mock_docker_cp_back(src: str, dest: str) -> MagicMock:
+            if "output/decisions.toml" in src:
+                (output_dir / "decisions.toml").write_text("[packages.apt]")
+            result = MagicMock()
+            result.success = True
+            return result
+
+        mock_process = MagicMock()
+        mock_process.poll.return_value = None  # Still running
 
         with (
             patch("sys.stdin") as mock_stdin,
             patch(
                 "popctl.utils.shell.is_container_running",
-                return_value=False,
+                side_effect=[False, True, True],
             ),
             patch("shutil.which", return_value="/usr/bin/codeagent"),
-            patch(
-                "popctl.utils.shell.run_interactive",
-                return_value=0,
-            ),
+            patch("subprocess.Popen", return_value=mock_process),
+            patch("time.sleep"),
+            patch("popctl.utils.shell.run_command"),
+            patch("popctl.utils.shell.docker_cp", side_effect=mock_docker_cp_back),
+            patch("popctl.utils.shell.run_interactive", return_value=0),
         ):
             mock_stdin.isatty.return_value = True
             result = runner.launch_interactive(workspace_dir)
 
-        # No decisions.toml → failure
-        assert result.success is False
+        assert result.success is True
+        assert result.workspace_path == workspace_dir
+        mock_process.terminate.assert_called()
 
     def test_launch_interactive_host_exec_replaces_process(self, tmp_path: Path) -> None:
         """launch_interactive calls os.execvp for host mode."""
@@ -465,8 +478,8 @@ class TestAgentRunnerLaunchInteractive:
         assert "exited with code" in result.error
         assert result.workspace_path == workspace_dir
 
-    def test_codeagent_start_nonzero_exit_cascades_to_manual(self, tmp_path: Path) -> None:
-        """_try_codeagent_start returns None on non-zero exit, cascade reaches manual."""
+    def test_codeagent_start_exit_cascades_to_manual(self, tmp_path: Path) -> None:
+        """_try_codeagent_start returns None when process exits early, cascade reaches manual."""
         workspace_dir = tmp_path / "workspace"
         workspace_dir.mkdir()
         (workspace_dir / "output").mkdir()
@@ -479,11 +492,14 @@ class TestAgentRunnerLaunchInteractive:
                 return "/usr/bin/codeagent"
             return None
 
+        mock_process = MagicMock()
+        mock_process.poll.return_value = 1  # Exited prematurely
+
         with (
             patch("sys.stdin") as mock_stdin,
             patch("popctl.utils.shell.is_container_running", return_value=False),
             patch("shutil.which", side_effect=mock_which),
-            patch("popctl.utils.shell.run_interactive", return_value=1),
+            patch("subprocess.Popen", return_value=mock_process),
         ):
             mock_stdin.isatty.return_value = True
             result = runner.launch_interactive(workspace_dir)

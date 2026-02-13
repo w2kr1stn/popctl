@@ -12,6 +12,7 @@ Two execution modes:
    Call via codeagent CLI for container execution.
 """
 
+import contextlib
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -217,34 +218,59 @@ class AgentRunner:
         )
 
     def _try_codeagent_start(self, workspace_dir: Path) -> AgentResult | None:
-        """Try to start a container via codeagent.
+        """Try to start a container via codeagent, then delegate to container logic.
+
+        Starts the container without mounting to avoid ~/workspace/ conflicts
+        (e.g. when the container was previously opened with --here).
+        codeagent start is a foreground command (like docker-compose up),
+        so it runs as a background process while we interact via docker exec.
 
         Returns AgentResult if codeagent is available, None to continue cascade.
         """
         import shutil
+        import time
 
-        from popctl.utils.shell import run_interactive
+        from popctl.utils.shell import is_container_running
 
         if shutil.which("codeagent") is None:
             return None
 
+        container_name = "ai-dev"
+
+        # codeagent start is a blocking foreground command — run in background
         try:
-            exit_code = run_interactive(["codeagent", "start", "--mount", str(workspace_dir)])
+            process = subprocess.Popen(
+                ["codeagent", "start"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
         except (FileNotFoundError, OSError):
             return None
 
-        if exit_code != 0:
+        # Poll until container is ready (max ~60s)
+        ready = False
+        for _ in range(30):
+            if process.poll() is not None:
+                return None
+            if is_container_running(container_name):
+                ready = True
+                break
+            time.sleep(2)
+
+        if not ready:
+            process.terminate()
             return None
 
-        decisions_path = workspace_dir / "output" / "decisions.toml"
-        found = decisions_path.exists()
-        return AgentResult(
-            success=found,
-            output="",
-            error=None if found else "Session ended without decisions.toml",
-            decisions_path=decisions_path if found else None,
-            workspace_path=workspace_dir,
-        )
+        # Container running — delegate to docker cp + exec
+        try:
+            return self._try_container_exec(workspace_dir)
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
 
     def _try_host_exec(self, workspace_dir: Path) -> AgentResult | None:
         """Try to launch the AI CLI directly on the host.
