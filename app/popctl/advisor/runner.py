@@ -168,10 +168,15 @@ class AgentRunner:
 
         Returns AgentResult if container was found, None to continue cascade.
         """
-        from popctl.utils.shell import docker_cp, is_container_running, run_command, run_interactive
+        from popctl.utils.shell import (
+            docker_cp,
+            find_running_container,
+            run_command,
+            run_interactive,
+        )
 
-        container_name = "ai-dev"
-        if not is_container_running(container_name):
+        container_name = find_running_container("ai-dev")
+        if container_name is None:
             return None
 
         remote_dir = "/tmp/popctl-advisor"

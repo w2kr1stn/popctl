@@ -354,8 +354,8 @@ class TestAgentRunnerLaunchInteractive:
         with (
             patch("sys.stdin") as mock_stdin,
             patch(
-                "popctl.utils.shell.is_container_running",
-                return_value=True,
+                "popctl.utils.shell.find_running_container",
+                return_value="ai-dev",
             ),
             patch("popctl.utils.shell.run_command"),
             patch(
@@ -396,9 +396,10 @@ class TestAgentRunnerLaunchInteractive:
         with (
             patch("sys.stdin") as mock_stdin,
             patch(
-                "popctl.utils.shell.is_container_running",
-                side_effect=[False, True, True],
+                "popctl.utils.shell.find_running_container",
+                side_effect=[None, "ai-dev-base-dev-1"],
             ),
+            patch("popctl.utils.shell.is_container_running", return_value=True),
             patch("shutil.which", return_value="/usr/bin/codeagent"),
             patch("subprocess.Popen", return_value=mock_process),
             patch("time.sleep"),
@@ -465,7 +466,10 @@ class TestAgentRunnerLaunchInteractive:
 
         with (
             patch("sys.stdin") as mock_stdin,
-            patch("popctl.utils.shell.is_container_running", return_value=True),
+            patch(
+                "popctl.utils.shell.find_running_container",
+                return_value="ai-dev-base-dev-1",
+            ),
             patch("popctl.utils.shell.run_command"),
             patch("popctl.utils.shell.docker_cp", return_value=mock_cp),
             patch("popctl.utils.shell.run_interactive", return_value=0),
@@ -497,7 +501,7 @@ class TestAgentRunnerLaunchInteractive:
 
         with (
             patch("sys.stdin") as mock_stdin,
-            patch("popctl.utils.shell.is_container_running", return_value=False),
+            patch("popctl.utils.shell.find_running_container", return_value=None),
             patch("shutil.which", side_effect=mock_which),
             patch("subprocess.Popen", return_value=mock_process),
         ):
@@ -521,7 +525,10 @@ class TestAgentRunnerLaunchInteractive:
 
         with (
             patch("sys.stdin") as mock_stdin,
-            patch("popctl.utils.shell.is_container_running", return_value=True),
+            patch(
+                "popctl.utils.shell.find_running_container",
+                return_value="ai-dev-base-dev-1",
+            ),
             patch("popctl.utils.shell.run_command"),
             patch("popctl.utils.shell.docker_cp", return_value=mock_cp),
             patch(

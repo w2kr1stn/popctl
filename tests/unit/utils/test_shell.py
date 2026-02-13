@@ -6,6 +6,7 @@ import pytest
 from popctl.utils.shell import (
     CommandResult,
     docker_cp,
+    find_running_container,
     is_container_running,
     run_interactive,
 )
@@ -83,6 +84,47 @@ class TestRunInteractive:
             run_interactive(["nonexistent_command_xyz_12345"])
 
 
+class TestFindRunningContainer:
+    """Tests for find_running_container function."""
+
+    @patch("popctl.utils.shell.run_command")
+    def test_returns_full_name_on_match(self, mock_run: MagicMock) -> None:
+        """find_running_container returns the actual container name."""
+        mock_run.return_value = CommandResult(stdout="ai-dev-base-dev-1\n", stderr="", returncode=0)
+
+        assert find_running_container("ai-dev") == "ai-dev-base-dev-1"
+
+    @patch("popctl.utils.shell.run_command")
+    def test_returns_none_when_no_match(self, mock_run: MagicMock) -> None:
+        """find_running_container returns None when no container matches."""
+        mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
+
+        assert find_running_container("ai-dev") is None
+
+    @patch("popctl.utils.shell.run_command")
+    def test_returns_none_on_docker_error(self, mock_run: MagicMock) -> None:
+        """find_running_container returns None when docker command fails."""
+        mock_run.return_value = CommandResult(stdout="", stderr="error", returncode=1)
+
+        assert find_running_container("ai-dev") is None
+
+    @patch("popctl.utils.shell.run_command")
+    def test_returns_none_when_docker_missing(self, mock_run: MagicMock) -> None:
+        """find_running_container returns None when docker is not installed."""
+        mock_run.side_effect = FileNotFoundError("docker not found")
+
+        assert find_running_container("ai-dev") is None
+
+    @patch("popctl.utils.shell.run_command")
+    def test_returns_first_matching_container(self, mock_run: MagicMock) -> None:
+        """find_running_container returns the first matching line."""
+        mock_run.return_value = CommandResult(
+            stdout="ai-dev-base-dev-1\nai-dev-gpu-dev-1\n", stderr="", returncode=0
+        )
+
+        assert find_running_container("ai-dev") == "ai-dev-base-dev-1"
+
+
 class TestIsContainerRunning:
     """Tests for is_container_running function."""
 
@@ -139,11 +181,11 @@ class TestIsContainerRunning:
         assert is_container_running("my-container") is True
 
     @patch("popctl.utils.shell.run_command")
-    def test_does_not_match_partial_names(self, mock_run: MagicMock) -> None:
-        """is_container_running does not match partial container names."""
-        mock_run.return_value = CommandResult(stdout="ai-dev-other\n", stderr="", returncode=0)
+    def test_matches_substring_names(self, mock_run: MagicMock) -> None:
+        """is_container_running matches containers whose name contains the pattern."""
+        mock_run.return_value = CommandResult(stdout="ai-dev-base-dev-1\n", stderr="", returncode=0)
 
-        assert is_container_running("ai-dev") is False
+        assert is_container_running("ai-dev") is True
 
 
 class TestDockerCp:
