@@ -19,6 +19,7 @@ auto_keep_threshold = 0.90    # Above: auto-keep
 auto_remove_threshold = 0.90  # Above: auto-remove
 ask_threshold = 0.70          # Below: always ask user
 
-# [advisor.container]
-# Enable container mode to route headless runs through codeagent
-# container_mode = true
+[advisor.container]
+# Route agent runs through dev-container (ai-dev) by default.
+# Set to false if CLI tools (claude, gemini) are installed on the host.
+container_mode = true

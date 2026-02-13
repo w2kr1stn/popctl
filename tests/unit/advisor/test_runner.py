@@ -540,12 +540,12 @@ class TestAgentRunnerIntegration:
         config = AdvisorConfig()  # All defaults
         runner = AgentRunner(config=config)
 
-        # Should be host mode (container_mode defaults to False)
-        assert runner._is_container_mode() is False
+        # Should be container mode (container_mode defaults to True)
+        assert runner._is_container_mode() is True
 
-        # Should build claude command
+        # Container mode builds codeagent command
         command = runner._build_headless_command(tmp_path)
-        assert command[0] == "claude"
+        assert command[0] == "codeagent"
 
     def test_runner_configuration_propagation(self, tmp_path: Path) -> None:
         """AgentRunner correctly uses all config settings."""

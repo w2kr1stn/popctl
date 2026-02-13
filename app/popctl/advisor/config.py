@@ -54,8 +54,8 @@ class AdvisorConfig(BaseModel):
     ] = None
     container_mode: Annotated[
         bool,
-        Field(description="Route headless agent runs through codeagent container"),
-    ] = False
+        Field(description="Route agent runs through dev-container (ai-dev)"),
+    ] = True
     timeout_seconds: Annotated[
         int,
         Field(ge=60, le=3600, description="Timeout in seconds (60-3600)"),

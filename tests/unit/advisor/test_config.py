@@ -33,7 +33,7 @@ class TestAdvisorConfig:
 
         assert config.provider == "claude"
         assert config.model is None
-        assert config.container_mode is False
+        assert config.container_mode is True
         assert config.timeout_seconds == 600
 
     def test_custom_values(self) -> None:
@@ -200,8 +200,9 @@ class TestSaveAdvisorConfig:
         save_advisor_config(config, config_file)
 
         content = config_file.read_text()
-        # Should only have provider (required field)
+        # Should have provider (required) and container_mode (True = non-trivial)
         assert "provider" in content
+        assert "container_mode" in content
         # Should NOT have default timeout
         assert "timeout_seconds" not in content
 
@@ -219,9 +220,9 @@ class TestSaveAdvisorConfig:
         assert loaded.container_mode is True
 
     def test_save_omits_container_mode_when_false(self, tmp_path: Path) -> None:
-        """save_advisor_config omits container_mode when False (default)."""
+        """save_advisor_config omits container_mode when False."""
         config_file = tmp_path / "advisor.toml"
-        config = AdvisorConfig()  # container_mode defaults to False
+        config = AdvisorConfig(container_mode=False)
 
         save_advisor_config(config, config_file)
 
