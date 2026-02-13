@@ -249,11 +249,15 @@ ask = []
 """
 # fmt: on
 
-# Initial prompt sent to Claude Code when starting an interactive session
+# Initial prompt sent to Claude Code when starting an interactive session.
+# Instructs a collaborative workflow: auto-classify obvious packages,
+# discuss uncertain ones step by step with the user.
 INITIAL_PROMPT = (
-    "Analysiere die Pakete in scan.json und klassifiziere sie "
-    "gemäß den Anweisungen in CLAUDE.md. "
-    "Schreibe deine Entscheidungen in output/decisions.toml."
+    "Lies scan.json und CLAUDE.md. "
+    "Klassifiziere offensichtliche Pakete (Confidence >= 0.9) automatisch. "
+    "Alle anderen Pakete besprichst du mit mir schrittweise — "
+    "zeige jeweils den Paketnamen, deine Einschätzung und frage nach meiner Entscheidung. "
+    "Am Ende schreibst du die gesammelten Entscheidungen in output/decisions.toml."
 )
 
 
