@@ -106,7 +106,7 @@ class TestSessionClaudeMdTemplate:
         """SESSION_CLAUDE_MD contains classification guidelines."""
         assert "KEEP" in SESSION_CLAUDE_MD
         assert "REMOVE" in SESSION_CLAUDE_MD
-        assert "ASK" in SESSION_CLAUDE_MD
+        assert "Discuss uncertain packages" in SESSION_CLAUDE_MD
 
     def test_session_claude_md_mentions_files(self) -> None:
         """SESSION_CLAUDE_MD mentions input/output files."""

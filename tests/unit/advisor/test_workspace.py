@@ -63,10 +63,10 @@ class TestCreateSessionWorkspace:
         claude_md = workspace / "CLAUDE.md"
         assert claude_md.exists()
         content = claude_md.read_text()
-        assert "Package Classification Task" in content
+        assert "Interactive Package Classification" in content
         assert "KEEP" in content
         assert "REMOVE" in content
-        assert "ASK" in content
+        assert "Discuss uncertain packages" in content
         assert "output/decisions.toml" in content
 
     def test_claude_md_includes_system_info(self, tmp_path: Path) -> None:
