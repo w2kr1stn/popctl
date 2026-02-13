@@ -191,16 +191,29 @@ class AgentRunner:
         if not cp_result.success:
             return None
 
-        # Build provider-specific command
+        # Build provider-specific command as shell string
+        # Use bash -lc so login profile is sourced (PATH includes ~/.local/bin etc.)
+        import shlex
+
         if provider == "claude":
-            agent_cmd = [provider, initial_prompt]
+            shell_cmd = f"{provider} {shlex.quote(initial_prompt)}"
         else:
-            agent_cmd = [provider, "--prompt", initial_prompt]
+            shell_cmd = f"{provider} --prompt {shlex.quote(initial_prompt)}"
 
         # Docker exec interactive session
         try:
             exit_code = run_interactive(
-                ["docker", "exec", "-it", "-w", remote_dir, container_name, *agent_cmd]
+                [
+                    "docker",
+                    "exec",
+                    "-it",
+                    "-w",
+                    remote_dir,
+                    container_name,
+                    "bash",
+                    "-lc",
+                    shell_cmd,
+                ]
             )
         except (FileNotFoundError, OSError):
             return None
