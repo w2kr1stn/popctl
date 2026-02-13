@@ -93,29 +93,36 @@ Write your decisions to `{decisions_output_path}` in TOML format.
 ## Context
 
 - **OS**: Pop!_OS 24.04 LTS with COSMIC desktop
-- **User profile**: Developer who uses containers for most work
-- **Goal**: Identify packages that can be safely removed vs. must be kept
+- **User profile**: Developer who uses containers for all development work
+- **Goal**: Achieve a maximally lean, minimally invasive host system
+- **Philosophy**: The host provides only the OS, desktop, drivers, and
+  container runtime. All development tools, compilers, interpreters,
+  and build dependencies belong inside dev-containers, NOT on the host.
 {system_context}
 
 ## Classification Rules
 
 ### 1. KEEP (confidence >= 0.9)
 - System-critical packages (kernel, systemd, drivers)
-- Libraries actively used by installed applications
-- Hardware support (GPU, audio, network drivers)
+- Libraries required by installed desktop applications
+- Hardware support (GPU, audio, network, bluetooth drivers)
 - Desktop environment components (COSMIC, GNOME libraries)
-- Essential development tools actively used
+- Container runtime and tooling (docker, podman)
 
 ### 2. REMOVE (confidence >= 0.9)
+- Development tools and compilers (gcc, make, *-dev headers) —
+  these belong in containers
 - Packages for uninstalled applications (orphaned dependencies)
 - Obsolete/deprecated packages no longer maintained
 - Known bloatware or telemetry (apport, whoopsie, popularity-contest)
-- Duplicate functionality (e.g., multiple editors when user prefers one)
+- Duplicate functionality (e.g., multiple editors, redundant utilities)
+- Server software not needed on a desktop (apache, nginx, postfix)
+- Printer drivers if no printer is connected
 
 ### 3. ASK (confidence < 0.9)
-- Packages with unclear purpose
-- Development tools (user might need them)
-- Optional features that may or may not be used
+- Packages where the removal impact is unclear
+- Libraries that MIGHT be needed by installed desktop apps
+- Optional desktop features (accessibility, input methods)
 - Anything where you are uncertain
 
 ## Valid Categories
@@ -151,8 +158,9 @@ ask = []
 ## Important Notes
 
 1. Read the scan.json file completely before classifying
-2. Be conservative - when in doubt, use "ask" instead of "remove"
-3. Never recommend removing system-critical packages
+2. Lean towards removal — if a package is not clearly needed on the host,
+   recommend removal. Use "ask" only when removal impact is genuinely unclear.
+3. Never recommend removing system-critical or protected packages
 4. Provide clear, concise reasons for each classification
 5. Confidence should reflect your certainty (0.0 to 1.0)
 6. The output file MUST be valid TOML syntax
@@ -178,6 +186,17 @@ you work together with the user, not autonomously.
 ## Context
 {system_context}
 
+## Design Philosophy
+
+The user strives for a **maximally lean, minimally invasive host system**.
+The host provides only: OS, desktop environment, hardware drivers, and
+container runtime. All development tools, compilers, interpreters, and
+build dependencies belong inside dev-containers, NOT on the host.
+
+When in doubt, **lean towards removal** — the user prefers to discover
+a missing package later and re-install it, rather than keeping unnecessary
+packages on the host.
+
 ## Input Files
 
 - `scan.json` — Package scan data (read this first)
@@ -189,10 +208,12 @@ you work together with the user, not autonomously.
 
 Classify these packages automatically WITHOUT asking the user:
 
-- **KEEP** (confidence >= 0.9): System-critical, protected, active libraries,
-  hardware drivers, desktop environment components
-- **REMOVE** (confidence >= 0.9): Known bloatware/telemetry (apport, whoopsie,
-  popularity-contest), clearly orphaned dependencies
+- **KEEP** (confidence >= 0.9): System-critical, protected, libraries
+  required by installed desktop apps, hardware drivers, desktop environment
+- **REMOVE** (confidence >= 0.9): Development tools and compilers
+  (gcc, make, *-dev headers), known bloatware/telemetry (apport, whoopsie),
+  orphaned dependencies, server software, printer drivers (no printer),
+  clearly unnecessary packages for a lean desktop
 
 ### Phase 2: Discuss uncertain packages WITH the user
 
@@ -200,23 +221,29 @@ For ALL remaining packages (confidence < 0.9), present them to the user
 **in groups by category**. For each group:
 
 1. Show the category name and how many packages are in it
-2. List each package with your assessment and reasoning
+2. List each package with your recommendation and reasoning
 3. Ask the user for their decision (keep / remove / skip)
 4. Wait for the user's response before moving to the next group
 
 **DO NOT auto-classify uncertain packages. ALWAYS ask.**
 
+Your recommendation should reflect the lean-host philosophy: if a package
+is not clearly needed for the desktop experience, recommend removal.
+
 Example interaction:
 ```
 ### Entwicklungstools (8 Pakete)
 
-| Paket | Einschätzung | Grund |
-|-------|-------------|-------|
-| gcc-13 | unsicher | Compiler, wird evtl. im Container genutzt |
-| make | unsicher | Build-Tool, oft mit gcc zusammen |
-| ...   | ...         | ...   |
+Diese Pakete gehoeren typischerweise in Container, nicht auf den Host.
 
-Welche davon möchtest du behalten? (alle/keine/Paketnamen)
+| Paket | Empfehlung | Grund |
+|-------|-----------|-------|
+| gcc-13 | entfernen | Compiler — gehoert in Container |
+| make | entfernen | Build-Tool — gehoert in Container |
+| libxml2-dev | entfernen | Header — nur fuer Kompilierung |
+| ...   | ...       | ...   |
+
+Einverstanden mit Entfernung aller? (ja/nein/Paketnamen behalten)
 ```
 
 ### Phase 3: Write decisions
@@ -257,11 +284,12 @@ ask = []
 ## Rules
 
 1. Read `scan.json` completely before starting
-2. Be conservative — prefer "ask" over "remove" when uncertain
-3. Never remove protected packages
-4. Confidence reflects your certainty (0.0 to 1.0)
-5. Output MUST be valid TOML syntax
-6. **NEVER write decisions.toml before finishing all discussions with the user**
+2. Lean towards removal — if not clearly needed on the host, recommend removal
+3. Use "ask" only when the impact of removal is genuinely unclear
+4. Never remove protected packages
+5. Confidence reflects your certainty (0.0 to 1.0)
+6. Output MUST be valid TOML syntax
+7. **NEVER write decisions.toml before finishing all discussions with the user**
 """
 # fmt: on
 

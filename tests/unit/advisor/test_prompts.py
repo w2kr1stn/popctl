@@ -123,9 +123,10 @@ class TestSessionClaudeMdTemplate:
         assert "linux-*" in SESSION_CLAUDE_MD
         assert "systemd" in SESSION_CLAUDE_MD
 
-    def test_session_claude_md_emphasizes_conservative(self) -> None:
-        """SESSION_CLAUDE_MD emphasizes conservative classification."""
-        assert "conservative" in SESSION_CLAUDE_MD.lower()
+    def test_session_claude_md_emphasizes_lean_host(self) -> None:
+        """SESSION_CLAUDE_MD emphasizes lean host philosophy."""
+        assert "lean" in SESSION_CLAUDE_MD.lower()
+        assert "removal" in SESSION_CLAUDE_MD.lower()
 
 
 class TestInitialPrompt:
