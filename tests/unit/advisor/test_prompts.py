@@ -80,9 +80,14 @@ class TestHeadlessPromptTemplate:
     def test_headless_prompt_mentions_decisions_schema(self) -> None:
         """HEADLESS_PROMPT shows decisions.toml structure."""
         assert "[packages.apt]" in HEADLESS_PROMPT
+        assert "[packages.snap]" in HEADLESS_PROMPT
         assert "keep" in HEADLESS_PROMPT
         assert "remove" in HEADLESS_PROMPT
         assert "ask" in HEADLESS_PROMPT
+
+    def test_headless_prompt_mentions_snap_classification(self) -> None:
+        """HEADLESS_PROMPT mentions snap classification rules."""
+        assert "Snap packages" in HEADLESS_PROMPT or "snap packages" in HEADLESS_PROMPT.lower()
 
     def test_headless_prompt_mentions_pop_os(self) -> None:
         """HEADLESS_PROMPT mentions Pop!_OS context."""
@@ -122,6 +127,12 @@ class TestSessionClaudeMdTemplate:
         """SESSION_CLAUDE_MD lists protected package patterns."""
         assert "linux-*" in SESSION_CLAUDE_MD
         assert "systemd" in SESSION_CLAUDE_MD
+        assert "snapd" in SESSION_CLAUDE_MD
+        assert "core*" in SESSION_CLAUDE_MD
+
+    def test_session_claude_md_has_snap_output_section(self) -> None:
+        """SESSION_CLAUDE_MD includes [packages.snap] in output format."""
+        assert "[packages.snap]" in SESSION_CLAUDE_MD
 
     def test_session_claude_md_emphasizes_lean_host(self) -> None:
         """SESSION_CLAUDE_MD emphasizes lean host philosophy."""
@@ -184,9 +195,10 @@ class TestDecisionsSchema:
         assert "{provider}" in DECISIONS_SCHEMA
 
     def test_decisions_schema_has_package_sections(self) -> None:
-        """DECISIONS_SCHEMA has apt and flatpak sections."""
+        """DECISIONS_SCHEMA has apt, flatpak, and snap sections."""
         assert "[packages.apt]" in DECISIONS_SCHEMA
         assert "[packages.flatpak]" in DECISIONS_SCHEMA
+        assert "[packages.snap]" in DECISIONS_SCHEMA
 
     def test_decisions_schema_has_classification_arrays(self) -> None:
         """DECISIONS_SCHEMA has keep/remove/ask arrays."""
@@ -286,6 +298,15 @@ class TestBuildHeadlessPrompt:
         assert "System-critical" in prompt or "system-critical" in prompt.lower()
         assert "telemetry" in prompt.lower()
 
+    def test_build_headless_prompt_includes_snap_section(self) -> None:
+        """build_headless_prompt output contains [packages.snap] section."""
+        prompt = build_headless_prompt(
+            "/tmp/scan.json",
+            "/tmp/decisions.toml",
+        )
+
+        assert "[packages.snap]" in prompt
+
 
 class TestBuildSessionClaudeMd:
     """Tests for build_session_claude_md function."""
@@ -342,6 +363,7 @@ class TestBuildSessionClaudeMd:
 
         assert "output/decisions.toml" in result
         assert "[packages.apt]" in result
+        assert "[packages.snap]" in result
 
     def test_build_session_claude_md_has_protected_packages(self) -> None:
         """build_session_claude_md lists protected package patterns."""
@@ -349,6 +371,8 @@ class TestBuildSessionClaudeMd:
 
         assert "linux-*" in result
         assert "systemd" in result
+        assert "snapd" in result
+        assert "core*" in result
 
 
 class TestBuildInitialPrompt:
@@ -403,6 +427,7 @@ class TestGetDecisionsSchema:
 
         assert "[packages.apt]" in schema
         assert "[packages.flatpak]" in schema
+        assert "[packages.snap]" in schema
         assert "keep = [" in schema
         assert "remove = [" in schema
         assert "ask = [" in schema
