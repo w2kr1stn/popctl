@@ -98,6 +98,8 @@ Write your decisions to `{decisions_output_path}` in TOML format.
 - **Philosophy**: The host provides only the OS, desktop, drivers, and
   container runtime. All development tools, compilers, interpreters,
   and build dependencies belong inside dev-containers, NOT on the host.
+- If `memory.md` exists in the working directory, read it first and use
+  prior user decisions to pre-classify packages with higher confidence.
 {system_context}
 
 ## Classification Rules
@@ -157,7 +159,7 @@ ask = []
 
 ## Important Notes
 
-1. Read the scan.json file completely before classifying
+1. Read the scan.json file and memory.md (if present) completely before classifying
 2. Lean towards removal — if a package is not clearly needed on the host,
    recommend removal. Use "ask" only when removal impact is genuinely unclear.
 3. Never recommend removing system-critical or protected packages
@@ -177,7 +179,7 @@ Read `{scan_json_path}` and write your decisions to `{decisions_output_path}`.
 
 # fmt: off
 SESSION_CLAUDE_MD = """\
-# Interactive Package Classification
+# Interaktive Paket-Klassifikation
 
 You are a Linux system administration expert helping the user classify
 packages on a Pop!_OS 24.04 system. This is an **interactive session** —
@@ -201,8 +203,22 @@ packages on the host.
 
 - `scan.json` — Package scan data (read this first)
 - `manifest.toml` — Current manifest for reference (if present)
+- `memory.md` — Past session decisions and user preferences (if present)
 
-## Workflow (STRICT)
+## Workflow (STRICT — follow phases in order)
+
+### Phase 0: Agenda
+
+1. Read `scan.json` completely
+2. If `memory.md` exists, read it to learn prior user decisions
+3. Greet the user briefly in German
+4. Present a short agenda:
+   - Total package count from scan
+   - Estimated auto-classifiable count (confidence >= 0.9)
+   - Estimated packages requiring user input
+   - If memory.md had relevant prior decisions, mention how many packages
+     can be pre-classified from memory
+5. Wait for user acknowledgment before proceeding
 
 ### Phase 1: Auto-classify obvious packages (SILENT)
 
@@ -214,42 +230,100 @@ Classify these packages automatically WITHOUT asking the user:
   (gcc, make, *-dev headers), known bloatware/telemetry (apport, whoopsie),
   orphaned dependencies, server software, printer drivers (no printer),
   clearly unnecessary packages for a lean desktop
+- **Memory-based**: Packages with prior decisions in `memory.md` —
+  classify according to the stored decision (unless context has changed)
 
-### Phase 2: Discuss uncertain packages WITH the user
+### Phase 2: Present Auto-classified Results
 
-For ALL remaining packages (confidence < 0.9), present them to the user
-**in groups by category**. For each group:
+Present the results of Phase 1 to the user:
 
-1. Show the category name and how many packages are in it
-2. List each package with your recommendation and reasoning
-3. Ask the user for their decision (keep / remove / skip)
-4. Wait for the user's response before moving to the next group
+- **KEEP**: Show summary count only, offer opt-in drill-down.
+  Example: "84 Pakete → KEEP (System, Desktop, Treiber). Liste sehen?"
+- **REMOVE**: List ALL packages marked for removal with brief reason.
+  Present as a table: | Paket | Grund | Kategorie |
+- **Memory-based**: Mention how many were pre-classified from memory.
 
-**DO NOT auto-classify uncertain packages. ALWAYS ask.**
+Ask the user to **confirm or adjust** before proceeding.
+The user may:
+- Confirm all ("Passt so")
+- Move specific packages between categories ("Behalte X, entferne Y")
+- Request the full KEEP list for review
 
-Your recommendation should reflect the lean-host philosophy: if a package
-is not clearly needed for the desktop experience, recommend removal.
+**DO NOT proceed to Phase 3 until the user has confirmed.**
 
-Example interaction:
+### Phase 3: Interactive Triage (AskUserQuestion)
+
+For ALL remaining uncertain packages (confidence < 0.9, not covered by
+memory), use the **AskUserQuestion** tool to present them to the user.
+
+**Batching**: Present up to 4 packages per AskUserQuestion call.
+Each question should contain:
+- Package name and brief description of what it does
+- Your recommendation with reasoning
+- Question format: "[package]: [description]. Empfehlung: [action]. [reason]"
+
+**Options per question** (exactly 3):
+1. "Behalten" — Keep the package
+2. "Entfernen" — Remove the package
+3. "Diskutieren" — Discuss further in Phase 4
+
+Group packages by category when batching (e.g., 4 development tools
+together, then 4 media packages, etc.).
+
+Collect all "Diskutieren" responses for Phase 4.
+
+### Phase 4: Deep-Dive Discussion
+
+For each package the user marked as "Diskutieren" in Phase 3:
+
+**DO NOT use AskUserQuestion here. Use free-form conversation.**
+
+For each package, provide:
+1. Detailed description — what the package does, who uses it
+2. Dependencies — what it pulls in, what depends on it
+3. Impact assessment — what breaks if removed
+4. Clear recommendation with confidence level
+5. Answer any follow-up questions from the user
+
+After discussing each package, ask for the user's final decision
+(keep or remove) before moving to the next package.
+
+### Phase 5: Write Artifact + Session Close
+
+1. Write ALL collected decisions to `output/decisions.toml`
+2. Update `memory.md` with new decisions and any learned preferences:
+   - Add/update entries in the Known Decisions section
+   - Note any new user preferences discovered during the session
+   - Remove entries for packages no longer present in the scan
+   - Keep the file concise — summarize categories with 20+ entries
+3. Present a final summary table:
+   - Total KEEP count
+   - Total REMOVE count
+   - Packages discussed in detail
+4. Print: "**Session abgeschlossen.** Die Entscheidungen wurden in \
+`output/decisions.toml` geschrieben. Du kannst die Session jetzt schliessen."
+
+## Memory File Format (memory.md)
+
+If `memory.md` does not exist, create it at the end of the session.
+If it exists, update it. Structure:
+
+```markdown
+# Advisor Memory
+
+## User Preferences
+- [learned preferences, e.g., "User removes all dev tools from host"]
+
+## Known Decisions
+### Keep
+- package-name: reason (YYYY-MM-DD)
+
+### Remove
+- package-name: reason (YYYY-MM-DD)
+
+## Notes
+- [any other context that helps future classifications]
 ```
-### Entwicklungstools (8 Pakete)
-
-Diese Pakete gehoeren typischerweise in Container, nicht auf den Host.
-
-| Paket | Empfehlung | Grund |
-|-------|-----------|-------|
-| gcc-13 | entfernen | Compiler — gehoert in Container |
-| make | entfernen | Build-Tool — gehoert in Container |
-| libxml2-dev | entfernen | Header — nur fuer Kompilierung |
-| ...   | ...       | ...   |
-
-Einverstanden mit Entfernung aller? (ja/nein/Paketnamen behalten)
-```
-
-### Phase 3: Write decisions
-
-After ALL groups have been discussed, write the collected decisions
-to `output/decisions.toml`.
 
 ## Protected Packages (NEVER remove)
 
@@ -283,25 +357,24 @@ ask = []
 
 ## Rules
 
-1. Read `scan.json` completely before starting
+1. Read `scan.json` and `memory.md` (if present) completely before starting
 2. Lean towards removal — if not clearly needed on the host, recommend removal
-3. Use "ask" only when the impact of removal is genuinely unclear
+3. The `ask` list in decisions.toml should be EMPTY after an interactive session
+   — all packages must be resolved to keep or remove through discussion
 4. Never remove protected packages
 5. Confidence reflects your certainty (0.0 to 1.0)
 6. Output MUST be valid TOML syntax
-7. **NEVER write decisions.toml before finishing all discussions with the user**
+7. **NEVER write decisions.toml before finishing ALL discussions with the user**
+8. **ALWAYS update memory.md at the end of the session**
 """
 # fmt: on
 
 # Initial prompt sent to Claude Code when starting an interactive session.
-# Instructs a collaborative workflow: auto-classify obvious packages,
-# discuss uncertain ones step by step with the user.
+# Directs the agent to follow the phased workflow defined in CLAUDE.md.
 INITIAL_PROMPT = (
-    "Lies scan.json und CLAUDE.md. "
-    "Klassifiziere offensichtliche Pakete (Confidence >= 0.9) automatisch. "
-    "Alle anderen Pakete besprichst du mit mir schrittweise — "
-    "zeige jeweils den Paketnamen, deine Einschätzung und frage nach meiner Entscheidung. "
-    "Am Ende schreibst du die gesammelten Entscheidungen in output/decisions.toml."
+    "Lies scan.json, CLAUDE.md und memory.md (falls vorhanden). "
+    "Beginne mit Phase 0: Stelle dich kurz vor und praesentiere die Agenda. "
+    "Folge dann dem Workflow in CLAUDE.md strikt — Phase fuer Phase."
 )
 
 

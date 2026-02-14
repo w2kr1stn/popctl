@@ -106,7 +106,7 @@ class TestSessionClaudeMdTemplate:
         """SESSION_CLAUDE_MD contains classification guidelines."""
         assert "KEEP" in SESSION_CLAUDE_MD
         assert "REMOVE" in SESSION_CLAUDE_MD
-        assert "Discuss uncertain packages" in SESSION_CLAUDE_MD
+        assert "Interactive Triage" in SESSION_CLAUDE_MD
 
     def test_session_claude_md_mentions_files(self) -> None:
         """SESSION_CLAUDE_MD mentions input/output files."""
@@ -128,6 +128,27 @@ class TestSessionClaudeMdTemplate:
         assert "lean" in SESSION_CLAUDE_MD.lower()
         assert "removal" in SESSION_CLAUDE_MD.lower()
 
+    def test_session_claude_md_has_all_phases(self) -> None:
+        """SESSION_CLAUDE_MD contains all 6 phases (0-5)."""
+        assert "Phase 0" in SESSION_CLAUDE_MD
+        assert "Phase 1" in SESSION_CLAUDE_MD
+        assert "Phase 2" in SESSION_CLAUDE_MD
+        assert "Phase 3" in SESSION_CLAUDE_MD
+        assert "Phase 4" in SESSION_CLAUDE_MD
+        assert "Phase 5" in SESSION_CLAUDE_MD
+
+    def test_session_claude_md_mentions_ask_user_question(self) -> None:
+        """SESSION_CLAUDE_MD instructs use of AskUserQuestion tool."""
+        assert "AskUserQuestion" in SESSION_CLAUDE_MD
+
+    def test_session_claude_md_mentions_memory(self) -> None:
+        """SESSION_CLAUDE_MD references memory.md file."""
+        assert "memory.md" in SESSION_CLAUDE_MD
+
+    def test_session_claude_md_has_session_close(self) -> None:
+        """SESSION_CLAUDE_MD has formal session close instructions."""
+        assert "Session abgeschlossen" in SESSION_CLAUDE_MD
+
 
 class TestInitialPrompt:
     """Tests for the INITIAL_PROMPT constant."""
@@ -141,13 +162,17 @@ class TestInitialPrompt:
         """INITIAL_PROMPT references scan.json."""
         assert "scan.json" in INITIAL_PROMPT
 
-    def test_initial_prompt_mentions_decisions(self) -> None:
-        """INITIAL_PROMPT references decisions output."""
-        assert "decisions.toml" in INITIAL_PROMPT
+    def test_initial_prompt_mentions_phase_0(self) -> None:
+        """INITIAL_PROMPT directs agent to start with Phase 0."""
+        assert "Phase 0" in INITIAL_PROMPT
 
     def test_initial_prompt_mentions_claude_md(self) -> None:
         """INITIAL_PROMPT references CLAUDE.md."""
         assert "CLAUDE.md" in INITIAL_PROMPT
+
+    def test_initial_prompt_references_memory(self) -> None:
+        """INITIAL_PROMPT mentions memory.md."""
+        assert "memory.md" in INITIAL_PROMPT
 
 
 class TestDecisionsSchema:
@@ -341,12 +366,13 @@ class TestBuildInitialPrompt:
         assert build_initial_prompt() == INITIAL_PROMPT
 
     def test_build_initial_prompt_mentions_key_files(self) -> None:
-        """build_initial_prompt references key files."""
+        """build_initial_prompt references key files and workflow."""
         result = build_initial_prompt()
 
         assert "scan.json" in result
         assert "CLAUDE.md" in result
-        assert "decisions.toml" in result
+        assert "memory.md" in result
+        assert "Phase 0" in result
 
 
 class TestGetDecisionsSchema:
