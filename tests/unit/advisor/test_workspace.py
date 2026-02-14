@@ -63,10 +63,10 @@ class TestCreateSessionWorkspace:
         claude_md = workspace / "CLAUDE.md"
         assert claude_md.exists()
         content = claude_md.read_text()
-        assert "Interactive Package Classification" in content
+        assert "Interaktive Paket-Klassifikation" in content
         assert "KEEP" in content
         assert "REMOVE" in content
-        assert "Discuss uncertain packages" in content
+        assert "AskUserQuestion" in content
         assert "output/decisions.toml" in content
 
     def test_claude_md_includes_system_info(self, tmp_path: Path) -> None:
@@ -126,6 +126,45 @@ class TestCreateSessionWorkspace:
         # Format: YYYYMMDDTHHMMSS
         assert len(name) == 15
         assert "T" in name
+
+    def test_copies_memory_md(self, tmp_path: Path) -> None:
+        """memory.md is copied when provided."""
+        scan = _make_scan_result()
+        memory = tmp_path / "memory" / "memory.md"
+        memory.parent.mkdir()
+        memory.write_text("# Advisor Memory\n## Known Decisions\n")
+
+        sessions_dir = tmp_path / "sessions"
+        workspace = create_session_workspace(scan, sessions_dir, memory_path=memory)
+
+        copied = workspace / "memory.md"
+        assert copied.exists()
+        assert "Advisor Memory" in copied.read_text()
+
+    def test_skips_missing_memory(self, tmp_path: Path) -> None:
+        """Gracefully handles missing memory path."""
+        scan = _make_scan_result()
+        missing = tmp_path / "nonexistent" / "memory.md"
+
+        workspace = create_session_workspace(scan, tmp_path, memory_path=missing)
+
+        assert not (workspace / "memory.md").exists()
+        assert workspace.exists()
+
+    def test_chains_memory_from_previous_session(self, tmp_path: Path) -> None:
+        """Falls back to memory.md from latest previous session."""
+        scan = _make_scan_result()
+
+        # Create a previous session with memory.md
+        old_session = tmp_path / "20260101T100000"
+        old_session.mkdir(parents=True)
+        (old_session / "memory.md").write_text("# Previous Memory\n")
+        (old_session / "output").mkdir()
+
+        workspace = create_session_workspace(scan, tmp_path)
+
+        assert (workspace / "memory.md").exists()
+        assert "Previous Memory" in (workspace / "memory.md").read_text()
 
     def test_raises_on_permission_error(self, tmp_path: Path) -> None:
         """Raises RuntimeError when directory cannot be created."""

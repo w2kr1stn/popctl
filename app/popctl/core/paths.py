@@ -229,3 +229,27 @@ def ensure_advisor_sessions_dir() -> Path:
         RuntimeError: If the directory cannot be created.
     """
     return _ensure_dir(get_advisor_sessions_dir(), "advisor sessions")
+
+
+def get_advisor_memory_path() -> Path:
+    """Get the persistent advisor memory file path.
+
+    The memory file stores learned user preferences and past classification
+    decisions that chain across advisor sessions.
+
+    Returns:
+        Path to ~/.local/state/popctl/advisor/memory.md.
+    """
+    return get_state_dir() / "advisor" / "memory.md"
+
+
+def ensure_advisor_memory_dir() -> Path:
+    """Create the advisor memory directory if it doesn't exist.
+
+    Returns:
+        Path to ~/.local/state/popctl/advisor/.
+
+    Raises:
+        RuntimeError: If the directory cannot be created.
+    """
+    return _ensure_dir(get_state_dir() / "advisor", "advisor memory")

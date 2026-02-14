@@ -256,14 +256,20 @@ def _create_workspace(scan_result: ScanResult) -> Path:
     Returns:
         Path to the created workspace directory.
     """
+    from popctl.core.paths import get_advisor_memory_path
+
     sessions_dir = ensure_advisor_sessions_dir()
     manifest_path = get_manifest_path()
     manifest_for_workspace = manifest_path if manifest_path.exists() else None
+
+    memory_path = get_advisor_memory_path()
+    memory_for_workspace = memory_path if memory_path.exists() else None
 
     return create_session_workspace(
         scan_result,
         sessions_dir,
         manifest_path=manifest_for_workspace,
+        memory_path=memory_for_workspace,
     )
 
 
