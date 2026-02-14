@@ -555,6 +555,53 @@ class TestAgentRunnerLaunchInteractive:
         assert str(tmp_path) in result.output
 
 
+class TestAgentRunnerPersistMemory:
+    """Tests for AgentRunner._persist_memory method."""
+
+    def test_persist_memory_copies_file(self, tmp_path: Path) -> None:
+        """_persist_memory copies memory.md to persistent location."""
+        workspace_memory = tmp_path / "workspace" / "memory.md"
+        workspace_memory.parent.mkdir()
+        workspace_memory.write_text("# Advisor Memory\n")
+
+        persistent_dir = tmp_path / "state" / "popctl" / "advisor"
+        persistent_path = persistent_dir / "memory.md"
+
+        config = AdvisorConfig(container_mode=False)
+        runner = AgentRunner(config=config)
+
+        with (
+            patch(
+                "popctl.core.paths.ensure_advisor_memory_dir",
+                return_value=persistent_dir,
+            ),
+            patch(
+                "popctl.core.paths.get_advisor_memory_path",
+                return_value=persistent_path,
+            ),
+        ):
+            persistent_dir.mkdir(parents=True, exist_ok=True)
+            runner._persist_memory(workspace_memory)
+
+        assert persistent_path.exists()
+        assert "Advisor Memory" in persistent_path.read_text()
+
+    def test_persist_memory_handles_runtime_error(self, tmp_path: Path) -> None:
+        """_persist_memory logs warning on failure without raising."""
+        workspace_memory = tmp_path / "memory.md"
+        workspace_memory.write_text("# Memory\n")
+
+        config = AdvisorConfig(container_mode=False)
+        runner = AgentRunner(config=config)
+
+        with patch(
+            "popctl.core.paths.ensure_advisor_memory_dir",
+            side_effect=RuntimeError("Permission denied"),
+        ):
+            # Should not raise
+            runner._persist_memory(workspace_memory)
+
+
 class TestAgentRunnerIntegration:
     """Integration tests for AgentRunner."""
 

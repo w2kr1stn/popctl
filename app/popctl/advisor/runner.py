@@ -222,6 +222,15 @@ class AgentRunner:
         decisions_remote = f"{container_name}:{remote_dir}/output/decisions.toml"
         docker_cp(decisions_remote, str(workspace_dir / "output") + "/")
 
+        # Copy memory.md back (if agent updated it)
+        memory_remote = f"{container_name}:{remote_dir}/memory.md"
+        docker_cp(memory_remote, str(workspace_dir) + "/")
+
+        # Persist memory.md to XDG state directory
+        workspace_memory = workspace_dir / "memory.md"
+        if workspace_memory.exists():
+            self._persist_memory(workspace_memory)
+
         # Cleanup container workspace
         run_command(["docker", "exec", container_name, "rm", "-rf", remote_dir], timeout=30.0)
 
@@ -334,6 +343,26 @@ class AgentRunner:
             error="manual_mode",
             workspace_path=workspace_dir,
         )
+
+    def _persist_memory(self, workspace_memory: Path) -> None:
+        """Copy memory.md from workspace to persistent XDG state location.
+
+        Args:
+            workspace_memory: Path to memory.md in the session workspace.
+        """
+        import logging
+        import shutil
+
+        from popctl.core.paths import ensure_advisor_memory_dir, get_advisor_memory_path
+
+        logger = logging.getLogger(__name__)
+        try:
+            ensure_advisor_memory_dir()
+            persistent_path = get_advisor_memory_path()
+            shutil.copy2(workspace_memory, persistent_path)
+            logger.debug("Persisted memory.md to %s", persistent_path)
+        except (OSError, RuntimeError) as e:
+            logger.warning("Could not persist memory.md: %s", e)
 
     def _build_headless_command(self, workspace_dir: Path) -> list[str]:
         """Build command for headless agent execution.
