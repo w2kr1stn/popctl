@@ -78,6 +78,21 @@ class TestIsProtected:
         """Regular user packages are not protected."""
         assert is_protected(package_name) is False
 
+    # Test snap infrastructure protection
+    @pytest.mark.parametrize(
+        "package_name",
+        [
+            "snapd",
+            "bare",
+            "core22",
+            "core24",
+            "snapd-something",
+        ],
+    )
+    def test_snap_infrastructure_is_protected(self, package_name: str) -> None:
+        """Snap infrastructure packages are protected."""
+        assert is_protected(package_name) is True
+
     def test_case_insensitive_matching(self) -> None:
         """Pattern matching is case-insensitive."""
         # Linux pattern should match regardless of case

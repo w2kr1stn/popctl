@@ -24,6 +24,9 @@ class ActionType(Enum):
     PURGE = "purge"
 
 
+_PURGE_SOURCES: frozenset[PackageSource] = frozenset({PackageSource.APT, PackageSource.SNAP})
+
+
 @dataclass(frozen=True, slots=True)
 class Action:
     """Represents a single package management action to be executed.
@@ -48,8 +51,8 @@ class Action:
         if not self.package:
             msg = "Package name cannot be empty"
             raise ValueError(msg)
-        if self.action_type == ActionType.PURGE and self.source != PackageSource.APT:
-            msg = "PURGE action is only valid for APT packages"
+        if self.action_type == ActionType.PURGE and self.source not in _PURGE_SOURCES:
+            msg = "PURGE action is only valid for APT and SNAP packages"
             raise ValueError(msg)
 
     @property

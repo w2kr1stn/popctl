@@ -132,6 +132,27 @@ class TestAction:
         )
         assert action.is_destructive is False
 
+    def test_purge_valid_for_snap(self) -> None:
+        """PURGE action is valid for SNAP packages."""
+        action = Action(
+            action_type=ActionType.PURGE,
+            package="firefox",
+            source=PackageSource.SNAP,
+        )
+        assert action.action_type == ActionType.PURGE
+        assert action.source == PackageSource.SNAP
+
+    def test_purge_invalid_for_flatpak(self) -> None:
+        """PURGE action raises ValueError for FLATPAK packages."""
+        with pytest.raises(
+            ValueError, match="PURGE action is only valid for APT and SNAP packages"
+        ):
+            Action(
+                action_type=ActionType.PURGE,
+                package="com.spotify.Client",
+                source=PackageSource.FLATPAK,
+            )
+
 
 class TestActionResult:
     """Tests for ActionResult dataclass."""
