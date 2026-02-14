@@ -500,7 +500,7 @@ class TestApplyHistory:
                 return_value=missing_only,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
-            patch("popctl.cli.commands.apply.StateManager") as mock_state_manager,
+            patch("popctl.core.executor.StateManager") as mock_state_manager,
         ):
             mock_run.return_value = __import__(
                 "popctl.utils.shell", fromlist=["CommandResult"]
@@ -529,7 +529,7 @@ class TestApplyHistory:
                 "compute_diff",
                 return_value=diff_result_with_actions,
             ),
-            patch("popctl.cli.commands.apply.StateManager") as mock_state_manager,
+            patch("popctl.core.executor.StateManager") as mock_state_manager,
         ):
             result = runner.invoke(app, ["apply", "--dry-run"])
 
@@ -561,7 +561,7 @@ class TestApplyHistory:
                 return_value=mixed_result,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
-            patch("popctl.cli.commands.apply._record_actions_to_history") as mock_record,
+            patch("popctl.cli.commands.apply.record_actions_to_history") as mock_record,
         ):
             # Both packages will be attempted in a single apt-get call
             mock_run.return_value = __import__(
