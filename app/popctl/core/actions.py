@@ -13,6 +13,7 @@ from popctl.models.package import PackageSource
 SOURCE_MAP: dict[str, PackageSource] = {
     "apt": PackageSource.APT,
     "flatpak": PackageSource.FLATPAK,
+    "snap": PackageSource.SNAP,
 }
 
 
@@ -71,8 +72,8 @@ def diff_to_actions(diff_result: DiffResult, purge: bool = False) -> list[Action
 
         pkg_source = source_to_package_source(entry.source)
 
-        # Purge only applies to APT packages
-        use_purge = purge and pkg_source == PackageSource.APT
+        # Purge applies to APT and Snap packages
+        use_purge = purge and pkg_source in (PackageSource.APT, PackageSource.SNAP)
 
         action = create_remove_action(
             package=entry.name,

@@ -559,3 +559,44 @@ class TestDiffEngine:
         assert len(result.extra) == 1
         assert result.extra[0].name == "bloatware"
         assert result.total_changes == 3
+
+    def test_source_filter_snap(self, base_manifest: Manifest) -> None:
+        """Source filter correctly filters to Snap only."""
+        apt_scanner = MockScanner(
+            source=PackageSource.APT,
+            packages=[
+                ScannedPackage(
+                    name="htop",
+                    source=PackageSource.APT,
+                    version="3.2.2",
+                    status=PackageStatus.MANUAL,
+                ),
+            ],
+        )
+
+        snap_scanner = MockScanner(
+            source=PackageSource.SNAP,
+            packages=[
+                ScannedPackage(
+                    name="firefox",
+                    source=PackageSource.SNAP,
+                    version="128.0",
+                    status=PackageStatus.MANUAL,
+                ),
+            ],
+        )
+
+        engine = DiffEngine(base_manifest)
+        result = engine.compute_diff([apt_scanner, snap_scanner], source_filter="snap")
+
+        new_names = [e.name for e in result.new]
+        assert "firefox" in new_names
+        assert "htop" not in new_names
+
+    def test_source_filter_invalid_raises(self, empty_manifest: Manifest) -> None:
+        """Invalid source_filter raises ValueError."""
+        scanner = MockScanner(source=PackageSource.APT, packages=[])
+        engine = DiffEngine(empty_manifest)
+
+        with pytest.raises(ValueError, match="Invalid source filter"):
+            engine.compute_diff([scanner], source_filter="brew")

@@ -18,6 +18,7 @@ from popctl.models.history import HistoryActionType
 from popctl.models.package import PackageSource
 from popctl.operators.apt import AptOperator
 from popctl.operators.flatpak import FlatpakOperator
+from popctl.operators.snap import SnapOperator
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -72,12 +73,18 @@ class TestGetOperators:
         assert len(ops) == 1
         assert isinstance(ops[0], FlatpakOperator)
 
+    def test_get_operators_snap_only(self) -> None:
+        """SourceChoice.SNAP returns only SnapOperator."""
+        ops = get_operators(SourceChoice.SNAP)
+        assert len(ops) == 1
+        assert isinstance(ops[0], SnapOperator)
+
     def test_get_operators_all(self) -> None:
-        """SourceChoice.ALL returns both AptOperator and FlatpakOperator."""
+        """SourceChoice.ALL returns AptOperator, FlatpakOperator, and SnapOperator."""
         ops = get_operators(SourceChoice.ALL)
-        assert len(ops) == 2
+        assert len(ops) == 3
         types = {type(op) for op in ops}
-        assert types == {AptOperator, FlatpakOperator}
+        assert types == {AptOperator, FlatpakOperator, SnapOperator}
 
     def test_get_operators_dry_run_flag(self) -> None:
         """dry_run=True is forwarded to every operator."""
@@ -99,6 +106,7 @@ class TestGetAvailableOperators:
         with (
             patch.object(AptOperator, "is_available", return_value=True),
             patch.object(FlatpakOperator, "is_available", return_value=False),
+            patch.object(SnapOperator, "is_available", return_value=False),
         ):
             ops = get_available_operators(SourceChoice.ALL)
 
