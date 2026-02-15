@@ -786,6 +786,7 @@ class TestSyncFilesystem:
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
             patch("popctl.cli.commands.sync._run_filesystem_phases") as mock_fs_phases,
+            patch("popctl.cli.commands.sync._run_config_phases") as mock_cfg_phases,
         ):
             mock_run.return_value = __import__(
                 "popctl.utils.shell", fromlist=["CommandResult"]
@@ -797,3 +798,306 @@ class TestSyncFilesystem:
         assert result.exit_code == 1
         # But filesystem phases should still have been called
         mock_fs_phases.assert_called_once()
+        # And config phases should still have been called
+        mock_cfg_phases.assert_called_once()
+
+
+# =============================================================================
+# Tests for config phases in sync pipeline
+# =============================================================================
+
+
+class TestSyncConfigs:
+    """Tests for config phases (14-18) in sync pipeline."""
+
+    def test_sync_help_shows_no_configs(self) -> None:
+        """Sync help shows --no-configs flag."""
+        result = runner.invoke(app, ["sync", "--help"])
+        assert result.exit_code == 0
+        assert "--no-configs" in result.stdout
+
+    def test_sync_includes_config_phases(
+        self, sample_manifest: Manifest, in_sync_result: DiffResult
+    ) -> None:
+        """Config phases run by default when no --no-configs flag is passed."""
+        from popctl.configs.models import (
+            ConfigOrphanReason,
+            ConfigStatus,
+            ConfigType,
+            ScannedConfig,
+        )
+
+        mock_orphans = [
+            ScannedConfig(
+                path="/home/test/.config/old-editor",
+                config_type=ConfigType.DIRECTORY,
+                status=ConfigStatus.ORPHAN,
+                size_bytes=2048,
+                mtime=None,
+                orphan_reason=ConfigOrphanReason.NO_PACKAGE_MATCH,
+                confidence=0.70,
+                description=None,
+            ),
+        ]
+
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=in_sync_result,
+            ),
+            patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
+            patch(
+                "popctl.cli.commands.sync._config_scan", return_value=mock_orphans
+            ) as mock_cfg_scan,
+            patch("popctl.cli.commands.sync._config_clean", return_value=[]),
+        ):
+            result = runner.invoke(app, ["sync"])
+
+        assert result.exit_code == 0
+        mock_cfg_scan.assert_called_once()
+        assert "1 orphaned config" in result.stdout
+
+    def test_sync_no_configs_flag_skips_configs(
+        self, sample_manifest: Manifest, in_sync_result: DiffResult
+    ) -> None:
+        """--no-configs skips all config phases entirely."""
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=in_sync_result,
+            ),
+            patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
+            patch("popctl.cli.commands.sync._config_scan") as mock_cfg_scan,
+        ):
+            result = runner.invoke(app, ["sync", "--no-configs"])
+
+        assert result.exit_code == 0
+        mock_cfg_scan.assert_not_called()
+
+    def test_sync_configs_no_orphans_skips(
+        self, sample_manifest: Manifest, in_sync_result: DiffResult
+    ) -> None:
+        """No orphans found => advisor/clean phases skipped."""
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=in_sync_result,
+            ),
+            patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
+            patch("popctl.cli.commands.sync._config_scan", return_value=[]) as mock_cfg_scan,
+            patch("popctl.cli.commands.sync._config_clean") as mock_cfg_clean,
+        ):
+            result = runner.invoke(app, ["sync"])
+
+        assert result.exit_code == 0
+        mock_cfg_scan.assert_called_once()
+        mock_cfg_clean.assert_not_called()
+        assert "No orphaned config entries found" in result.stdout
+
+    def test_sync_configs_with_dry_run(
+        self, sample_manifest: Manifest, diff_result_no_new: DiffResult
+    ) -> None:
+        """--dry-run applies to config phases: shows orphans but does not delete."""
+        from popctl.configs.models import (
+            ConfigOrphanReason,
+            ConfigStatus,
+            ConfigType,
+            ScannedConfig,
+        )
+
+        mock_orphans = [
+            ScannedConfig(
+                path="/home/test/.config/removed-app",
+                config_type=ConfigType.DIRECTORY,
+                status=ConfigStatus.ORPHAN,
+                size_bytes=4096,
+                mtime=None,
+                orphan_reason=ConfigOrphanReason.NO_PACKAGE_MATCH,
+                confidence=0.70,
+                description=None,
+            ),
+        ]
+
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=diff_result_no_new,
+            ),
+            patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
+            patch("popctl.cli.commands.sync._config_scan", return_value=mock_orphans),
+            patch("popctl.cli.commands.sync._config_clean") as mock_cfg_clean,
+        ):
+            result = runner.invoke(app, ["sync", "--dry-run"])
+
+        assert result.exit_code == 0
+        mock_cfg_clean.assert_not_called()
+        # Should see the orphan path in display
+        assert "removed-app" in result.stdout
+        assert "No config changes made" in result.stdout
+
+    def test_sync_configs_with_backup(
+        self, sample_manifest: Manifest, in_sync_result: DiffResult
+    ) -> None:
+        """Config clean shows backup paths in output."""
+        from popctl.configs.models import (
+            ConfigOrphanReason,
+            ConfigStatus,
+            ConfigType,
+            ScannedConfig,
+        )
+        from popctl.configs.operator import ConfigActionResult
+
+        mock_orphans = [
+            ScannedConfig(
+                path="/home/test/.config/old-app",
+                config_type=ConfigType.DIRECTORY,
+                status=ConfigStatus.ORPHAN,
+                size_bytes=4096,
+                mtime=None,
+                orphan_reason=ConfigOrphanReason.NO_PACKAGE_MATCH,
+                confidence=0.70,
+                description=None,
+            ),
+        ]
+
+        mock_action_results = [
+            ConfigActionResult(
+                path="/home/test/.config/old-app",
+                success=True,
+                backup_path="/home/test/.local/state/popctl/config-backups/20260215T120000Z/.config/old-app",
+            ),
+        ]
+
+        # Build a manifest with configs.remove section
+        from popctl.configs.manifest import ConfigEntry, ConfigsConfig
+
+        manifest_with_configs = sample_manifest.model_copy(
+            update={
+                "configs": ConfigsConfig(
+                    keep={},
+                    remove={
+                        "/home/test/.config/old-app": ConfigEntry(
+                            reason="App not installed",
+                            category="obsolete",
+                        ),
+                    },
+                ),
+            },
+        )
+
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch("popctl.core.manifest.load_manifest", return_value=manifest_with_configs),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=in_sync_result,
+            ),
+            patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
+            patch("popctl.cli.commands.sync._config_scan", return_value=mock_orphans),
+            patch(
+                "popctl.configs.operator.ConfigOperator.delete",
+                return_value=mock_action_results,
+            ),
+            patch("popctl.configs.history.record_config_deletions"),
+        ):
+            result = runner.invoke(app, ["sync", "--yes"])
+
+        assert result.exit_code == 0
+        assert "config-backups" in result.stdout
+        assert "Deleted 1 config path" in result.stdout
+
+    def test_config_scan_catches_runtime_error(self) -> None:
+        """_config_scan catches RuntimeError and returns empty list."""
+        from popctl.cli.commands.sync import _config_scan
+
+        mock_scanner = MagicMock()
+        mock_scanner.scan.side_effect = RuntimeError("scanner broken")
+
+        with patch(
+            "popctl.configs.scanner.ConfigScanner",
+            return_value=mock_scanner,
+        ):
+            result = _config_scan()
+
+        assert result == []
+
+    def test_config_scan_catches_os_error(self) -> None:
+        """_config_scan catches OSError and returns empty list."""
+        from popctl.cli.commands.sync import _config_scan
+
+        mock_scanner = MagicMock()
+        mock_scanner.scan.side_effect = OSError("disk error")
+
+        with patch(
+            "popctl.configs.scanner.ConfigScanner",
+            return_value=mock_scanner,
+        ):
+            result = _config_scan()
+
+        assert result == []
+
+    def test_config_record_history_non_fatal(self) -> None:
+        """_config_record_history catches exceptions without crashing."""
+        from popctl.cli.commands.sync import _config_record_history
+
+        with patch(
+            "popctl.configs.history.record_config_deletions",
+            side_effect=OSError("write error"),
+        ):
+            # Should not raise
+            _config_record_history(["/home/test/.config/deleted-app"])
+
+    def test_sync_config_phases_run_after_filesystem_phases(
+        self, sample_manifest: Manifest, diff_result_no_new: DiffResult
+    ) -> None:
+        """Config phases run after filesystem phases in the execution path."""
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch("popctl.operators.apt.command_exists", return_value=True),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=diff_result_no_new,
+            ),
+            patch("popctl.operators.apt.run_command") as mock_run,
+            patch("popctl.cli.commands.sync._run_filesystem_phases") as mock_fs_phases,
+            patch("popctl.cli.commands.sync._run_config_phases") as mock_cfg_phases,
+        ):
+            mock_run.return_value = __import__(
+                "popctl.utils.shell", fromlist=["CommandResult"]
+            ).CommandResult(stdout="", stderr="", returncode=0)
+
+            runner.invoke(app, ["sync", "--yes"])
+
+        # Both filesystem and config phases should have been called
+        mock_fs_phases.assert_called_once()
+        mock_cfg_phases.assert_called_once()
+        call_kwargs = mock_cfg_phases.call_args[1]
+        assert call_kwargs["dry_run"] is False
+        assert call_kwargs["yes"] is True
