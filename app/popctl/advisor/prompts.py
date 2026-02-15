@@ -78,6 +78,17 @@ ask = []
 keep = []
 remove = []
 ask = []
+
+[filesystem]
+keep = [
+    {{ path = "~/.config/nvim", reason = "User config", confidence = 0.95, category = "config" }},
+]
+remove = [
+    {{ path = "~/.config/vlc", reason = "VLC removed", confidence = 0.90, category = "obsolete" }},
+]
+ask = [
+    {{ path = "~/.local/share/foo", reason = "Unknown", confidence = 0.50, category = "other" }},
+]
 """
 # fmt: on
 
@@ -136,6 +147,20 @@ Write your decisions to `{decisions_output_path}` in TOML format.
 they are user-facing applications. Classify them by their purpose, not their \
 packaging format.
 
+## Filesystem Classification Rules
+
+If the scan includes a `filesystem` section with orphaned paths:
+
+- **KEEP**: Active desktop configs (cosmic, dconf, gtk), user-created configs \
+(nvim, zsh), security-related (ssh, gnupg), container runtime data
+- **REMOVE**: Configs for uninstalled applications, stale caches with no \
+active app, dead symlinks, empty directories
+- **ASK**: Configs with unclear ownership, ambiguous purpose, large data \
+directories
+
+Classify each orphaned path into the `[filesystem]` section of \
+decisions.toml using the same keep/remove/ask structure.
+
 ## Valid Categories
 
 Use one of these categories for each package:
@@ -169,6 +194,17 @@ ask = []
 keep = []
 remove = []
 ask = []
+
+[filesystem]
+keep = [
+    {{ path = "~/.config/nvim", reason = "User config", confidence = 0.95, category = "config" }},
+]
+remove = [
+    {{ path = "~/.config/vlc", reason = "VLC removed", confidence = 0.90, category = "obsolete" }},
+]
+ask = [
+    {{ path = "~/.local/share/foo", reason = "Unknown", confidence = 0.50, category = "other" }},
+]
 ```
 
 ## Important Notes
@@ -346,6 +382,18 @@ Packages matching these patterns must always be classified as KEEP:
 `apt*`, `dpkg*`, `flatpak`, `bash`, `coreutils`, `sudo`, `networkmanager*`,
 `snapd`, `core*`
 
+## Filesystem Classification Rules
+
+If the scan includes a `filesystem` section with orphaned paths, classify
+each path into the `[filesystem]` section of decisions.toml:
+
+- **KEEP**: Active desktop configs (cosmic, dconf, gtk), user-created configs \
+(nvim, zsh), security-related (ssh, gnupg), container runtime data
+- **REMOVE**: Configs for uninstalled applications, stale caches with no \
+active app, dead symlinks, empty directories
+- **ASK**: Configs with unclear ownership, ambiguous purpose, large data \
+directories
+
 ## Valid Categories
 
 {categories}
@@ -373,6 +421,17 @@ ask = []
 keep = []
 remove = []
 ask = []
+
+[filesystem]
+keep = [
+    {{ path = "~/.config/nvim", reason = "User config", confidence = 0.95, category = "config" }},
+]
+remove = [
+    {{ path = "~/.config/vlc", reason = "VLC removed", confidence = 0.90, category = "obsolete" }},
+]
+ask = [
+    {{ path = "~/.local/share/foo", reason = "Unknown", confidence = 0.50, category = "other" }},
+]
 ```
 
 ## Rules

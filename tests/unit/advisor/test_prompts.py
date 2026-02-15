@@ -527,3 +527,69 @@ class TestModuleExports:
         assert callable(get_decisions_schema)
         assert callable(get_prompt_file_path)
         assert isinstance(CATEGORIES, tuple)
+
+
+# =============================================================================
+# Test Filesystem Integration in Prompts
+# =============================================================================
+
+
+class TestFilesystemPromptIntegration:
+    """Tests for filesystem classification rules in prompts."""
+
+    def test_decisions_schema_has_filesystem(self) -> None:
+        """DECISIONS_SCHEMA includes [filesystem] section."""
+        assert "[filesystem]" in DECISIONS_SCHEMA
+        assert "path =" in DECISIONS_SCHEMA
+        assert "category =" in DECISIONS_SCHEMA
+
+    def test_headless_prompt_mentions_filesystem(self) -> None:
+        """HEADLESS_PROMPT or build_headless_prompt includes filesystem rules."""
+        assert "filesystem" in HEADLESS_PROMPT.lower()
+        assert "Filesystem Classification Rules" in HEADLESS_PROMPT
+
+        prompt = build_headless_prompt(
+            "/tmp/scan.json",
+            "/tmp/decisions.toml",
+        )
+        assert "[filesystem]" in prompt
+        assert "filesystem" in prompt.lower()
+
+    def test_headless_prompt_has_filesystem_keep_rules(self) -> None:
+        """HEADLESS_PROMPT lists filesystem KEEP criteria."""
+        assert "desktop configs" in HEADLESS_PROMPT.lower() or "cosmic" in HEADLESS_PROMPT.lower()
+        assert "nvim" in HEADLESS_PROMPT or "user-created" in HEADLESS_PROMPT.lower()
+        assert "ssh" in HEADLESS_PROMPT or "gnupg" in HEADLESS_PROMPT
+
+    def test_headless_prompt_has_filesystem_remove_rules(self) -> None:
+        """HEADLESS_PROMPT lists filesystem REMOVE criteria."""
+        assert "uninstalled" in HEADLESS_PROMPT.lower()
+        assert (
+            "dead symlinks" in HEADLESS_PROMPT.lower() or "dead_symlink" in HEADLESS_PROMPT.lower()
+        )
+
+    def test_headless_prompt_has_filesystem_ask_rules(self) -> None:
+        """HEADLESS_PROMPT lists filesystem ASK criteria."""
+        assert "unclear" in HEADLESS_PROMPT.lower() or "ambiguous" in HEADLESS_PROMPT.lower()
+
+    def test_session_claude_md_mentions_filesystem(self) -> None:
+        """SESSION_CLAUDE_MD includes filesystem classification rules."""
+        assert "filesystem" in SESSION_CLAUDE_MD.lower()
+        assert "Filesystem Classification Rules" in SESSION_CLAUDE_MD
+        assert "[filesystem]" in SESSION_CLAUDE_MD
+
+    def test_session_claude_md_has_filesystem_output(self) -> None:
+        """SESSION_CLAUDE_MD output format includes [filesystem] section."""
+        result = build_session_claude_md()
+
+        assert "[filesystem]" in result
+
+    def test_decisions_schema_filesystem_structure(self) -> None:
+        """DECISIONS_SCHEMA [filesystem] section has keep/remove/ask."""
+        schema = get_decisions_schema()
+
+        assert "[filesystem]" in schema
+        # Filesystem section should appear after packages sections
+        fs_pos = schema.index("[filesystem]")
+        snap_pos = schema.index("[packages.snap]")
+        assert fs_pos > snap_pos, "Filesystem section should come after package sections"

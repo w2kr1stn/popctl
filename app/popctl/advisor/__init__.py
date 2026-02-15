@@ -31,6 +31,10 @@ from popctl.advisor.config import (
 )
 from popctl.advisor.exchange import (
     DecisionsResult,
+    FilesystemDecisions,
+    FilesystemOrphanEntry,
+    FilesystemPathDecision,
+    FilesystemScanSection,
     PackageDecision,
     PackageScanEntry,
     ScanExport,
@@ -64,6 +68,10 @@ __all__ = [
     "AgentRunner",
     "CATEGORIES",
     "DecisionsResult",
+    "FilesystemDecisions",
+    "FilesystemOrphanEntry",
+    "FilesystemPathDecision",
+    "FilesystemScanSection",
     "PackageDecision",
     "PackageScanEntry",
     "ScanExport",
