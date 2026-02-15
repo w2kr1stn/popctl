@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from popctl.configs.manifest import ConfigEntry, ConfigsConfig
 from popctl.filesystem.manifest import FilesystemConfig, FilesystemEntry
 
 
@@ -120,6 +121,7 @@ class Manifest(BaseModel):
         system: System configuration with machine details.
         packages: Package configuration with keep/remove lists.
         filesystem: Optional filesystem cleanup configuration.
+        configs: Optional config cleanup configuration.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -130,6 +132,10 @@ class Manifest(BaseModel):
     filesystem: Annotated[
         FilesystemConfig | None,
         Field(description="Filesystem cleanup configuration"),
+    ] = None
+    configs: Annotated[
+        ConfigsConfig | None,
+        Field(description="Config cleanup configuration"),
     ] = None
 
     def get_keep_packages(self, source: PackageSourceType | None = None) -> dict[str, PackageEntry]:
@@ -183,6 +189,28 @@ class Manifest(BaseModel):
         if self.filesystem is None:
             return {}
         return self.filesystem.remove
+
+    def get_config_keep_paths(self) -> dict[str, ConfigEntry]:
+        """Get config paths marked as 'keep'.
+
+        Returns:
+            Dictionary of path strings to ConfigEntry for configs to preserve.
+            Returns empty dict if no configs section is configured.
+        """
+        if self.configs is None:
+            return {}
+        return self.configs.keep
+
+    def get_config_remove_paths(self) -> dict[str, ConfigEntry]:
+        """Get config paths marked for removal.
+
+        Returns:
+            Dictionary of path strings to ConfigEntry for configs to delete.
+            Returns empty dict if no configs section is configured.
+        """
+        if self.configs is None:
+            return {}
+        return self.configs.remove
 
     @property
     def package_count(self) -> int:

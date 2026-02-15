@@ -202,6 +202,17 @@ def _manifest_to_dict(manifest: Manifest) -> dict[str, Any]:
             },
         }
 
+    if manifest.configs is not None:
+        result["configs"] = {
+            "keep": {
+                path: _config_entry_to_dict(entry) for path, entry in manifest.configs.keep.items()
+            },
+            "remove": {
+                path: _config_entry_to_dict(entry)
+                for path, entry in manifest.configs.remove.items()
+            },
+        }
+
     return result
 
 
@@ -229,6 +240,25 @@ def _fs_entry_to_dict(entry: Any) -> dict[str, Any]:
 
     Args:
         entry: The FilesystemEntry object to convert.
+
+    Returns:
+        Dictionary with optional reason and category fields.
+    """
+    result: dict[str, Any] = {}
+    if entry.reason:
+        result["reason"] = entry.reason
+    if entry.category:
+        result["category"] = entry.category
+    return result
+
+
+def _config_entry_to_dict(entry: Any) -> dict[str, Any]:
+    """Convert a ConfigEntry to a dictionary for TOML serialization.
+
+    Only includes fields that have non-None values to keep TOML output clean.
+
+    Args:
+        entry: The ConfigEntry object to convert.
 
     Returns:
         Dictionary with optional reason and category fields.
