@@ -17,28 +17,28 @@ PROTECTED_CONFIG_PATTERNS: tuple[str, ...] = (
     "~/.config/dconf",
     "~/.config/gtk-*",
     "~/.config/systemd",
+    # XDG essentials
     "~/.config/autostart",
     "~/.config/mimeapps.list",
-    # Shell configs (user-created, always keep)
+    # Security
+    "~/.ssh",
+    "~/.ssh/*",
+    "~/.gnupg",
+    "~/.gnupg/*",
+    "~/.gpg",
+    "~/.gpg/*",
+    # Shell configs
     "~/.bashrc",
     "~/.bash_profile",
     "~/.profile",
     "~/.zshrc",
     "~/.zprofile",
-    "~/.config/zsh",
-    "~/.config/bash",
-    # Security
-    "~/.ssh/*",
-    "~/.gnupg/*",
     # popctl itself
     "~/.config/popctl",
     # Container runtime
     "~/.config/docker",
-    # Common user configs
-    "~/.config/nvim",
-    "~/.vimrc",
-    "~/.gitconfig",
-    "~/.config/git",
+    # Package managers
+    "~/.config/flatpak",
 )
 
 
