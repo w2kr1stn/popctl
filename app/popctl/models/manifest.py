@@ -9,6 +9,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from popctl.filesystem.manifest import FilesystemConfig, FilesystemEntry
+
 
 class ManifestMeta(BaseModel):
     """Metadata section of the manifest.
@@ -117,6 +119,7 @@ class Manifest(BaseModel):
         meta: Metadata section with version and timestamps.
         system: System configuration with machine details.
         packages: Package configuration with keep/remove lists.
+        filesystem: Optional filesystem cleanup configuration.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -124,6 +127,10 @@ class Manifest(BaseModel):
     meta: Annotated[ManifestMeta, Field(description="Manifest metadata")]
     system: Annotated[SystemConfig, Field(description="System configuration")]
     packages: Annotated[PackageConfig, Field(description="Package configuration")]
+    filesystem: Annotated[
+        FilesystemConfig | None,
+        Field(description="Filesystem cleanup configuration"),
+    ] = None
 
     def get_keep_packages(self, source: PackageSourceType | None = None) -> dict[str, PackageEntry]:
         """Get packages marked as 'keep', optionally filtered by source.
@@ -154,6 +161,28 @@ class Manifest(BaseModel):
         return {
             name: entry for name, entry in self.packages.remove.items() if entry.source == source
         }
+
+    def get_fs_keep_paths(self) -> dict[str, FilesystemEntry]:
+        """Get filesystem paths marked as 'keep'.
+
+        Returns:
+            Dictionary of path strings to FilesystemEntry for paths to preserve.
+            Returns empty dict if no filesystem section is configured.
+        """
+        if self.filesystem is None:
+            return {}
+        return self.filesystem.keep
+
+    def get_fs_remove_paths(self) -> dict[str, FilesystemEntry]:
+        """Get filesystem paths marked for removal.
+
+        Returns:
+            Dictionary of path strings to FilesystemEntry for paths to delete.
+            Returns empty dict if no filesystem section is configured.
+        """
+        if self.filesystem is None:
+            return {}
+        return self.filesystem.remove
 
     @property
     def package_count(self) -> int:

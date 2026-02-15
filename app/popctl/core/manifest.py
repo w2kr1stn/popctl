@@ -169,7 +169,7 @@ def _manifest_to_dict(manifest: Manifest) -> dict[str, Any]:
     Returns:
         Dictionary ready for TOML serialization.
     """
-    return {
+    result: dict[str, Any] = {
         "meta": {
             "version": manifest.meta.version,
             "created": manifest.meta.created.isoformat(),
@@ -192,6 +192,18 @@ def _manifest_to_dict(manifest: Manifest) -> dict[str, Any]:
         },
     }
 
+    if manifest.filesystem is not None:
+        result["filesystem"] = {
+            "keep": {
+                path: _fs_entry_to_dict(entry) for path, entry in manifest.filesystem.keep.items()
+            },
+            "remove": {
+                path: _fs_entry_to_dict(entry) for path, entry in manifest.filesystem.remove.items()
+            },
+        }
+
+    return result
+
 
 def _package_entry_to_dict(entry: Any) -> dict[str, Any]:
     """Convert a PackageEntry to a dictionary for TOML serialization.
@@ -207,4 +219,23 @@ def _package_entry_to_dict(entry: Any) -> dict[str, Any]:
         result["status"] = entry.status
     if entry.reason:
         result["reason"] = entry.reason
+    return result
+
+
+def _fs_entry_to_dict(entry: Any) -> dict[str, Any]:
+    """Convert a FilesystemEntry to a dictionary for TOML serialization.
+
+    Only includes fields that have non-None values to keep TOML output clean.
+
+    Args:
+        entry: The FilesystemEntry object to convert.
+
+    Returns:
+        Dictionary with optional reason and category fields.
+    """
+    result: dict[str, Any] = {}
+    if entry.reason:
+        result["reason"] = entry.reason
+    if entry.category:
+        result["category"] = entry.category
     return result
