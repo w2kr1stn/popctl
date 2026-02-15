@@ -31,6 +31,7 @@ class HistoryActionType(str, Enum):
     APPLY = "apply"
     ADVISOR_APPLY = "advisor_apply"
     FS_DELETE = "fs_delete"
+    CONFIG_DELETE = "config_delete"
 
 
 @dataclass(frozen=True, slots=True)
