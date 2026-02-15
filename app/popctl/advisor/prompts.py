@@ -89,6 +89,17 @@ remove = [
 ask = [
     {{ path = "~/.local/share/foo", reason = "Unknown", confidence = 0.50, category = "other" }},
 ]
+
+[configs]
+keep = [
+    {{ path = "~/.config/nvim", reason = "Neovim config", confidence = 0.95, category = "editor" }},
+]
+remove = [
+    {{ path = "~/.config/vlc", reason = "VLC removed", confidence = 0.85, category = "media" }},
+]
+ask = [
+    {{ path = "~/.config/foo", reason = "Unclear", confidence = 0.50, category = "unknown" }},
+]
 """
 # fmt: on
 
@@ -161,6 +172,16 @@ directories
 Classify each orphaned path into the `[filesystem]` section of \
 decisions.toml using the same keep/remove/ask structure.
 
+## Config Classification
+
+If the scan includes a `configs` section with orphaned config paths, \
+classify each into the `[configs]` section of decisions.toml:
+
+- **KEEP**: Active desktop configs (cosmic, dconf, gtk), user-created configs \
+(nvim, zsh), security-related (ssh, gnupg), container runtime (docker)
+- **REMOVE**: Configs for uninstalled apps, dead symlinks, empty directories
+- **ASK**: Configs with unclear ownership, ambiguous purpose
+
 ## Valid Categories
 
 Use one of these categories for each package:
@@ -204,6 +225,17 @@ remove = [
 ]
 ask = [
     {{ path = "~/.local/share/foo", reason = "Unknown", confidence = 0.50, category = "other" }},
+]
+
+[configs]
+keep = [
+    {{ path = "~/.config/nvim", reason = "Neovim config", confidence = 0.95, category = "editor" }},
+]
+remove = [
+    {{ path = "~/.config/vlc", reason = "VLC removed", confidence = 0.85, category = "media" }},
+]
+ask = [
+    {{ path = "~/.config/foo", reason = "Unclear", confidence = 0.50, category = "unknown" }},
 ]
 ```
 
@@ -394,6 +426,16 @@ active app, dead symlinks, empty directories
 - **ASK**: Configs with unclear ownership, ambiguous purpose, large data \
 directories
 
+## Config Classification
+
+If the scan includes a `configs` section with orphaned config paths, \
+classify each into the `[configs]` section of decisions.toml:
+
+- **KEEP**: Active desktop configs (cosmic, dconf, gtk), user-created configs \
+(nvim, zsh), security-related (ssh, gnupg), container runtime (docker)
+- **REMOVE**: Configs for uninstalled apps, dead symlinks, empty directories
+- **ASK**: Configs with unclear ownership, ambiguous purpose
+
 ## Valid Categories
 
 {categories}
@@ -431,6 +473,17 @@ remove = [
 ]
 ask = [
     {{ path = "~/.local/share/foo", reason = "Unknown", confidence = 0.50, category = "other" }},
+]
+
+[configs]
+keep = [
+    {{ path = "~/.config/nvim", reason = "Neovim config", confidence = 0.95, category = "editor" }},
+]
+remove = [
+    {{ path = "~/.config/vlc", reason = "VLC removed", confidence = 0.85, category = "media" }},
+]
+ask = [
+    {{ path = "~/.config/foo", reason = "Unclear", confidence = 0.50, category = "unknown" }},
 ]
 ```
 
