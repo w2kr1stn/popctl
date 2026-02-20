@@ -354,12 +354,12 @@ class TestAgentRunnerLaunchInteractive:
         with (
             patch("sys.stdin") as mock_stdin,
             patch(
-                "popctl.utils.shell.find_running_container",
+                "popctl.advisor.docker.find_running_container",
                 return_value="ai-dev",
             ),
             patch("popctl.utils.shell.run_command"),
             patch(
-                "popctl.utils.shell.docker_cp",
+                "popctl.advisor.docker.docker_cp",
                 side_effect=mock_docker_cp_back,
             ),
             patch(
@@ -396,15 +396,15 @@ class TestAgentRunnerLaunchInteractive:
         with (
             patch("sys.stdin") as mock_stdin,
             patch(
-                "popctl.utils.shell.find_running_container",
+                "popctl.advisor.docker.find_running_container",
                 side_effect=[None, "ai-dev-base-dev-1"],
             ),
-            patch("popctl.utils.shell.is_container_running", return_value=True),
+            patch("popctl.advisor.docker.is_container_running", return_value=True),
             patch("shutil.which", return_value="/usr/bin/codeagent"),
             patch("subprocess.Popen", return_value=mock_process),
             patch("time.sleep"),
             patch("popctl.utils.shell.run_command"),
-            patch("popctl.utils.shell.docker_cp", side_effect=mock_docker_cp_back),
+            patch("popctl.advisor.docker.docker_cp", side_effect=mock_docker_cp_back),
             patch("popctl.utils.shell.run_interactive", return_value=0),
         ):
             mock_stdin.isatty.return_value = True
@@ -467,11 +467,11 @@ class TestAgentRunnerLaunchInteractive:
         with (
             patch("sys.stdin") as mock_stdin,
             patch(
-                "popctl.utils.shell.find_running_container",
+                "popctl.advisor.docker.find_running_container",
                 return_value="ai-dev-base-dev-1",
             ),
             patch("popctl.utils.shell.run_command"),
-            patch("popctl.utils.shell.docker_cp", return_value=mock_cp),
+            patch("popctl.advisor.docker.docker_cp", return_value=mock_cp),
             patch("popctl.utils.shell.run_interactive", return_value=0),
         ):
             mock_stdin.isatty.return_value = True
@@ -501,7 +501,7 @@ class TestAgentRunnerLaunchInteractive:
 
         with (
             patch("sys.stdin") as mock_stdin,
-            patch("popctl.utils.shell.find_running_container", return_value=None),
+            patch("popctl.advisor.docker.find_running_container", return_value=None),
             patch("shutil.which", side_effect=mock_which),
             patch("subprocess.Popen", return_value=mock_process),
         ):
@@ -526,11 +526,11 @@ class TestAgentRunnerLaunchInteractive:
         with (
             patch("sys.stdin") as mock_stdin,
             patch(
-                "popctl.utils.shell.find_running_container",
+                "popctl.advisor.docker.find_running_container",
                 return_value="ai-dev-base-dev-1",
             ),
             patch("popctl.utils.shell.run_command"),
-            patch("popctl.utils.shell.docker_cp", return_value=mock_cp),
+            patch("popctl.advisor.docker.docker_cp", return_value=mock_cp),
             patch(
                 "popctl.utils.shell.run_interactive",
                 side_effect=FileNotFoundError("docker not found"),
