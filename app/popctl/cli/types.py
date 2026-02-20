@@ -12,6 +12,13 @@ from popctl.scanners.flatpak import FlatpakScanner
 from popctl.scanners.snap import SnapScanner
 
 
+class OutputFormat(str, Enum):
+    """Output format options for scan commands."""
+
+    TABLE = "table"
+    JSON = "json"
+
+
 class SourceChoice(str, Enum):
     """Available package sources for CLI commands."""
 

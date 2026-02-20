@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import typer
 
@@ -35,7 +34,12 @@ from popctl.utils.formatting import (
 )
 
 if TYPE_CHECKING:
-    from popctl.advisor.exchange import ConfigDecisions, FilesystemDecisions
+    from popctl.advisor.exchange import (
+        ConfigOrphanEntry,
+        DecisionsResult,
+        DomainDecisions,
+        FilesystemOrphanEntry,
+    )
     from popctl.configs.models import ScannedConfig
     from popctl.filesystem.models import ScannedPath
 
@@ -132,6 +136,96 @@ def _compute_diff(source: SourceChoice) -> DiffResult:
         raise typer.Exit(code=1) from e
 
 
+def _invoke_advisor(
+    *,
+    auto: bool,
+    domain: str,
+    filesystem_orphans: list[FilesystemOrphanEntry] | None = None,
+    config_orphans: list[ConfigOrphanEntry] | None = None,
+) -> DecisionsResult | None:
+    """Shared advisor workflow: config -> scan -> workspace -> run -> import.
+
+    Encapsulates the common boilerplate shared by all three advisor phases
+    (packages, filesystem, configs). Each caller provides domain-specific
+    orphan data and extracts the relevant section from the result.
+
+    Args:
+        auto: If True, run headless advisor; otherwise interactive.
+        domain: Human-readable domain label for log messages.
+        filesystem_orphans: Optional FS orphan entries for workspace.
+        config_orphans: Optional config orphan entries for workspace.
+
+    Returns:
+        Parsed DecisionsResult or None on any failure (non-fatal).
+    """
+    from popctl.advisor import AgentRunner, import_decisions
+    from popctl.advisor.workspace import create_session_workspace
+    from popctl.cli.commands.advisor import _load_or_create_config, _scan_system
+    from popctl.core.paths import (
+        ensure_advisor_sessions_dir,
+        get_advisor_memory_path,
+        get_manifest_path,
+    )
+
+    try:
+        config = _load_or_create_config()
+    except (OSError, RuntimeError) as e:
+        print_warning(f"Could not load advisor config: {e}")
+        return None
+
+    try:
+        scan_result = _scan_system()
+    except SystemExit:
+        print_warning(f"System scan for {domain} advisor failed. Continuing without advisor.")
+        return None
+
+    try:
+        sessions_dir = ensure_advisor_sessions_dir()
+        manifest_path = get_manifest_path()
+        memory_path = get_advisor_memory_path()
+
+        workspace_dir = create_session_workspace(
+            scan_result,
+            sessions_dir,
+            manifest_path=manifest_path if manifest_path.exists() else None,
+            memory_path=memory_path if memory_path.exists() else None,
+            filesystem_orphans=filesystem_orphans,
+            config_orphans=config_orphans,
+        )
+    except (OSError, RuntimeError) as e:
+        print_warning(f"Could not create advisor workspace: {e}")
+        return None
+
+    runner = AgentRunner(config)
+
+    try:
+        if auto:
+            result = runner.run_headless(workspace_dir)
+        else:
+            result = runner.launch_interactive(workspace_dir)
+    except (OSError, RuntimeError) as e:
+        print_warning(f"Advisor execution failed: {e}")
+        return None
+
+    if result.error == "manual_mode":
+        console.print()
+        console.print(result.output)
+        return None
+
+    if not result.success or not result.decisions_path:
+        print_warning(
+            f"{domain.capitalize()} advisor did not produce decisions: "
+            f"{result.error or 'unknown error'}"
+        )
+        return None
+
+    try:
+        return import_decisions(result.decisions_path.parent)
+    except (FileNotFoundError, ValueError) as e:
+        print_warning(f"Could not load advisor decisions: {e}")
+        return None
+
+
 def _run_advisor(diff_result: DiffResult, auto: bool) -> None:
     """Run AI advisor to classify NEW packages.
 
@@ -142,84 +236,29 @@ def _run_advisor(diff_result: DiffResult, auto: bool) -> None:
         diff_result: Current diff result containing NEW packages.
         auto: If True, run headless advisor; otherwise interactive.
     """
-    if not diff_result.new:
-        print_info("No NEW packages to classify. Skipping advisor.")
-        return
-
     print_info(f"{len(diff_result.new)} NEW package(s) found. Running advisor...")
 
-    from popctl.advisor import AgentRunner
-    from popctl.cli.commands.advisor import (
-        _create_workspace,
-        _load_or_create_config,
-        _scan_system,
-    )
-
-    try:
-        config = _load_or_create_config()
-    except (OSError, RuntimeError) as e:
-        print_warning(f"Could not load advisor config: {e}")
-        return
-
-    try:
-        scan_result = _scan_system()
-    except SystemExit:
-        print_warning("System scan for advisor failed. Continuing without advisor.")
-        return
-
-    try:
-        workspace_dir = _create_workspace(scan_result)
-    except (OSError, RuntimeError) as e:
-        print_warning(f"Could not create advisor workspace: {e}")
-        return
-
-    runner = AgentRunner(config)
-
-    try:
-        if auto:
-            result = runner.run_headless(workspace_dir)
-        else:
-            result = runner.launch_interactive(workspace_dir)
-    except FileNotFoundError:
-        print_warning("Advisor CLI tool not found. Continuing without advisor.")
-        return
-    except (OSError, RuntimeError) as e:
-        print_warning(f"Advisor execution failed: {e}")
-        return
-
-    if result.error == "manual_mode":
-        # Interactive manual-mode: print workspace path and exit
-        console.print()
-        console.print(result.output)
-        raise typer.Exit(code=0)
-
-    if result.success and result.decisions_path:
+    decisions = _invoke_advisor(auto=auto, domain="packages")
+    if decisions:
         print_success("Advisor classification completed.")
-        _apply_advisor_decisions(result.decisions_path)
-    elif not result.success:
-        print_warning(f"Advisor did not produce decisions: {result.error or 'unknown error'}")
+        _apply_advisor_decisions(decisions)
+    else:
         print_info("Continuing with current manifest.")
 
 
-def _apply_advisor_decisions(decisions_path: Path) -> None:
+def _apply_advisor_decisions(decisions: DecisionsResult) -> None:
     """Apply advisor decisions to the manifest.
 
-    Loads decisions, mutates the manifest (add keep/remove entries),
-    updates the timestamp, and saves. Errors are non-fatal.
+    Mutates the manifest (add keep/remove entries), updates the
+    timestamp, and saves. Errors are non-fatal.
 
     Args:
-        decisions_path: Path to the decisions.toml file.
+        decisions: Parsed advisor decisions to apply.
     """
-    from popctl.advisor import import_decisions
     from popctl.cli.commands.advisor import _record_advisor_apply_to_history
     from popctl.core.manifest import ManifestError, load_manifest
     from popctl.models.manifest import PackageEntry
-
-    try:
-        decisions = import_decisions(decisions_path.parent)
-    except (FileNotFoundError, ValueError) as e:
-        print_warning(f"Could not load advisor decisions: {e}")
-        return
+    from popctl.models.package import PACKAGE_SOURCE_KEYS
 
     try:
         manifest = load_manifest()
@@ -228,8 +267,8 @@ def _apply_advisor_decisions(decisions_path: Path) -> None:
         return
 
     # Apply decisions to manifest
-    for source in ("apt", "flatpak"):
-        source_decisions = decisions.packages.get(source)
+    for source in PACKAGE_SOURCE_KEYS:
+        source_decisions = decisions.packages.get(source)  # type: ignore[arg-type]
         if source_decisions is None:
             continue
 
@@ -378,12 +417,14 @@ def sync(
     # Check if system is already in sync
     if diff_result.is_in_sync:
         print_success("System is already in sync with manifest. Nothing to do.")
-        # Phase 9-13: Filesystem phases (even when packages are in sync)
         if not no_filesystem:
-            _run_filesystem_phases(dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto)
-        # Phase 14-18: Config phases (even when packages are in sync)
+            _run_orphan_phases(
+                "filesystem", dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto
+            )
         if not no_configs:
-            _run_config_phases(dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto)
+            _run_orphan_phases(
+                "configs", dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto
+            )
         return
 
     # Show diff summary
@@ -398,12 +439,12 @@ def sync(
     # Phase 2b: Dry-run stops here (for packages)
     if dry_run:
         print_info("\nDry-run mode: No package changes were made.")
-        # Phase 9-13: Filesystem phases in dry-run mode
         if not no_filesystem:
-            _run_filesystem_phases(dry_run=True, yes=yes, no_advisor=no_advisor, auto=auto)
-        # Phase 14-18: Config phases in dry-run mode
+            _run_orphan_phases(
+                "filesystem", dry_run=True, yes=yes, no_advisor=no_advisor, auto=auto
+            )
         if not no_configs:
-            _run_config_phases(dry_run=True, yes=yes, no_advisor=no_advisor, auto=auto)
+            _run_orphan_phases("configs", dry_run=True, yes=yes, no_advisor=no_advisor, auto=auto)
         return
 
     # Phase 3-5: Advisor (unless --no-advisor or no NEW packages)
@@ -417,12 +458,14 @@ def sync(
             print_success(
                 "System is already in sync with manifest after advisor changes. Nothing to do."
             )
-            # Phase 9-13: Filesystem phases
             if not no_filesystem:
-                _run_filesystem_phases(dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto)
-            # Phase 14-18: Config phases
+                _run_orphan_phases(
+                    "filesystem", dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto
+                )
             if not no_configs:
-                _run_config_phases(dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto)
+                _run_orphan_phases(
+                    "configs", dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto
+                )
             return
 
     # Phase 6: Convert to actions and display
@@ -430,12 +473,14 @@ def sync(
 
     if not actions:
         print_success("No actionable changes. System is in sync with manifest.")
-        # Phase 9-13: Filesystem phases
         if not no_filesystem:
-            _run_filesystem_phases(dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto)
-        # Phase 14-18: Config phases
+            _run_orphan_phases(
+                "filesystem", dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto
+            )
         if not no_configs:
-            _run_config_phases(dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto)
+            _run_orphan_phases(
+                "configs", dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto
+            )
         return
 
     table = create_actions_table(actions)
@@ -468,13 +513,11 @@ def sync(
     console.print(results_table)
     print_results_summary(results)
 
-    # Phase 9-13: Filesystem scanning and cleanup (unless --no-filesystem)
+    # Phase 9-18: Domain orphan phases
     if not no_filesystem:
-        _run_filesystem_phases(dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto)
-
-    # Phase 14-18: Config scanning and cleanup (unless --no-configs)
+        _run_orphan_phases("filesystem", dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto)
     if not no_configs:
-        _run_config_phases(dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto)
+        _run_orphan_phases("configs", dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto)
 
     # Exit with error if any action failed
     if any(r.failed for r in results):
@@ -482,64 +525,127 @@ def sync(
 
 
 # =============================================================================
-# Filesystem phases (9-13)
+# Domain orphan phases (9-18)
 # =============================================================================
 
 
-def _run_filesystem_phases(
+def _run_orphan_phases(
+    domain: Literal["filesystem", "configs"],
     *,
     dry_run: bool,
     yes: bool,
     no_advisor: bool,
     auto: bool,
 ) -> None:
-    """Run filesystem scanning and cleanup phases (9-13).
+    """Generic pipeline for domain orphan scanning and cleanup.
 
-    These phases are non-fatal: failures print warnings and continue.
-    The entire filesystem pipeline is wrapped to ensure that errors
-    never propagate up to crash the sync command.
+    Handles both filesystem (phases 9-13) and config (phases 14-18)
+    domains. Dispatches to domain-specific functions for scan, advisor,
+    apply, and cleanup operations. All failures are non-fatal.
 
     Args:
+        domain: Which domain to process.
         dry_run: If True, show findings but do not delete.
         yes: If True, skip confirmation prompts.
-        no_advisor: If True, skip filesystem advisor classification.
+        no_advisor: If True, skip advisor classification.
         auto: If True, use headless advisor instead of interactive.
     """
-    console.print("\n[bold]Phase 9: Filesystem scan[/bold]")
+    is_fs = domain == "filesystem"
+    phase_start = 9 if is_fs else 14
+    display = "filesystem" if is_fs else "config"
+    label = display.capitalize()
 
-    # Phase 9: FS-Scan
-    orphans = _fs_scan()
+    # Phase N: Scan
+    console.print(f"\n[bold]Phase {phase_start}: {label} scan[/bold]")
+    orphans: list[Any] = _fs_scan() if is_fs else _config_scan()
+
     if not orphans:
-        print_info("No orphaned filesystem entries found. Skipping filesystem phases.")
+        print_info(f"No orphaned {display} entries found. Skipping {display} phases.")
         return
 
-    print_info(f"Found {len(orphans)} orphaned filesystem entries.")
+    print_info(f"Found {len(orphans)} orphaned {display} entries.")
 
     if dry_run:
-        # In dry-run, just show the orphans
-        _fs_display_orphans(orphans)
-        print_info("Dry-run mode: No filesystem changes made.")
+        _display_orphans(orphans, domain)
+        print_info(f"Dry-run mode: No {display} changes made.")
         return
 
-    # Phase 10: FS-Advisor (if not --no-advisor)
-    fs_decisions: FilesystemDecisions | None = None
+    # Phase N+1: Advisor
+    decisions: DomainDecisions | None = None
     if not no_advisor:
-        console.print("\n[bold]Phase 10: Filesystem advisor[/bold]")
-        fs_decisions = _fs_run_advisor(orphans, auto)
+        console.print(f"\n[bold]Phase {phase_start + 1}: {label} advisor[/bold]")
+        decisions = _fs_run_advisor(orphans, auto) if is_fs else _config_run_advisor(orphans, auto)
 
-    # Phase 11: FS-Apply (apply advisor decisions to manifest)
-    if fs_decisions:
-        console.print("\n[bold]Phase 11: Apply filesystem decisions[/bold]")
-        _fs_apply_decisions(fs_decisions)
+    # Phase N+2: Apply decisions
+    if decisions:
+        console.print(f"\n[bold]Phase {phase_start + 2}: Apply {display} decisions[/bold]")
+        if is_fs:
+            _fs_apply_decisions(decisions)
+        else:
+            _config_apply_decisions(decisions)
 
-    # Phase 12: FS-Clean (delete paths marked for removal)
-    console.print("\n[bold]Phase 12: Filesystem cleanup[/bold]")
-    deleted_paths = _fs_clean(yes=yes)
+    # Phase N+3: Cleanup
+    console.print(f"\n[bold]Phase {phase_start + 3}: {label} cleanup[/bold]")
+    deleted_paths = _fs_clean(yes=yes) if is_fs else _config_clean(yes=yes)
 
-    # Phase 13: FS-History (record deletions)
+    # Phase N+4: History
     if deleted_paths:
-        console.print("\n[bold]Phase 13: Filesystem history[/bold]")
-        _fs_record_history(deleted_paths)
+        console.print(f"\n[bold]Phase {phase_start + 4}: {label} history[/bold]")
+        _record_orphan_history(domain, deleted_paths)
+
+
+def _display_orphans(orphans: list[Any], domain: str) -> None:
+    """Display orphans in a summary table.
+
+    Shows up to 20 entries in sync context with a hint to use the
+    domain-specific scan command for the full list.
+
+    Args:
+        orphans: List of orphaned entries to display.
+        domain: Domain name for table title and hint command.
+    """
+    from rich.table import Table
+
+    type_attr = "path_type" if domain == "filesystem" else "config_type"
+    hint_cmd = "popctl fs scan" if domain == "filesystem" else "popctl config scan"
+
+    table = Table(title=f"Orphaned {domain.capitalize()} Entries", show_lines=False)
+    table.add_column("Path", style="bold")
+    table.add_column("Type", width=10)
+    table.add_column("Confidence", justify="right", width=10)
+
+    display_limit = 20
+    for item in orphans[:display_limit]:
+        conf = f"{item.confidence:.0%}"
+        table.add_row(item.path, getattr(item, type_attr).value, conf)
+
+    console.print(table)
+    if len(orphans) > display_limit:
+        console.print(
+            f"[dim]... and {len(orphans) - display_limit} more. "
+            f"Use '{hint_cmd}' for full list.[/dim]"
+        )
+
+
+def _record_orphan_history(
+    domain: Literal["filesystem", "configs"],
+    deleted_paths: list[str],
+) -> None:
+    """Record domain deletions to history.
+
+    Args:
+        domain: Which domain the deletions belong to.
+        deleted_paths: Paths that were successfully deleted.
+    """
+    from popctl.domain.history import record_domain_deletions
+
+    display = "filesystem" if domain == "filesystem" else "config"
+
+    try:
+        record_domain_deletions(domain, deleted_paths, command="popctl sync")
+        print_info(f"{display.capitalize()} deletions recorded to history.")
+    except (OSError, RuntimeError) as e:
+        print_warning(f"Could not record {display} history: {e}")
 
 
 def _fs_scan() -> list[ScannedPath]:
@@ -560,44 +666,14 @@ def _fs_scan() -> list[ScannedPath]:
         return []
 
 
-def _fs_display_orphans(orphans: list[ScannedPath]) -> None:
-    """Display filesystem orphans in a summary table.
-
-    Shows up to 20 entries in sync context with a hint to use
-    ``popctl fs scan`` for the full list.
-
-    Args:
-        orphans: List of orphaned filesystem entries to display.
-    """
-    from rich.table import Table
-
-    table = Table(title="Orphaned Filesystem Entries", show_lines=False)
-    table.add_column("Path", style="bold")
-    table.add_column("Type", width=10)
-    table.add_column("Confidence", justify="right", width=10)
-
-    display_limit = 20
-    for p in orphans[:display_limit]:
-        conf = f"{p.confidence:.0%}"
-        table.add_row(p.path, p.path_type.value, conf)
-
-    console.print(table)
-    if len(orphans) > display_limit:
-        console.print(
-            f"[dim]... and {len(orphans) - display_limit} more. "
-            "Use 'popctl fs scan' for full list.[/dim]"
-        )
-
-
 def _fs_run_advisor(
     orphans: list[ScannedPath],
     auto: bool,
-) -> FilesystemDecisions | None:
+) -> DomainDecisions | None:
     """Phase 10: Run advisor to classify filesystem orphans.
 
-    For MVP, filesystem advisor integration is not yet wired into the
-    sync pipeline. This function prints a note and returns None.
-    Full standalone FS advisor can be implemented in a future iteration.
+    Converts scanner results to exchange model entries, invokes the
+    shared advisor workflow, and extracts the filesystem decisions.
 
     Args:
         orphans: List of orphaned filesystem entries.
@@ -606,12 +682,9 @@ def _fs_run_advisor(
     Returns:
         Filesystem decisions or None if advisor is unavailable/fails.
     """
-    _ = auto  # Reserved for future advisor integration
-
     from popctl.advisor.exchange import FilesystemOrphanEntry
 
-    # Convert ScannedPath objects to FilesystemOrphanEntry for advisor
-    fs_orphan_entries = [
+    fs_entries = [
         FilesystemOrphanEntry(
             path=p.path,
             path_type=p.path_type.value,
@@ -624,17 +697,17 @@ def _fs_run_advisor(
         for p in orphans
     ]
 
-    print_info(f"Classifying {len(fs_orphan_entries)} filesystem orphan(s) via advisor...")
+    print_info(f"Classifying {len(fs_entries)} filesystem orphan(s) via advisor...")
 
-    # NOTE: For MVP, filesystem advisor classification is not yet
-    # integrated into the sync pipeline. The advisor would classify
-    # orphans alongside packages.
-    print_warning("Filesystem advisor classification is not yet integrated into sync pipeline.")
-    print_info("Use 'popctl advisor session' for interactive filesystem classification.")
-    return None
+    decisions = _invoke_advisor(auto=auto, domain="filesystem", filesystem_orphans=fs_entries)
+    if decisions is None or decisions.filesystem is None:
+        return None
+
+    print_success("Filesystem advisor classification completed.")
+    return decisions.filesystem
 
 
-def _fs_apply_decisions(fs_decisions: FilesystemDecisions) -> None:
+def _fs_apply_decisions(fs_decisions: DomainDecisions) -> None:
     """Phase 11: Apply filesystem advisor decisions to manifest.
 
     Merges the advisor's keep/remove classifications into the manifest's
@@ -691,6 +764,15 @@ def _fs_apply_decisions(fs_decisions: FilesystemDecisions) -> None:
         )
     except (OSError, ManifestError) as e:
         print_warning(f"Could not save manifest after filesystem apply: {e}")
+        return
+
+    if fs_decisions.ask:
+        print_warning(
+            f"{len(fs_decisions.ask)} filesystem path(s) require manual decision. "
+            "Run 'popctl advisor session' to classify them interactively."
+        )
+        for decision in fs_decisions.ask:
+            console.print(f"  [dim]-[/dim] {decision.path}: {decision.reason}")
 
 
 def _fs_clean(*, yes: bool) -> list[str]:
@@ -750,80 +832,9 @@ def _fs_clean(*, yes: bool) -> list[str]:
     return successful
 
 
-def _fs_record_history(deleted_paths: list[str]) -> None:
-    """Phase 13: Record filesystem deletions to history.
-
-    Args:
-        deleted_paths: Paths that were successfully deleted.
-    """
-    from popctl.filesystem.history import record_fs_deletions
-
-    try:
-        record_fs_deletions(deleted_paths, command="popctl sync")
-        print_info("Filesystem deletions recorded to history.")
-    except (OSError, RuntimeError) as e:
-        print_warning(f"Could not record filesystem history: {e}")
-
-
 # =============================================================================
-# Config phases (14-18)
+# Config-specific functions (phases 14-18)
 # =============================================================================
-
-
-def _run_config_phases(
-    *,
-    dry_run: bool,
-    yes: bool,
-    no_advisor: bool,
-    auto: bool,
-) -> None:
-    """Run config scanning and cleanup phases (14-18).
-
-    These phases are non-fatal: failures print warnings and continue.
-    The entire config pipeline is wrapped to ensure that errors
-    never propagate up to crash the sync command.
-
-    Args:
-        dry_run: If True, show findings but do not delete.
-        yes: If True, skip confirmation prompts.
-        no_advisor: If True, skip config advisor classification.
-        auto: If True, use headless advisor instead of interactive.
-    """
-    console.print("\n[bold]Phase 14: Config scan[/bold]")
-
-    # Phase 14: Config-Scan
-    orphans = _config_scan()
-    if not orphans:
-        print_info("No orphaned config entries found. Skipping config phases.")
-        return
-
-    print_info(f"Found {len(orphans)} orphaned config entries.")
-
-    if dry_run:
-        # In dry-run, just show the orphans
-        _config_display_orphans(orphans)
-        print_info("Dry-run mode: No config changes made.")
-        return
-
-    # Phase 15: Config-Advisor (if not --no-advisor)
-    config_decisions: ConfigDecisions | None = None
-    if not no_advisor:
-        console.print("\n[bold]Phase 15: Config advisor[/bold]")
-        config_decisions = _config_run_advisor(orphans, auto)
-
-    # Phase 16: Config-Apply (apply advisor decisions to manifest)
-    if config_decisions:
-        console.print("\n[bold]Phase 16: Apply config decisions[/bold]")
-        _config_apply_decisions(config_decisions)
-
-    # Phase 17: Config-Clean (delete paths marked for removal)
-    console.print("\n[bold]Phase 17: Config cleanup[/bold]")
-    deleted_paths = _config_clean(yes=yes)
-
-    # Phase 18: Config-History (record deletions)
-    if deleted_paths:
-        console.print("\n[bold]Phase 18: Config history[/bold]")
-        _config_record_history(deleted_paths)
 
 
 def _config_scan() -> list[ScannedConfig]:
@@ -844,44 +855,14 @@ def _config_scan() -> list[ScannedConfig]:
         return []
 
 
-def _config_display_orphans(orphans: list[ScannedConfig]) -> None:
-    """Display config orphans in a summary table.
-
-    Shows up to 20 entries in sync context with a hint to use
-    ``popctl config scan`` for the full list.
-
-    Args:
-        orphans: List of orphaned config entries to display.
-    """
-    from rich.table import Table
-
-    table = Table(title="Orphaned Config Entries", show_lines=False)
-    table.add_column("Path", style="bold")
-    table.add_column("Type", width=10)
-    table.add_column("Confidence", justify="right", width=10)
-
-    display_limit = 20
-    for c in orphans[:display_limit]:
-        conf = f"{c.confidence:.0%}"
-        table.add_row(c.path, c.config_type.value, conf)
-
-    console.print(table)
-    if len(orphans) > display_limit:
-        console.print(
-            f"[dim]... and {len(orphans) - display_limit} more. "
-            "Use 'popctl config scan' for full list.[/dim]"
-        )
-
-
 def _config_run_advisor(
     orphans: list[ScannedConfig],
     auto: bool,
-) -> ConfigDecisions | None:
+) -> DomainDecisions | None:
     """Phase 15: Run advisor to classify config orphans.
 
-    For MVP, config advisor classification is not yet wired into the
-    sync pipeline. This function prints a note and returns None.
-    Full standalone config advisor can be implemented in a future iteration.
+    Converts scanner results to exchange model entries, invokes the
+    shared advisor workflow, and extracts the config decisions.
 
     Args:
         orphans: List of orphaned config entries.
@@ -890,12 +871,9 @@ def _config_run_advisor(
     Returns:
         Config decisions or None if advisor is unavailable/fails.
     """
-    _ = auto  # Reserved for future advisor integration
-
     from popctl.advisor.exchange import ConfigOrphanEntry
 
-    # Convert ScannedConfig objects to ConfigOrphanEntry for advisor
-    config_orphan_entries = [
+    config_entries = [
         ConfigOrphanEntry(
             path=c.path,
             config_type=c.config_type.value,
@@ -907,17 +885,17 @@ def _config_run_advisor(
         for c in orphans
     ]
 
-    print_info(f"Classifying {len(config_orphan_entries)} config orphan(s) via advisor...")
+    print_info(f"Classifying {len(config_entries)} config orphan(s) via advisor...")
 
-    # NOTE: For MVP, config advisor classification is not yet
-    # integrated into the sync pipeline. The advisor would classify
-    # orphans alongside packages.
-    print_warning("Config advisor classification is not yet integrated into sync pipeline.")
-    print_info("Use 'popctl advisor session' for interactive config classification.")
-    return None
+    decisions = _invoke_advisor(auto=auto, domain="configs", config_orphans=config_entries)
+    if decisions is None or decisions.configs is None:
+        return None
+
+    print_success("Config advisor classification completed.")
+    return decisions.configs
 
 
-def _config_apply_decisions(config_decisions: ConfigDecisions) -> None:
+def _config_apply_decisions(config_decisions: DomainDecisions) -> None:
     """Phase 16: Apply config advisor decisions to manifest.
 
     Merges the advisor's keep/remove classifications into the manifest's
@@ -974,6 +952,15 @@ def _config_apply_decisions(config_decisions: ConfigDecisions) -> None:
         )
     except (OSError, ManifestError) as e:
         print_warning(f"Could not save manifest after config apply: {e}")
+        return
+
+    if config_decisions.ask:
+        print_warning(
+            f"{len(config_decisions.ask)} config path(s) require manual decision. "
+            "Run 'popctl advisor session' to classify them interactively."
+        )
+        for decision in config_decisions.ask:
+            console.print(f"  [dim]-[/dim] {decision.path}: {decision.reason}")
 
 
 def _config_clean(*, yes: bool) -> list[str]:
@@ -1033,18 +1020,3 @@ def _config_clean(*, yes: bool) -> list[str]:
             print_warning(f"Failed to delete {r.path}: {r.error}")
 
     return successful
-
-
-def _config_record_history(deleted_paths: list[str]) -> None:
-    """Phase 18: Record config deletions to history.
-
-    Args:
-        deleted_paths: Paths that were successfully deleted.
-    """
-    from popctl.configs.history import record_config_deletions
-
-    try:
-        record_config_deletions(deleted_paths, command="popctl sync")
-        print_info("Config deletions recorded to history.")
-    except (OSError, RuntimeError) as e:
-        print_warning(f"Could not record config history: {e}")

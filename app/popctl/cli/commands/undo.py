@@ -14,6 +14,7 @@ from popctl.models.history import HistoryActionType, HistoryEntry
 from popctl.models.package import PackageSource
 from popctl.operators.apt import AptOperator
 from popctl.operators.flatpak import FlatpakOperator
+from popctl.operators.snap import SnapOperator
 from popctl.utils.formatting import console, print_error, print_info, print_success
 
 app = typer.Typer(
@@ -149,6 +150,7 @@ def _execute_undo(entry: HistoryEntry) -> bool:
     # Group items by source
     apt_items = [i for i in entry.items if i.source == PackageSource.APT]
     flatpak_items = [i for i in entry.items if i.source == PackageSource.FLATPAK]
+    snap_items = [i for i in entry.items if i.source == PackageSource.SNAP]
 
     all_results: list[ActionResult] = []
 
@@ -178,6 +180,16 @@ def _execute_undo(entry: HistoryEntry) -> bool:
         actions = [
             Action(action_type=inverse_action, package=item.name, source=item.source)
             for item in flatpak_items
+        ]
+        results = operator.execute(actions)
+        all_results.extend(results)
+
+    # Execute Snap
+    if snap_items:
+        operator = SnapOperator(dry_run=False)
+        actions = [
+            Action(action_type=inverse_action, package=item.name, source=item.source)
+            for item in snap_items
         ]
         results = operator.execute(actions)
         all_results.extend(results)

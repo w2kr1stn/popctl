@@ -34,8 +34,6 @@ from popctl.advisor.config import (
 from popctl.core.paths import ensure_advisor_sessions_dir, get_manifest_path
 from popctl.models.package import PackageSource
 from popctl.models.scan_result import ScanResult
-from popctl.scanners.apt import AptScanner
-from popctl.scanners.flatpak import FlatpakScanner
 from popctl.utils.formatting import (
     console,
     print_error,
@@ -122,7 +120,6 @@ def _scan_system(input_file: Path | None = None) -> ScanResult:
         typer.Exit: If scanning fails or input file is invalid.
     """
     from popctl.models.package import PackageStatus, ScannedPackage
-    from popctl.scanners.base import Scanner
 
     if input_file is not None:
         # Load from existing scan file
@@ -154,21 +151,10 @@ def _scan_system(input_file: Path | None = None) -> ScanResult:
             print_error(f"Invalid scan file format: {e}")
             raise typer.Exit(code=1) from e
 
-    # Perform live scan
-    scanners: list[Scanner] = []
-    apt_scanner = AptScanner()
-    flatpak_scanner = FlatpakScanner()
+    # Perform live scan using all available scanners
+    from popctl.cli.types import get_available_scanners
 
-    if apt_scanner.is_available():
-        scanners.append(apt_scanner)
-    else:
-        print_warning("APT package manager is not available.")
-
-    if flatpak_scanner.is_available():
-        scanners.append(flatpak_scanner)
-    else:
-        print_warning("Flatpak is not available.")
-
+    scanners = get_available_scanners()
     if not scanners:
         print_error("No package managers are available on this system.")
         raise typer.Exit(code=1)
@@ -208,6 +194,7 @@ def _record_advisor_apply_to_history(
         HistoryItem,
         create_history_entry,
     )
+    from popctl.models.package import PACKAGE_SOURCE_KEYS
 
     logger = logging.getLogger(__name__)
 
@@ -215,8 +202,8 @@ def _record_advisor_apply_to_history(
         # Collect all items from decisions
         items: list[HistoryItem] = []
 
-        for source_str in ("apt", "flatpak"):
-            source_decisions = decisions.packages.get(source_str)
+        for source_str in PACKAGE_SOURCE_KEYS:
+            source_decisions = decisions.packages.get(source_str)  # type: ignore[arg-type]
             if source_decisions is None:
                 continue
 
@@ -468,6 +455,7 @@ def apply(
     )
     from popctl.core.paths import get_exchange_dir
     from popctl.models.manifest import PackageEntry
+    from popctl.models.package import PACKAGE_SOURCE_KEYS
 
     # Step 1: Determine decisions.toml path
     if input_file is not None:
@@ -506,8 +494,8 @@ def apply(
     stats: dict[str, dict[str, int]] = {}
     ask_packages: list[tuple[str, str, str, float]] = []  # (name, source, reason, confidence)
 
-    for source in ("apt", "flatpak"):
-        source_decisions = decisions.packages.get(source)
+    for source in PACKAGE_SOURCE_KEYS:
+        source_decisions = decisions.packages.get(source)  # type: ignore[arg-type]
         if source_decisions is None:
             continue
 
@@ -605,16 +593,3 @@ def apply(
         # Record to history
         _record_advisor_apply_to_history(decisions)
         print_info("Classifications recorded to history.")
-
-
-@app.callback(invoke_without_command=True)
-def advisor_callback(ctx: typer.Context) -> None:
-    """AI-assisted package classification.
-
-    The advisor uses AI agents (Claude Code or Gemini CLI) to classify
-    packages as keep, remove, or ask. Run 'popctl advisor classify --help'
-    for usage details.
-    """
-    # Show help if no subcommand
-    if ctx.invoked_subcommand is None:
-        ctx.get_help()

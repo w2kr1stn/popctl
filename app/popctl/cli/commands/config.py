@@ -5,13 +5,13 @@ and clean up entries marked for removal in the manifest.
 """
 
 import json
-from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
 import typer
 from rich.table import Table
 
+from popctl.cli.types import OutputFormat
 from popctl.configs.history import record_config_deletions
 from popctl.configs.manifest import ConfigEntry
 from popctl.configs.models import ConfigStatus, ScannedConfig
@@ -21,6 +21,7 @@ from popctl.configs.scanner import ConfigScanner
 from popctl.core.manifest import require_manifest
 from popctl.utils.formatting import (
     console,
+    format_size,
     print_error,
     print_info,
     print_success,
@@ -32,13 +33,6 @@ app = typer.Typer(
     invoke_without_command=True,
     no_args_is_help=True,
 )
-
-
-class OutputFormat(str, Enum):
-    """Output format options for config scan."""
-
-    TABLE = "table"
-    JSON = "json"
 
 
 @app.command()
@@ -102,7 +96,7 @@ def scan(
 
     # Summary
     total_size = sum(c.size_bytes or 0 for c in orphans)
-    size_str = _format_size(total_size)
+    size_str = format_size(total_size)
     console.print(f"\n[dim]Found {len(orphans)} orphaned configs ({size_str} total)[/dim]")
     if limit and len(display_orphans) < len(orphans):
         console.print(
@@ -189,7 +183,7 @@ def _print_table(orphans: list[ScannedConfig]) -> None:
     table.add_column("Reason", style="dim")
 
     for c in orphans:
-        size_str = _format_size(c.size_bytes) if c.size_bytes else "-"
+        size_str = format_size(c.size_bytes) if c.size_bytes else "-"
         conf_str = f"{c.confidence:.0%}"
         reason = c.orphan_reason.value if c.orphan_reason else "-"
         table.add_row(c.path, c.config_type.value, size_str, conf_str, reason)
@@ -295,15 +289,3 @@ def _print_deletion_results(results: list[ConfigActionResult]) -> None:
         print_warning(f"{success_count} succeeded, {fail_count} failed")
     else:
         print_success(f"All {success_count} config(s) processed successfully.")
-
-
-def _format_size(size_bytes: int | None) -> str:
-    """Format byte count as human-readable string."""
-    if size_bytes is None or size_bytes == 0:
-        return "0 B"
-    size = float(size_bytes)
-    for unit in ("B", "KB", "MB", "GB"):
-        if abs(size) < 1024:
-            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
-        size /= 1024
-    return f"{size:.1f} TB"

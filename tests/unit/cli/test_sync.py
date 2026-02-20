@@ -419,7 +419,7 @@ class TestSyncFailures:
                 "popctl.utils.shell", fromlist=["CommandResult"]
             ).CommandResult(stdout="", stderr="E: Package not found", returncode=100)
 
-            result = runner.invoke(app, ["sync", "--yes", "--no-filesystem"])
+            result = runner.invoke(app, ["sync", "--yes", "--no-filesystem", "--no-configs"])
 
         assert result.exit_code == 1
         assert "FAIL" in result.stdout or "failed" in result.stdout.lower()
@@ -708,7 +708,7 @@ class TestSyncFilesystem:
                 return_value=diff_result_no_new,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
-            patch("popctl.cli.commands.sync._run_filesystem_phases") as mock_fs_phases,
+            patch("popctl.cli.commands.sync._run_orphan_phases") as mock_orphan_phases,
         ):
             mock_run.return_value = __import__(
                 "popctl.utils.shell", fromlist=["CommandResult"]
@@ -716,11 +716,12 @@ class TestSyncFilesystem:
 
             runner.invoke(app, ["sync", "--yes"])
 
-        # Filesystem phases should have been called
-        mock_fs_phases.assert_called_once()
-        call_kwargs = mock_fs_phases.call_args[1]
-        assert call_kwargs["dry_run"] is False
-        assert call_kwargs["yes"] is True
+        # _run_orphan_phases should have been called for both filesystem and configs
+        assert mock_orphan_phases.call_count == 2
+        fs_call = mock_orphan_phases.call_args_list[0]
+        assert fs_call[0][0] == "filesystem"
+        assert fs_call[1]["dry_run"] is False
+        assert fs_call[1]["yes"] is True
 
     def test_sync_filesystem_phases_run_when_packages_in_sync(
         self, sample_manifest: Manifest, in_sync_result: DiffResult
@@ -785,8 +786,7 @@ class TestSyncFilesystem:
                 return_value=missing_only,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
-            patch("popctl.cli.commands.sync._run_filesystem_phases") as mock_fs_phases,
-            patch("popctl.cli.commands.sync._run_config_phases") as mock_cfg_phases,
+            patch("popctl.cli.commands.sync._run_orphan_phases") as mock_orphan_phases,
         ):
             mock_run.return_value = __import__(
                 "popctl.utils.shell", fromlist=["CommandResult"]
@@ -796,10 +796,11 @@ class TestSyncFilesystem:
 
         # Package failure should give exit code 1
         assert result.exit_code == 1
-        # But filesystem phases should still have been called
-        mock_fs_phases.assert_called_once()
-        # And config phases should still have been called
-        mock_cfg_phases.assert_called_once()
+        # But both filesystem and config orphan phases should still have been called
+        assert mock_orphan_phases.call_count == 2
+        domains_called = [call[0][0] for call in mock_orphan_phases.call_args_list]
+        assert "filesystem" in domains_called
+        assert "configs" in domains_called
 
 
 # =============================================================================
@@ -1059,16 +1060,16 @@ class TestSyncConfigs:
 
         assert result == []
 
-    def test_config_record_history_non_fatal(self) -> None:
-        """_config_record_history catches exceptions without crashing."""
-        from popctl.cli.commands.sync import _config_record_history
+    def test_record_orphan_history_non_fatal(self) -> None:
+        """_record_orphan_history catches exceptions without crashing."""
+        from popctl.cli.commands.sync import _record_orphan_history
 
         with patch(
-            "popctl.configs.history.record_config_deletions",
+            "popctl.domain.history.record_domain_deletions",
             side_effect=OSError("write error"),
         ):
             # Should not raise
-            _config_record_history(["/home/test/.config/deleted-app"])
+            _record_orphan_history("configs", ["/home/test/.config/deleted-app"])
 
     def test_sync_config_phases_run_after_filesystem_phases(
         self, sample_manifest: Manifest, diff_result_no_new: DiffResult
@@ -1086,8 +1087,7 @@ class TestSyncConfigs:
                 return_value=diff_result_no_new,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
-            patch("popctl.cli.commands.sync._run_filesystem_phases") as mock_fs_phases,
-            patch("popctl.cli.commands.sync._run_config_phases") as mock_cfg_phases,
+            patch("popctl.cli.commands.sync._run_orphan_phases") as mock_orphan_phases,
         ):
             mock_run.return_value = __import__(
                 "popctl.utils.shell", fromlist=["CommandResult"]
@@ -1095,9 +1095,365 @@ class TestSyncConfigs:
 
             runner.invoke(app, ["sync", "--yes"])
 
-        # Both filesystem and config phases should have been called
-        mock_fs_phases.assert_called_once()
-        mock_cfg_phases.assert_called_once()
-        call_kwargs = mock_cfg_phases.call_args[1]
-        assert call_kwargs["dry_run"] is False
-        assert call_kwargs["yes"] is True
+        # Both filesystem and config orphan phases should have been called
+        assert mock_orphan_phases.call_count == 2
+        # First call: filesystem, second call: configs
+        fs_call = mock_orphan_phases.call_args_list[0]
+        cfg_call = mock_orphan_phases.call_args_list[1]
+        assert fs_call[0][0] == "filesystem"
+        assert cfg_call[0][0] == "configs"
+        assert cfg_call[1]["dry_run"] is False
+        assert cfg_call[1]["yes"] is True
+
+
+# =============================================================================
+# Tests for _invoke_advisor shared helper
+# =============================================================================
+
+
+class TestInvokeAdvisor:
+    """Tests for the shared _invoke_advisor() helper function."""
+
+    def test_invoke_advisor_config_failure_returns_none(self) -> None:
+        """Config load failure returns None (non-fatal)."""
+        from popctl.cli.commands.sync import _invoke_advisor
+
+        with patch(
+            "popctl.cli.commands.advisor._load_or_create_config",
+            side_effect=RuntimeError("config error"),
+        ):
+            result = _invoke_advisor(auto=True, domain="packages")
+
+        assert result is None
+
+    def test_invoke_advisor_scan_failure_returns_none(self) -> None:
+        """System scan failure (SystemExit) returns None (non-fatal)."""
+        from popctl.cli.commands.sync import _invoke_advisor
+
+        with (
+            patch("popctl.cli.commands.advisor._load_or_create_config", return_value=MagicMock()),
+            patch("popctl.cli.commands.advisor._scan_system", side_effect=SystemExit(1)),
+        ):
+            result = _invoke_advisor(auto=True, domain="packages")
+
+        assert result is None
+
+    def test_invoke_advisor_workspace_failure_returns_none(self) -> None:
+        """Workspace creation failure returns None (non-fatal)."""
+        from popctl.cli.commands.sync import _invoke_advisor
+
+        with (
+            patch("popctl.cli.commands.advisor._load_or_create_config", return_value=MagicMock()),
+            patch("popctl.cli.commands.advisor._scan_system", return_value=MagicMock()),
+            patch("popctl.core.paths.ensure_advisor_sessions_dir", side_effect=OSError("no space")),
+        ):
+            result = _invoke_advisor(auto=True, domain="filesystem")
+
+        assert result is None
+
+    def test_invoke_advisor_runner_failure_returns_none(self) -> None:
+        """Advisor execution failure returns None (non-fatal)."""
+        from popctl.cli.commands.sync import _invoke_advisor
+
+        mock_config = MagicMock()
+        mock_scan = MagicMock()
+
+        with (
+            patch("popctl.cli.commands.advisor._load_or_create_config", return_value=mock_config),
+            patch("popctl.cli.commands.advisor._scan_system", return_value=mock_scan),
+            patch("popctl.core.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")),
+            patch("popctl.core.paths.get_manifest_path") as mock_mp,
+            patch("popctl.core.paths.get_advisor_memory_path") as mock_mem,
+            patch(
+                "popctl.advisor.workspace.create_session_workspace", return_value=Path("/tmp/ws")
+            ),
+            patch(
+                "popctl.advisor.runner.AgentRunner.run_headless", side_effect=RuntimeError("boom")
+            ),
+        ):
+            mock_mp.return_value = MagicMock(exists=lambda: False)
+            mock_mem.return_value = MagicMock(exists=lambda: False)
+
+            result = _invoke_advisor(auto=True, domain="packages")
+
+        assert result is None
+
+    def test_invoke_advisor_manual_mode_returns_none(self) -> None:
+        """Manual mode returns None instead of raising typer.Exit."""
+        from popctl.advisor.runner import AgentResult
+        from popctl.cli.commands.sync import _invoke_advisor
+
+        mock_agent_result = AgentResult(
+            success=False,
+            output="Run advisor manually...",
+            error="manual_mode",
+        )
+
+        with (
+            patch("popctl.cli.commands.advisor._load_or_create_config", return_value=MagicMock()),
+            patch("popctl.cli.commands.advisor._scan_system", return_value=MagicMock()),
+            patch("popctl.core.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")),
+            patch("popctl.core.paths.get_manifest_path") as mock_mp,
+            patch("popctl.core.paths.get_advisor_memory_path") as mock_mem,
+            patch(
+                "popctl.advisor.workspace.create_session_workspace", return_value=Path("/tmp/ws")
+            ),
+            patch(
+                "popctl.advisor.runner.AgentRunner.launch_interactive",
+                return_value=mock_agent_result,
+            ),
+        ):
+            mock_mp.return_value = MagicMock(exists=lambda: False)
+            mock_mem.return_value = MagicMock(exists=lambda: False)
+
+            result = _invoke_advisor(auto=False, domain="packages")
+
+        assert result is None
+
+    def test_invoke_advisor_success(self, tmp_path: Path) -> None:
+        """Successful advisor invocation returns DecisionsResult."""
+        from popctl.advisor.exchange import DecisionsResult
+        from popctl.advisor.runner import AgentResult
+        from popctl.cli.commands.sync import _invoke_advisor
+
+        decisions_path = tmp_path / "output" / "decisions.toml"
+        expected_decisions = DecisionsResult(packages={})
+
+        mock_agent_result = AgentResult(
+            success=True,
+            output="Done.",
+            decisions_path=decisions_path,
+        )
+
+        with (
+            patch("popctl.cli.commands.advisor._load_or_create_config", return_value=MagicMock()),
+            patch("popctl.cli.commands.advisor._scan_system", return_value=MagicMock()),
+            patch("popctl.core.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")),
+            patch("popctl.core.paths.get_manifest_path") as mock_mp,
+            patch("popctl.core.paths.get_advisor_memory_path") as mock_mem,
+            patch(
+                "popctl.advisor.workspace.create_session_workspace", return_value=Path("/tmp/ws")
+            ),
+            patch(
+                "popctl.advisor.runner.AgentRunner.run_headless",
+                return_value=mock_agent_result,
+            ),
+            patch("popctl.advisor.import_decisions", return_value=expected_decisions),
+        ):
+            mock_mp.return_value = MagicMock(exists=lambda: False)
+            mock_mem.return_value = MagicMock(exists=lambda: False)
+
+            result = _invoke_advisor(auto=True, domain="packages")
+
+        assert result is expected_decisions
+
+    def test_invoke_advisor_import_failure_returns_none(self, tmp_path: Path) -> None:
+        """Failed decisions import returns None (non-fatal)."""
+        from popctl.advisor.runner import AgentResult
+        from popctl.cli.commands.sync import _invoke_advisor
+
+        decisions_path = tmp_path / "output" / "decisions.toml"
+
+        mock_agent_result = AgentResult(
+            success=True,
+            output="Done.",
+            decisions_path=decisions_path,
+        )
+
+        with (
+            patch("popctl.cli.commands.advisor._load_or_create_config", return_value=MagicMock()),
+            patch("popctl.cli.commands.advisor._scan_system", return_value=MagicMock()),
+            patch("popctl.core.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")),
+            patch("popctl.core.paths.get_manifest_path") as mock_mp,
+            patch("popctl.core.paths.get_advisor_memory_path") as mock_mem,
+            patch(
+                "popctl.advisor.workspace.create_session_workspace", return_value=Path("/tmp/ws")
+            ),
+            patch(
+                "popctl.advisor.runner.AgentRunner.run_headless",
+                return_value=mock_agent_result,
+            ),
+            patch(
+                "popctl.advisor.import_decisions",
+                side_effect=ValueError("bad TOML"),
+            ),
+        ):
+            mock_mp.return_value = MagicMock(exists=lambda: False)
+            mock_mem.return_value = MagicMock(exists=lambda: False)
+
+            result = _invoke_advisor(auto=True, domain="packages")
+
+        assert result is None
+
+
+# =============================================================================
+# Tests for _fs_run_advisor
+# =============================================================================
+
+
+class TestFsRunAdvisor:
+    """Tests for filesystem advisor phase (10)."""
+
+    def _make_orphan(self, path: str = "/home/test/.config/old-app") -> MagicMock:
+        """Create a mock ScannedPath."""
+        orphan = MagicMock()
+        orphan.path = path
+        orphan.path_type.value = "directory"
+        orphan.size_bytes = 4096
+        orphan.mtime = None
+        orphan.parent_target = "~/.config"
+        orphan.orphan_reason.value = "no_package_match"
+        orphan.confidence = 0.8
+        return orphan
+
+    def test_fs_run_advisor_success(self) -> None:
+        """Successful FS advisor returns FilesystemDecisions."""
+        from popctl.advisor.exchange import (
+            DecisionsResult,
+            DomainDecisions,
+            PathDecision,
+        )
+        from popctl.cli.commands.sync import _fs_run_advisor
+
+        fs_decisions = DomainDecisions(
+            keep=[
+                PathDecision(
+                    path="/home/test/.config/old-app",
+                    reason="Active config",
+                    confidence=0.9,
+                    category="config",
+                )
+            ],
+        )
+        mock_decisions = DecisionsResult(
+            packages={},
+            filesystem=fs_decisions,
+        )
+
+        with patch("popctl.cli.commands.sync._invoke_advisor", return_value=mock_decisions):
+            result = _fs_run_advisor([self._make_orphan()], auto=True)
+
+        assert result is fs_decisions
+
+    def test_fs_run_advisor_no_decisions_returns_none(self) -> None:
+        """When _invoke_advisor returns None, FS advisor returns None."""
+        from popctl.cli.commands.sync import _fs_run_advisor
+
+        with patch("popctl.cli.commands.sync._invoke_advisor", return_value=None):
+            result = _fs_run_advisor([self._make_orphan()], auto=True)
+
+        assert result is None
+
+    def test_fs_run_advisor_no_fs_section_returns_none(self) -> None:
+        """When decisions have no filesystem section, returns None."""
+        from popctl.advisor.exchange import DecisionsResult
+        from popctl.cli.commands.sync import _fs_run_advisor
+
+        mock_decisions = DecisionsResult(packages={}, filesystem=None)
+
+        with patch("popctl.cli.commands.sync._invoke_advisor", return_value=mock_decisions):
+            result = _fs_run_advisor([self._make_orphan()], auto=True)
+
+        assert result is None
+
+    def test_fs_run_advisor_passes_orphan_entries(self) -> None:
+        """FS advisor converts ScannedPath to FilesystemOrphanEntry."""
+        from popctl.cli.commands.sync import _fs_run_advisor
+
+        orphan = self._make_orphan("/home/test/.config/vlc")
+
+        with patch("popctl.cli.commands.sync._invoke_advisor", return_value=None) as mock_invoke:
+            _fs_run_advisor([orphan], auto=True)
+
+        # Verify _invoke_advisor was called with fs orphan entries
+        call_kwargs = mock_invoke.call_args[1]
+        assert call_kwargs["domain"] == "filesystem"
+        assert call_kwargs["auto"] is True
+        assert len(call_kwargs["filesystem_orphans"]) == 1
+        assert call_kwargs["filesystem_orphans"][0].path == "/home/test/.config/vlc"
+
+
+# =============================================================================
+# Tests for _config_run_advisor
+# =============================================================================
+
+
+class TestConfigRunAdvisor:
+    """Tests for config advisor phase (15)."""
+
+    def _make_config_orphan(self, path: str = "/home/test/.config/old-app") -> MagicMock:
+        """Create a mock ScannedConfig."""
+        orphan = MagicMock()
+        orphan.path = path
+        orphan.config_type.value = "directory"
+        orphan.size_bytes = 4096
+        orphan.mtime = None
+        orphan.orphan_reason.value = "no_package_match"
+        orphan.confidence = 0.7
+        return orphan
+
+    def test_config_run_advisor_success(self) -> None:
+        """Successful config advisor returns ConfigDecisions."""
+        from popctl.advisor.exchange import (
+            DecisionsResult,
+            DomainDecisions,
+            PathDecision,
+        )
+        from popctl.cli.commands.sync import _config_run_advisor
+
+        cfg_decisions = DomainDecisions(
+            remove=[
+                PathDecision(
+                    path="/home/test/.config/old-app",
+                    reason="Orphaned config",
+                    confidence=0.85,
+                    category="obsolete",
+                )
+            ],
+        )
+        mock_decisions = DecisionsResult(
+            packages={},
+            configs=cfg_decisions,
+        )
+
+        with patch("popctl.cli.commands.sync._invoke_advisor", return_value=mock_decisions):
+            result = _config_run_advisor([self._make_config_orphan()], auto=True)
+
+        assert result is cfg_decisions
+
+    def test_config_run_advisor_no_decisions_returns_none(self) -> None:
+        """When _invoke_advisor returns None, config advisor returns None."""
+        from popctl.cli.commands.sync import _config_run_advisor
+
+        with patch("popctl.cli.commands.sync._invoke_advisor", return_value=None):
+            result = _config_run_advisor([self._make_config_orphan()], auto=True)
+
+        assert result is None
+
+    def test_config_run_advisor_no_configs_section_returns_none(self) -> None:
+        """When decisions have no configs section, returns None."""
+        from popctl.advisor.exchange import DecisionsResult
+        from popctl.cli.commands.sync import _config_run_advisor
+
+        mock_decisions = DecisionsResult(packages={}, configs=None)
+
+        with patch("popctl.cli.commands.sync._invoke_advisor", return_value=mock_decisions):
+            result = _config_run_advisor([self._make_config_orphan()], auto=True)
+
+        assert result is None
+
+    def test_config_run_advisor_passes_orphan_entries(self) -> None:
+        """Config advisor converts ScannedConfig to ConfigOrphanEntry."""
+        from popctl.cli.commands.sync import _config_run_advisor
+
+        orphan = self._make_config_orphan("/home/test/.config/nvim")
+
+        with patch("popctl.cli.commands.sync._invoke_advisor", return_value=None) as mock_invoke:
+            _config_run_advisor([orphan], auto=True)
+
+        # Verify _invoke_advisor was called with config orphan entries
+        call_kwargs = mock_invoke.call_args[1]
+        assert call_kwargs["domain"] == "configs"
+        assert call_kwargs["auto"] is True
+        assert len(call_kwargs["config_orphans"]) == 1
+        assert call_kwargs["config_orphans"][0].path == "/home/test/.config/nvim"

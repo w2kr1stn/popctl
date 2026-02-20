@@ -506,7 +506,8 @@ class TestAdvisorScannerAvailability:
             result = runner.invoke(app, ["advisor", "classify"])
 
         assert result.exit_code == 1
-        assert "not available" in (result.stdout + (result.stderr or "")).lower()
+        output = (result.stdout + (result.stderr or "")).lower()
+        assert "no package managers" in output or "not available" in output
 
 
 # =============================================================================
