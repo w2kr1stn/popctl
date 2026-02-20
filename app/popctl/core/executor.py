@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from popctl.cli.types import SourceChoice
 from popctl.core.state import StateManager
 from popctl.models.action import ActionType
 from popctl.models.history import (
@@ -18,6 +17,7 @@ from popctl.models.history import (
     HistoryItem,
     create_history_entry,
 )
+from popctl.models.types import SourceChoice
 from popctl.operators.apt import AptOperator
 from popctl.operators.base import Operator
 from popctl.operators.flatpak import FlatpakOperator
@@ -38,7 +38,7 @@ ACTION_TO_HISTORY: dict[ActionType, HistoryActionType] = {
 }
 
 
-def get_operators(source: SourceChoice, dry_run: bool = False) -> list[Operator]:
+def _get_operators(source: SourceChoice, dry_run: bool = False) -> list[Operator]:
     """Get operator instances based on source selection.
 
     Args:
@@ -75,7 +75,7 @@ def get_available_operators(source: SourceChoice, dry_run: bool = False) -> list
     Returns:
         List of available operator instances.
     """
-    return [op for op in get_operators(source, dry_run) if op.is_available()]
+    return [op for op in _get_operators(source, dry_run) if op.is_available()]
 
 
 def execute_actions(

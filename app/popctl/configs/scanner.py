@@ -149,7 +149,6 @@ class ConfigScanner:
                 mtime=get_path_mtime(entry),
                 orphan_reason=ConfigOrphanReason.DEAD_LINK,
                 confidence=_CONFIDENCE_FILE,
-                description=None,
             )
             return
 
@@ -172,7 +171,6 @@ class ConfigScanner:
             mtime=get_path_mtime(entry),
             orphan_reason=orphan_reason,
             confidence=confidence,
-            description=None,
         )
 
     def _check_ownership(self, name: str, path: Path) -> ConfigStatus:

@@ -214,7 +214,6 @@ def _print_json(orphans: list[ScannedPath]) -> None:
             "parent_target": p.parent_target,
             "orphan_reason": p.orphan_reason.value if p.orphan_reason else None,
             "confidence": p.confidence,
-            "description": p.description,
         }
         for p in orphans
     ]

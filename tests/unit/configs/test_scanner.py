@@ -157,7 +157,6 @@ class TestScanFindsOrphans:
         assert result.confidence > 0.0
         assert result.mtime is not None
         assert result.size_bytes is not None
-        assert result.description is None
 
 
 class TestScanSkipsOwnedPackages:

@@ -202,7 +202,6 @@ def _print_json(orphans: list[ScannedConfig]) -> None:
             "mtime": c.mtime,
             "orphan_reason": c.orphan_reason.value if c.orphan_reason else None,
             "confidence": c.confidence,
-            "description": c.description,
         }
         for c in orphans
     ]

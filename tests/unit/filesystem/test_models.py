@@ -59,7 +59,6 @@ class TestScannedPath:
             parent_target="~/.config",
             orphan_reason=OrphanReason.NO_PACKAGE_MATCH,
             confidence=0.70,
-            description="VLC media player config directory",
         )
         assert sp.path == "/home/user/.config/vlc"
         assert sp.path_type == PathType.DIRECTORY
@@ -69,7 +68,6 @@ class TestScannedPath:
         assert sp.parent_target == "~/.config"
         assert sp.orphan_reason == OrphanReason.NO_PACKAGE_MATCH
         assert sp.confidence == 0.70
-        assert sp.description == "VLC media player config directory"
 
     def test_scanned_path_frozen(self) -> None:
         """Verify immutability raises FrozenInstanceError on assignment."""
@@ -82,7 +80,6 @@ class TestScannedPath:
             parent_target="~/.config",
             orphan_reason=OrphanReason.NO_PACKAGE_MATCH,
             confidence=0.70,
-            description="VLC config",
         )
         with pytest.raises(AttributeError):
             sp.path = "/other/path"  # type: ignore[misc]
@@ -98,12 +95,10 @@ class TestScannedPath:
             parent_target="~/.cache",
             orphan_reason=None,
             confidence=0.95,
-            description=None,
         )
         assert sp.size_bytes is None
         assert sp.mtime is None
         assert sp.orphan_reason is None
-        assert sp.description is None
 
     def test_scanned_path_empty_path_rejected(self) -> None:
         """Empty path string should raise ValueError."""
@@ -117,7 +112,6 @@ class TestScannedPath:
                 parent_target="~/.config",
                 orphan_reason=None,
                 confidence=0.5,
-                description=None,
             )
 
     def test_scanned_path_invalid_confidence_rejected(self) -> None:
@@ -132,7 +126,6 @@ class TestScannedPath:
                 parent_target="~/.config",
                 orphan_reason=None,
                 confidence=1.5,
-                description=None,
             )
 
     def test_scanned_path_negative_confidence_rejected(self) -> None:
@@ -147,7 +140,6 @@ class TestScannedPath:
                 parent_target="~/.config",
                 orphan_reason=None,
                 confidence=-0.1,
-                description=None,
             )
 
     def test_scanned_path_boundary_confidence(self) -> None:
@@ -161,7 +153,6 @@ class TestScannedPath:
             parent_target="~/.config",
             orphan_reason=None,
             confidence=0.0,
-            description=None,
         )
         sp_one = ScannedPath(
             path="/home/user/.config/b",
@@ -172,7 +163,6 @@ class TestScannedPath:
             parent_target="~/.config",
             orphan_reason=None,
             confidence=1.0,
-            description=None,
         )
         assert sp_zero.confidence == 0.0
         assert sp_one.confidence == 1.0

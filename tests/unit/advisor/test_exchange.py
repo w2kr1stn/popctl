@@ -19,7 +19,6 @@ from popctl.advisor.exchange import (
     PathDecision,
     ScanExport,
     SourceDecisions,
-    cleanup_exchange_dir,
     import_decisions,
 )
 
@@ -481,64 +480,6 @@ ask = []
 
 
 # =============================================================================
-# Test cleanup_exchange_dir
-# =============================================================================
-
-
-class TestCleanupExchangeDir:
-    """Tests for cleanup_exchange_dir function."""
-
-    def test_cleanup_removes_all_exchange_files(self, tmp_path: Path) -> None:
-        """cleanup_exchange_dir removes all known exchange files."""
-        # Create all exchange files
-        (tmp_path / "scan.json").write_text("{}")
-        (tmp_path / "decisions.toml").write_text("")
-        (tmp_path / "prompt.txt").write_text("")
-
-        cleanup_exchange_dir(tmp_path)
-
-        assert not (tmp_path / "scan.json").exists()
-        assert not (tmp_path / "decisions.toml").exists()
-        assert not (tmp_path / "prompt.txt").exists()
-
-    def test_cleanup_preserves_directory(self, tmp_path: Path) -> None:
-        """cleanup_exchange_dir preserves the directory itself."""
-        (tmp_path / "scan.json").write_text("{}")
-
-        cleanup_exchange_dir(tmp_path)
-
-        assert tmp_path.exists()
-        assert tmp_path.is_dir()
-
-    def test_cleanup_ignores_other_files(self, tmp_path: Path) -> None:
-        """cleanup_exchange_dir ignores non-exchange files."""
-        other_file = tmp_path / "other.txt"
-        other_file.write_text("keep me")
-
-        cleanup_exchange_dir(tmp_path)
-
-        assert other_file.exists()
-        assert other_file.read_text() == "keep me"
-
-    def test_cleanup_handles_nonexistent_dir(self, tmp_path: Path) -> None:
-        """cleanup_exchange_dir handles non-existent directory gracefully."""
-        nonexistent = tmp_path / "nonexistent"
-
-        # Should not raise
-        cleanup_exchange_dir(nonexistent)
-
-    def test_cleanup_handles_missing_files(self, tmp_path: Path) -> None:
-        """cleanup_exchange_dir handles missing files gracefully."""
-        # Only create some files
-        (tmp_path / "scan.json").write_text("{}")
-
-        # Should not raise even though other files don't exist
-        cleanup_exchange_dir(tmp_path)
-
-        assert not (tmp_path / "scan.json").exists()
-
-
-# =============================================================================
 # Test Module Exports
 # =============================================================================
 
@@ -563,7 +504,6 @@ class TestModuleExports:
 
         # Functions
         assert hasattr(exchange, "import_decisions")
-        assert hasattr(exchange, "cleanup_exchange_dir")
 
     def test_advisor_init_exports_exchange(self) -> None:
         """advisor __init__ exports exchange symbols."""
@@ -577,13 +517,11 @@ class TestModuleExports:
             PathDecision,
             ScanExport,
             SourceDecisions,
-            cleanup_exchange_dir,
             import_decisions,
         )
 
         # Verify imports work and are callable/classes
         assert callable(import_decisions)
-        assert callable(cleanup_exchange_dir)
         assert PackageScanEntry is not None
         assert ScanExport is not None
         assert PackageDecision is not None

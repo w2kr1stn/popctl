@@ -32,7 +32,6 @@ def _make_orphan(
         mtime="2024-01-15T10:00:00Z",
         orphan_reason=ConfigOrphanReason.NO_PACKAGE_MATCH,
         confidence=confidence,
-        description=None,
     )
 
 
@@ -46,7 +45,6 @@ def _make_owned(path: str) -> ScannedConfig:
         mtime="2024-01-15T10:00:00Z",
         orphan_reason=None,
         confidence=0.0,
-        description=None,
     )
 
 

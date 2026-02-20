@@ -667,7 +667,6 @@ class TestSyncFilesystem:
                 parent_target="~/.config",
                 orphan_reason=OrphanReason.NO_PACKAGE_MATCH,
                 confidence=0.70,
-                description=None,
             ),
         ]
 
@@ -744,7 +743,6 @@ class TestSyncFilesystem:
                 parent_target="~/.cache",
                 orphan_reason=OrphanReason.STALE_CACHE,
                 confidence=0.95,
-                description=None,
             ),
         ]
 
@@ -837,7 +835,6 @@ class TestSyncConfigs:
                 mtime=None,
                 orphan_reason=ConfigOrphanReason.NO_PACKAGE_MATCH,
                 confidence=0.70,
-                description=None,
             ),
         ]
 
@@ -930,7 +927,6 @@ class TestSyncConfigs:
                 mtime=None,
                 orphan_reason=ConfigOrphanReason.NO_PACKAGE_MATCH,
                 confidence=0.70,
-                description=None,
             ),
         ]
 
@@ -977,7 +973,6 @@ class TestSyncConfigs:
                 mtime=None,
                 orphan_reason=ConfigOrphanReason.NO_PACKAGE_MATCH,
                 confidence=0.70,
-                description=None,
             ),
         ]
 

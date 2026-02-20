@@ -12,12 +12,10 @@ from popctl.core.paths import (
     ensure_advisor_memory_dir,
     ensure_advisor_sessions_dir,
     ensure_config_dir,
-    ensure_exchange_dir,
     ensure_state_dir,
     get_advisor_config_path,
     get_advisor_memory_path,
     get_advisor_sessions_dir,
-    get_cache_dir,
     get_config_dir,
     get_exchange_dir,
     get_manifest_path,
@@ -62,26 +60,6 @@ class TestGetStateDir:
         """get_state_dir respects XDG_STATE_HOME environment variable."""
         with patch.dict(os.environ, {"XDG_STATE_HOME": str(tmp_path)}):
             result = get_state_dir()
-
-        assert result == tmp_path / APP_NAME
-
-
-class TestGetCacheDir:
-    """Tests for get_cache_dir function."""
-
-    def test_default_cache_dir(self) -> None:
-        """get_cache_dir returns default path when XDG_CACHE_HOME not set."""
-        with patch.dict(os.environ, {}, clear=True):
-            os.environ.pop("XDG_CACHE_HOME", None)
-
-            result = get_cache_dir()
-
-        assert result == Path.home() / ".cache" / APP_NAME
-
-    def test_respects_xdg_cache_home(self, tmp_path: Path) -> None:
-        """get_cache_dir respects XDG_CACHE_HOME environment variable."""
-        with patch.dict(os.environ, {"XDG_CACHE_HOME": str(tmp_path)}):
-            result = get_cache_dir()
 
         assert result == tmp_path / APP_NAME
 
@@ -157,34 +135,6 @@ class TestAdvisorPaths:
             result = get_advisor_config_path()
 
         assert result == tmp_path / APP_NAME / "advisor.toml"
-
-    def test_ensure_exchange_dir_creates_directory(self, tmp_path: Path) -> None:
-        """ensure_exchange_dir creates the exchange directory."""
-        test_dir = tmp_path / "popctl-exchange"
-
-        with (
-            patch("popctl.core.paths.EXCHANGE_DIR", test_dir),
-            patch("popctl.core.paths.get_exchange_dir", return_value=test_dir),
-        ):
-            result = ensure_exchange_dir()
-
-        assert result == test_dir
-        assert test_dir.exists()
-        assert test_dir.is_dir()
-
-    def test_ensure_exchange_dir_idempotent(self, tmp_path: Path) -> None:
-        """ensure_exchange_dir can be called multiple times safely."""
-        test_dir = tmp_path / "popctl-exchange"
-
-        with (
-            patch("popctl.core.paths.EXCHANGE_DIR", test_dir),
-            patch("popctl.core.paths.get_exchange_dir", return_value=test_dir),
-        ):
-            result1 = ensure_exchange_dir()
-            result2 = ensure_exchange_dir()
-
-        assert result1 == result2
-        assert test_dir.exists()
 
     def test_get_advisor_sessions_dir(self) -> None:
         """get_advisor_sessions_dir returns sessions dir under state."""

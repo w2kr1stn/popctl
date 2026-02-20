@@ -8,9 +8,9 @@ from unittest.mock import MagicMock, patch
 from popctl.cli.types import SourceChoice
 from popctl.core.executor import (
     ACTION_TO_HISTORY,
+    _get_operators,
     execute_actions,
     get_available_operators,
-    get_operators,
     record_actions_to_history,
 )
 from popctl.models.action import Action, ActionResult, ActionType
@@ -54,41 +54,41 @@ def _make_result(
 
 
 # ---------------------------------------------------------------------------
-# get_operators
+# _get_operators
 # ---------------------------------------------------------------------------
 
 
 class TestGetOperators:
-    """Tests for the get_operators factory function."""
+    """Tests for the _get_operators factory function."""
 
     def test_get_operators_apt_only(self) -> None:
         """SourceChoice.APT returns only AptOperator."""
-        ops = get_operators(SourceChoice.APT)
+        ops = _get_operators(SourceChoice.APT)
         assert len(ops) == 1
         assert isinstance(ops[0], AptOperator)
 
     def test_get_operators_flatpak_only(self) -> None:
         """SourceChoice.FLATPAK returns only FlatpakOperator."""
-        ops = get_operators(SourceChoice.FLATPAK)
+        ops = _get_operators(SourceChoice.FLATPAK)
         assert len(ops) == 1
         assert isinstance(ops[0], FlatpakOperator)
 
     def test_get_operators_snap_only(self) -> None:
         """SourceChoice.SNAP returns only SnapOperator."""
-        ops = get_operators(SourceChoice.SNAP)
+        ops = _get_operators(SourceChoice.SNAP)
         assert len(ops) == 1
         assert isinstance(ops[0], SnapOperator)
 
     def test_get_operators_all(self) -> None:
         """SourceChoice.ALL returns AptOperator, FlatpakOperator, and SnapOperator."""
-        ops = get_operators(SourceChoice.ALL)
+        ops = _get_operators(SourceChoice.ALL)
         assert len(ops) == 3
         types = {type(op) for op in ops}
         assert types == {AptOperator, FlatpakOperator, SnapOperator}
 
     def test_get_operators_dry_run_flag(self) -> None:
         """dry_run=True is forwarded to every operator."""
-        ops = get_operators(SourceChoice.ALL, dry_run=True)
+        ops = _get_operators(SourceChoice.ALL, dry_run=True)
         for op in ops:
             assert op.dry_run is True
 

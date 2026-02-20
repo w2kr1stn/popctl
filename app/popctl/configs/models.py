@@ -67,7 +67,6 @@ class ScannedConfig:
         mtime: Last modification time in ISO 8601 format (None if unavailable).
         orphan_reason: Reason for orphan classification (None if not orphaned).
         confidence: Orphan confidence score (0.0 to 1.0).
-        description: Human-readable description of the entry.
     """
 
     path: str
@@ -77,7 +76,6 @@ class ScannedConfig:
     mtime: str | None
     orphan_reason: ConfigOrphanReason | None
     confidence: float
-    description: str | None
 
     def __post_init__(self) -> None:
         """Validate scanned config data after initialization."""

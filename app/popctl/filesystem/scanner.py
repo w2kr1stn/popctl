@@ -142,7 +142,6 @@ class FilesystemScanner:
                 parent_target=parent_target,
                 orphan_reason=orphan_reason,
                 confidence=confidence,
-                description=None,
             )
 
     def _check_ownership(self, name: str, path: Path) -> PathStatus:

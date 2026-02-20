@@ -6,10 +6,13 @@ multiple CLI command modules to avoid code duplication.
 
 from enum import Enum
 
+from popctl.models.types import SourceChoice
 from popctl.scanners.apt import AptScanner
 from popctl.scanners.base import Scanner
 from popctl.scanners.flatpak import FlatpakScanner
 from popctl.scanners.snap import SnapScanner
+
+__all__ = ["OutputFormat", "SourceChoice", "get_available_scanners", "get_scanners"]
 
 
 class OutputFormat(str, Enum):
@@ -17,15 +20,6 @@ class OutputFormat(str, Enum):
 
     TABLE = "table"
     JSON = "json"
-
-
-class SourceChoice(str, Enum):
-    """Available package sources for CLI commands."""
-
-    APT = "apt"
-    FLATPAK = "flatpak"
-    SNAP = "snap"
-    ALL = "all"
 
 
 def get_scanners(source: SourceChoice = SourceChoice.ALL) -> list[Scanner]:

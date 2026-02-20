@@ -4,13 +4,12 @@ Lists installed packages from various package managers.
 """
 
 import json
-from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from popctl.cli.types import SourceChoice, get_scanners
+from popctl.cli.types import OutputFormat, SourceChoice, get_scanners
 from popctl.models.package import PackageStatus, ScannedPackage
 from popctl.models.scan_result import ScanResult
 from popctl.utils.formatting import (
@@ -26,13 +25,6 @@ app = typer.Typer(
     help="Scan system for installed packages.",
     invoke_without_command=True,
 )
-
-
-class OutputFormat(str, Enum):
-    """Output format options."""
-
-    TABLE = "table"
-    JSON = "json"
 
 
 def _get_source_title(source: SourceChoice, manual_only: bool) -> str:

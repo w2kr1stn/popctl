@@ -33,7 +33,6 @@ def _make_orphan(
         parent_target=parent,
         orphan_reason=OrphanReason.NO_PACKAGE_MATCH,
         confidence=confidence,
-        description=None,
     )
 
 
@@ -48,7 +47,6 @@ def _make_owned(path: str) -> ScannedPath:
         parent_target="~/.config",
         orphan_reason=None,
         confidence=0.0,
-        description=None,
     )
 
 

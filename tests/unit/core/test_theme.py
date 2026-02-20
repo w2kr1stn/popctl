@@ -17,7 +17,6 @@ from popctl.core.theme import (
     get_theme,
     get_user_theme_path,
     load_theme,
-    reload_theme,
 )
 from rich.theme import Theme
 
@@ -229,19 +228,6 @@ class TestGetTheme:
         theme2 = get_theme()
 
         assert theme1 is theme2
-
-    def test_reload_creates_new_theme(self) -> None:
-        """reload_theme creates a new Theme instance."""
-
-        theme_module._cached_theme = None
-
-        original = get_theme()
-        reloaded = reload_theme()
-
-        # New instance created
-        assert reloaded is not original
-        # But get_theme now returns the new one
-        assert get_theme() is reloaded
 
 
 class TestGetUserThemePath:

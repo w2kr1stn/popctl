@@ -53,17 +53,6 @@ def get_state_dir() -> Path:
     return _get_xdg_dir("XDG_STATE_HOME", ".local/state")
 
 
-def get_cache_dir() -> Path:
-    """Get the cache directory path.
-
-    Cache data includes temporary files that can be regenerated.
-
-    Returns:
-        Path to ~/.cache/popctl/ (or XDG_CACHE_HOME/popctl/).
-    """
-    return _get_xdg_dir("XDG_CACHE_HOME", ".cache")
-
-
 def get_manifest_path() -> Path:
     """Get the default manifest file path.
 
@@ -170,21 +159,6 @@ def get_exchange_dir() -> Path:
         Path to /tmp/popctl-exchange.
     """
     return EXCHANGE_DIR
-
-
-def ensure_exchange_dir() -> Path:
-    """Create the exchange directory if it doesn't exist.
-
-    The exchange directory is created with standard permissions in /tmp.
-    This should be called before any advisor operations.
-
-    Returns:
-        Path to the exchange directory.
-
-    Raises:
-        RuntimeError: If the directory cannot be created.
-    """
-    return _ensure_dir(get_exchange_dir(), "exchange")
 
 
 def get_advisor_config_path() -> Path:

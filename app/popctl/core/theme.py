@@ -240,16 +240,3 @@ def get_theme() -> Theme:
     if _cached_theme is None:
         _cached_theme = get_rich_theme()
     return _cached_theme
-
-
-def reload_theme() -> Theme:
-    """Force reload the theme from configuration files.
-
-    Useful when the configuration has changed at runtime.
-
-    Returns:
-        Newly loaded Rich Theme instance.
-    """
-    global _cached_theme
-    _cached_theme = get_rich_theme()
-    return _cached_theme

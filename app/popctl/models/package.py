@@ -92,10 +92,6 @@ class ScannedPackage:
         """Return human-readable size string."""
         if self.size_bytes is None:
             return "unknown"
+        from popctl.utils.formatting import format_size
 
-        size = float(self.size_bytes)
-        for unit in ("B", "KB", "MB", "GB"):
-            if size < 1024:
-                return f"{size:.1f} {unit}"
-            size /= 1024
-        return f"{size:.1f} TB"
+        return format_size(self.size_bytes)

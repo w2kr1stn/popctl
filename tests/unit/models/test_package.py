@@ -142,7 +142,7 @@ class TestScannedPackage:
             status=PackageStatus.MANUAL,
             size_bytes=512,
         )
-        assert pkg.size_human == "512.0 B"
+        assert pkg.size_human == "512 B"
 
     def test_size_human_kilobytes(self) -> None:
         """size_human formats kilobytes correctly."""

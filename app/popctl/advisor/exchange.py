@@ -19,15 +19,12 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from popctl.advisor.prompts import CATEGORIES
-
-# Type alias for package source keys in decisions
-PackageSourceKey = Literal["apt", "flatpak", "snap"]
-
+from popctl.models.manifest import PackageSourceType
 
 # =============================================================================
 # Export Models
@@ -240,7 +237,7 @@ class DecisionsResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    packages: dict[PackageSourceKey, SourceDecisions]
+    packages: dict[PackageSourceType, SourceDecisions]
     filesystem: DomainDecisions | None = None
     configs: DomainDecisions | None = None
 
@@ -307,45 +304,3 @@ def import_decisions(exchange_dir: Path) -> DecisionsResult:
     except ValidationError as e:
         msg = f"Invalid decisions.toml schema: {e}"
         raise ValueError(msg) from e
-
-
-# =============================================================================
-# Cleanup Functions
-# =============================================================================
-
-
-def cleanup_exchange_dir(exchange_dir: Path) -> None:
-    """Remove all files from exchange directory.
-
-    Cleans up the exchange directory after processing is complete.
-    Only removes known exchange files, not the directory itself.
-
-    Args:
-        exchange_dir: Exchange directory to clean.
-
-    Example:
-        >>> from popctl.core.paths import get_exchange_dir
-        >>> cleanup_exchange_dir(get_exchange_dir())
-    """
-    if not exchange_dir.exists():
-        return
-
-    # Known exchange files to clean up
-    exchange_files = [
-        "scan.json",
-        "decisions.toml",
-        "prompt.txt",
-    ]
-
-    import logging
-
-    logger = logging.getLogger(__name__)
-
-    for filename in exchange_files:
-        file_path = exchange_dir / filename
-        try:
-            file_path.unlink(missing_ok=True)
-        except PermissionError as e:
-            logger.warning("Permission denied when deleting %s: %s", file_path, e)
-        except OSError as e:
-            logger.warning("Failed to delete %s: %s", file_path, e)

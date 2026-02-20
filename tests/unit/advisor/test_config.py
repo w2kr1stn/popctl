@@ -20,7 +20,7 @@ from popctl.advisor.config import (
     load_advisor_config,
     save_advisor_config,
 )
-from popctl.core.paths import ensure_exchange_dir, get_advisor_config_path, get_exchange_dir
+from popctl.core.paths import get_advisor_config_path, get_exchange_dir
 from pydantic import ValidationError
 
 
@@ -295,35 +295,6 @@ class TestExchangeDirPaths:
         result = get_exchange_dir()
 
         assert result == Path("/tmp/popctl-exchange")
-
-    def test_ensure_exchange_dir_creates_directory(self, tmp_path: Path) -> None:
-        """ensure_exchange_dir creates the directory."""
-        # Patch the EXCHANGE_DIR constant
-        test_dir = tmp_path / "popctl-exchange"
-
-        with (
-            patch("popctl.core.paths.EXCHANGE_DIR", test_dir),
-            patch("popctl.core.paths.get_exchange_dir", return_value=test_dir),
-        ):
-            result = ensure_exchange_dir()
-
-        assert result == test_dir
-        assert test_dir.exists()
-        assert test_dir.is_dir()
-
-    def test_ensure_exchange_dir_idempotent(self, tmp_path: Path) -> None:
-        """ensure_exchange_dir is idempotent."""
-        test_dir = tmp_path / "popctl-exchange"
-
-        with (
-            patch("popctl.core.paths.EXCHANGE_DIR", test_dir),
-            patch("popctl.core.paths.get_exchange_dir", return_value=test_dir),
-        ):
-            result1 = ensure_exchange_dir()
-            result2 = ensure_exchange_dir()
-
-        assert result1 == result2
-        assert test_dir.exists()
 
 
 class TestAdvisorConfigPath:

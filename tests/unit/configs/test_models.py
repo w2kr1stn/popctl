@@ -55,7 +55,6 @@ class TestScannedConfig:
             mtime="2024-01-15T10:00:00Z",
             orphan_reason=ConfigOrphanReason.APP_NOT_INSTALLED,
             confidence=0.70,
-            description="VLC media player config directory",
         )
         assert sc.path == "/home/user/.config/vlc"
         assert sc.config_type == ConfigType.DIRECTORY
@@ -64,7 +63,6 @@ class TestScannedConfig:
         assert sc.mtime == "2024-01-15T10:00:00Z"
         assert sc.orphan_reason == ConfigOrphanReason.APP_NOT_INSTALLED
         assert sc.confidence == 0.70
-        assert sc.description == "VLC media player config directory"
 
     def test_scanned_config_frozen(self) -> None:
         """Verify immutability raises FrozenInstanceError on assignment."""
@@ -76,7 +74,6 @@ class TestScannedConfig:
             mtime="2024-01-15T10:00:00Z",
             orphan_reason=ConfigOrphanReason.APP_NOT_INSTALLED,
             confidence=0.70,
-            description="VLC config",
         )
         with pytest.raises(AttributeError):
             sc.path = "/other/path"  # type: ignore[misc]
@@ -91,12 +88,10 @@ class TestScannedConfig:
             mtime=None,
             orphan_reason=None,
             confidence=0.95,
-            description=None,
         )
         assert sc.size_bytes is None
         assert sc.mtime is None
         assert sc.orphan_reason is None
-        assert sc.description is None
 
     def test_scanned_config_empty_path_rejected(self) -> None:
         """Empty path string should raise ValueError."""
@@ -109,7 +104,6 @@ class TestScannedConfig:
                 mtime=None,
                 orphan_reason=None,
                 confidence=0.5,
-                description=None,
             )
 
     def test_scanned_config_invalid_confidence_rejected(self) -> None:
@@ -123,7 +117,6 @@ class TestScannedConfig:
                 mtime=None,
                 orphan_reason=None,
                 confidence=1.5,
-                description=None,
             )
 
     def test_scanned_config_negative_confidence_rejected(self) -> None:
@@ -137,7 +130,6 @@ class TestScannedConfig:
                 mtime=None,
                 orphan_reason=None,
                 confidence=-0.1,
-                description=None,
             )
 
     def test_scanned_config_boundary_confidence(self) -> None:
@@ -150,7 +142,6 @@ class TestScannedConfig:
             mtime=None,
             orphan_reason=None,
             confidence=0.0,
-            description=None,
         )
         sc_one = ScannedConfig(
             path="/home/user/.config/b",
@@ -160,7 +151,6 @@ class TestScannedConfig:
             mtime=None,
             orphan_reason=None,
             confidence=1.0,
-            description=None,
         )
         assert sc_zero.confidence == 0.0
         assert sc_one.confidence == 1.0

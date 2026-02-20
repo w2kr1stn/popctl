@@ -74,7 +74,6 @@ class ScannedPath:
         parent_target: Scan target root directory (e.g., "~/.config").
         orphan_reason: Reason for orphan classification (None if not orphaned).
         confidence: Orphan confidence score (0.0 to 1.0).
-        description: Human-readable description of the entry.
     """
 
     path: str
@@ -85,7 +84,6 @@ class ScannedPath:
     parent_target: str
     orphan_reason: OrphanReason | None
     confidence: float
-    description: str | None
 
     def __post_init__(self) -> None:
         """Validate scanned path data after initialization."""
