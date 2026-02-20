@@ -20,6 +20,11 @@ class PackageSource(Enum):
     SNAP = "snap"
 
 
+# Derived constant: all source key strings for iteration.
+# Use this instead of hardcoding ("apt", "flatpak") to avoid missing sources.
+PACKAGE_SOURCE_KEYS: tuple[str, ...] = tuple(s.value for s in PackageSource)
+
+
 class PackageStatus(Enum):
     """Package installation status.
 
@@ -81,11 +86,6 @@ class ScannedPackage:
     def is_manual(self) -> bool:
         """Check if package was manually installed."""
         return self.status == PackageStatus.MANUAL
-
-    @property
-    def is_auto(self) -> bool:
-        """Check if package was auto-installed as dependency."""
-        return self.status == PackageStatus.AUTO_INSTALLED
 
     @property
     def size_human(self) -> str:

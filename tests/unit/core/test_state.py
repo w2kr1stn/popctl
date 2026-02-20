@@ -384,46 +384,46 @@ class TestGetLastReversible:
 
 
 class TestGetEntryById:
-    """Tests for StateManager.get_entry_by_id method."""
+    """Tests for StateManager._get_entry_by_id method."""
 
     @pytest.fixture
     def manager(self, tmp_path: Path) -> StateManager:
         """Create a StateManager with temporary directory."""
         return StateManager(state_dir=tmp_path)
 
-    def test_get_entry_by_id_empty_history(self, manager: StateManager) -> None:
-        """get_entry_by_id returns None when history is empty."""
-        result = manager.get_entry_by_id("nonexistent")
+    def test__get_entry_by_id_empty_history(self, manager: StateManager) -> None:
+        """_get_entry_by_id returns None when history is empty."""
+        result = manager._get_entry_by_id("nonexistent")
         assert result is None
 
-    def test_get_entry_by_id_finds_entry(self, manager: StateManager) -> None:
-        """get_entry_by_id returns entry when found."""
+    def test__get_entry_by_id_finds_entry(self, manager: StateManager) -> None:
+        """_get_entry_by_id returns entry when found."""
         entry = create_history_entry(
             action_type=HistoryActionType.INSTALL,
             items=[HistoryItem(name="vim", source=PackageSource.APT)],
         )
         manager.record_action(entry)
 
-        result = manager.get_entry_by_id(entry.id)
+        result = manager._get_entry_by_id(entry.id)
 
         assert result is not None
         assert result.id == entry.id
         assert result.items[0].name == "vim"
 
-    def test_get_entry_by_id_not_found(self, manager: StateManager) -> None:
-        """get_entry_by_id returns None when ID not found."""
+    def test__get_entry_by_id_not_found(self, manager: StateManager) -> None:
+        """_get_entry_by_id returns None when ID not found."""
         entry = create_history_entry(
             action_type=HistoryActionType.INSTALL,
             items=[HistoryItem(name="vim", source=PackageSource.APT)],
         )
         manager.record_action(entry)
 
-        result = manager.get_entry_by_id("nonexistent_id")
+        result = manager._get_entry_by_id("nonexistent_id")
 
         assert result is None
 
-    def test_get_entry_by_id_multiple_entries(self, manager: StateManager) -> None:
-        """get_entry_by_id finds correct entry among multiple."""
+    def test__get_entry_by_id_multiple_entries(self, manager: StateManager) -> None:
+        """_get_entry_by_id finds correct entry among multiple."""
         entry1 = create_history_entry(
             action_type=HistoryActionType.INSTALL,
             items=[HistoryItem(name="vim", source=PackageSource.APT)],
@@ -441,7 +441,7 @@ class TestGetEntryById:
         manager.record_action(entry2)
         manager.record_action(entry3)
 
-        result = manager.get_entry_by_id(entry2.id)
+        result = manager._get_entry_by_id(entry2.id)
 
         assert result is not None
         assert result.id == entry2.id

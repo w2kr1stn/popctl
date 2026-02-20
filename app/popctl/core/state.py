@@ -178,7 +178,7 @@ class StateManager:
 
         return reversed_ids
 
-    def get_entry_by_id(self, entry_id: str) -> HistoryEntry | None:
+    def _get_entry_by_id(self, entry_id: str) -> HistoryEntry | None:
         """Find entry by ID.
 
         Searches the history file for an entry with the given ID.
@@ -212,7 +212,7 @@ class StateManager:
             True if entry was found and marked, False otherwise.
         """
         # Find the original entry
-        original = self.get_entry_by_id(entry_id)
+        original = self._get_entry_by_id(entry_id)
         if original is None:
             return False
 

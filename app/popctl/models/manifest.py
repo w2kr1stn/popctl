@@ -168,17 +168,6 @@ class Manifest(BaseModel):
             name: entry for name, entry in self.packages.remove.items() if entry.source == source
         }
 
-    def get_fs_keep_paths(self) -> dict[str, FilesystemEntry]:
-        """Get filesystem paths marked as 'keep'.
-
-        Returns:
-            Dictionary of path strings to FilesystemEntry for paths to preserve.
-            Returns empty dict if no filesystem section is configured.
-        """
-        if self.filesystem is None:
-            return {}
-        return self.filesystem.keep
-
     def get_fs_remove_paths(self) -> dict[str, FilesystemEntry]:
         """Get filesystem paths marked for removal.
 
@@ -190,17 +179,6 @@ class Manifest(BaseModel):
             return {}
         return self.filesystem.remove
 
-    def get_config_keep_paths(self) -> dict[str, ConfigEntry]:
-        """Get config paths marked as 'keep'.
-
-        Returns:
-            Dictionary of path strings to ConfigEntry for configs to preserve.
-            Returns empty dict if no configs section is configured.
-        """
-        if self.configs is None:
-            return {}
-        return self.configs.keep
-
     def get_config_remove_paths(self) -> dict[str, ConfigEntry]:
         """Get config paths marked for removal.
 
@@ -211,8 +189,3 @@ class Manifest(BaseModel):
         if self.configs is None:
             return {}
         return self.configs.remove
-
-    @property
-    def package_count(self) -> int:
-        """Total number of packages tracked in the manifest."""
-        return len(self.packages.keep) + len(self.packages.remove)

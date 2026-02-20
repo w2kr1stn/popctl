@@ -24,6 +24,7 @@ ColorSystem = Literal["auto", "standard", "256", "truecolor", "windows"]
 SOURCE_ICONS: dict[PackageSource, str] = {
     PackageSource.APT: "📦",
     PackageSource.FLATPAK: "📀",
+    PackageSource.SNAP: "📥",
 }
 
 
@@ -119,3 +120,15 @@ def print_error(message: str) -> None:
 def print_success(message: str) -> None:
     """Print a success message."""
     console.print(f"[success]{message}[/]")
+
+
+def format_size(size_bytes: int | None) -> str:
+    """Format byte count as human-readable string."""
+    if size_bytes is None or size_bytes == 0:
+        return "0 B"
+    size = float(size_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(size) < 1024:
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{size:.1f} TB"

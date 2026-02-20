@@ -73,24 +73,6 @@ def get_manifest_path() -> Path:
     return get_config_dir() / "manifest.toml"
 
 
-def get_history_path() -> Path:
-    """Get the history file path.
-
-    Returns:
-        Path to ~/.local/state/popctl/history.jsonl.
-    """
-    return get_state_dir() / "history.jsonl"
-
-
-def get_last_scan_path() -> Path:
-    """Get the last scan cache file path.
-
-    Returns:
-        Path to ~/.local/state/popctl/last-scan.json.
-    """
-    return get_state_dir() / "last-scan.json"
-
-
 def _ensure_dir(path: Path, name: str) -> Path:
     """Create directory if it doesn't exist.
 
@@ -137,29 +119,6 @@ def ensure_state_dir() -> Path:
         RuntimeError: If the directory cannot be created.
     """
     return _ensure_dir(get_state_dir(), "state")
-
-
-def ensure_cache_dir() -> Path:
-    """Create the cache directory if it doesn't exist.
-
-    Returns:
-        Path to the cache directory.
-
-    Raises:
-        RuntimeError: If the directory cannot be created.
-    """
-    return _ensure_dir(get_cache_dir(), "cache")
-
-
-def ensure_dirs() -> None:
-    """Create all required application directories.
-
-    Creates config, state, and cache directories if they don't exist.
-    This should be called during application initialization.
-    """
-    ensure_config_dir()
-    ensure_state_dir()
-    ensure_cache_dir()
 
 
 # =============================================================================
