@@ -572,11 +572,11 @@ class TestAgentRunnerPersistMemory:
 
         with (
             patch(
-                "popctl.core.paths.ensure_advisor_memory_dir",
+                "popctl.advisor.paths.ensure_advisor_memory_dir",
                 return_value=persistent_dir,
             ),
             patch(
-                "popctl.core.paths.get_advisor_memory_path",
+                "popctl.advisor.paths.get_advisor_memory_path",
                 return_value=persistent_path,
             ),
         ):
@@ -595,7 +595,7 @@ class TestAgentRunnerPersistMemory:
         runner = AgentRunner(config=config)
 
         with patch(
-            "popctl.core.paths.ensure_advisor_memory_dir",
+            "popctl.advisor.paths.ensure_advisor_memory_dir",
             side_effect=RuntimeError("Permission denied"),
         ):
             # Should not raise

@@ -1141,7 +1141,9 @@ class TestInvokeAdvisor:
         with (
             patch("popctl.cli.commands.advisor._load_or_create_config", return_value=MagicMock()),
             patch("popctl.cli.commands.advisor._scan_system", return_value=MagicMock()),
-            patch("popctl.core.paths.ensure_advisor_sessions_dir", side_effect=OSError("no space")),
+            patch(
+                "popctl.advisor.paths.ensure_advisor_sessions_dir", side_effect=OSError("no space")
+            ),
         ):
             result = _invoke_advisor(auto=True, domain="filesystem")
 
@@ -1157,9 +1159,11 @@ class TestInvokeAdvisor:
         with (
             patch("popctl.cli.commands.advisor._load_or_create_config", return_value=mock_config),
             patch("popctl.cli.commands.advisor._scan_system", return_value=mock_scan),
-            patch("popctl.core.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")),
+            patch(
+                "popctl.advisor.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")
+            ),
             patch("popctl.core.paths.get_manifest_path") as mock_mp,
-            patch("popctl.core.paths.get_advisor_memory_path") as mock_mem,
+            patch("popctl.advisor.paths.get_advisor_memory_path") as mock_mem,
             patch(
                 "popctl.advisor.workspace.create_session_workspace", return_value=Path("/tmp/ws")
             ),
@@ -1188,9 +1192,11 @@ class TestInvokeAdvisor:
         with (
             patch("popctl.cli.commands.advisor._load_or_create_config", return_value=MagicMock()),
             patch("popctl.cli.commands.advisor._scan_system", return_value=MagicMock()),
-            patch("popctl.core.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")),
+            patch(
+                "popctl.advisor.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")
+            ),
             patch("popctl.core.paths.get_manifest_path") as mock_mp,
-            patch("popctl.core.paths.get_advisor_memory_path") as mock_mem,
+            patch("popctl.advisor.paths.get_advisor_memory_path") as mock_mem,
             patch(
                 "popctl.advisor.workspace.create_session_workspace", return_value=Path("/tmp/ws")
             ),
@@ -1224,9 +1230,11 @@ class TestInvokeAdvisor:
         with (
             patch("popctl.cli.commands.advisor._load_or_create_config", return_value=MagicMock()),
             patch("popctl.cli.commands.advisor._scan_system", return_value=MagicMock()),
-            patch("popctl.core.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")),
+            patch(
+                "popctl.advisor.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")
+            ),
             patch("popctl.core.paths.get_manifest_path") as mock_mp,
-            patch("popctl.core.paths.get_advisor_memory_path") as mock_mem,
+            patch("popctl.advisor.paths.get_advisor_memory_path") as mock_mem,
             patch(
                 "popctl.advisor.workspace.create_session_workspace", return_value=Path("/tmp/ws")
             ),
@@ -1259,9 +1267,11 @@ class TestInvokeAdvisor:
         with (
             patch("popctl.cli.commands.advisor._load_or_create_config", return_value=MagicMock()),
             patch("popctl.cli.commands.advisor._scan_system", return_value=MagicMock()),
-            patch("popctl.core.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")),
+            patch(
+                "popctl.advisor.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")
+            ),
             patch("popctl.core.paths.get_manifest_path") as mock_mp,
-            patch("popctl.core.paths.get_advisor_memory_path") as mock_mem,
+            patch("popctl.advisor.paths.get_advisor_memory_path") as mock_mem,
             patch(
                 "popctl.advisor.workspace.create_session_workspace", return_value=Path("/tmp/ws")
             ),

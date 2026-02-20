@@ -20,7 +20,7 @@ from popctl.advisor.config import (
     load_advisor_config,
     save_advisor_config,
 )
-from popctl.core.paths import get_advisor_config_path, get_exchange_dir
+from popctl.advisor.paths import get_advisor_config_path, get_exchange_dir
 from pydantic import ValidationError
 
 

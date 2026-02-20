@@ -482,7 +482,7 @@ class TestAdvisorApplyDryRun:
                 return_value=None,
             ),
             patch(
-                "popctl.core.paths.get_exchange_dir",
+                "popctl.advisor.paths.get_exchange_dir",
                 return_value=tmp_path,
             ),
             patch(
@@ -583,7 +583,7 @@ class TestAdvisorErrorHandling:
                 return_value=None,
             ),
             patch(
-                "popctl.core.paths.get_exchange_dir",
+                "popctl.advisor.paths.get_exchange_dir",
                 return_value=tmp_path,
             ),
             patch(

@@ -630,7 +630,7 @@ class TestAdvisorApplyWithValidDecisions:
                 return_value=mock_decisions,
             ),
             patch(
-                "popctl.core.paths.get_exchange_dir",
+                "popctl.advisor.paths.get_exchange_dir",
                 return_value=tmp_path,
             ),
             patch(
@@ -714,7 +714,7 @@ class TestAdvisorApplyDryRun:
                 return_value=mock_decisions,
             ),
             patch(
-                "popctl.core.paths.get_exchange_dir",
+                "popctl.advisor.paths.get_exchange_dir",
                 return_value=tmp_path,
             ),
             patch(
@@ -751,7 +751,7 @@ class TestAdvisorApplyErrors:
                 return_value=None,
             ),
             patch(
-                "popctl.core.paths.get_exchange_dir",
+                "popctl.advisor.paths.get_exchange_dir",
                 return_value=tmp_path,
             ),
             patch(
@@ -787,7 +787,7 @@ class TestAdvisorApplyErrors:
                 return_value=None,
             ),
             patch(
-                "popctl.core.paths.get_exchange_dir",
+                "popctl.advisor.paths.get_exchange_dir",
                 return_value=tmp_path,
             ),
             patch(
@@ -819,7 +819,7 @@ class TestAdvisorApplyErrors:
                 return_value=None,
             ),
             patch(
-                "popctl.core.paths.get_exchange_dir",
+                "popctl.advisor.paths.get_exchange_dir",
                 return_value=tmp_path,
             ),
             patch(
@@ -1045,7 +1045,7 @@ class TestAdvisorApplyAskPackages:
                 return_value=mock_decisions,
             ),
             patch(
-                "popctl.core.paths.get_exchange_dir",
+                "popctl.advisor.paths.get_exchange_dir",
                 return_value=tmp_path,
             ),
             patch(
@@ -1135,7 +1135,7 @@ class TestAdvisorApplyHistory:
                 return_value=mock_decisions,
             ),
             patch(
-                "popctl.core.paths.get_exchange_dir",
+                "popctl.advisor.paths.get_exchange_dir",
                 return_value=tmp_path,
             ),
             patch(
@@ -1216,7 +1216,7 @@ class TestAdvisorApplyHistory:
                 return_value=mock_decisions,
             ),
             patch(
-                "popctl.core.paths.get_exchange_dir",
+                "popctl.advisor.paths.get_exchange_dir",
                 return_value=tmp_path,
             ),
             patch(
