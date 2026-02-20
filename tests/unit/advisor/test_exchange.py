@@ -6,7 +6,6 @@ popctl and AI advisors via scan.json and decisions.toml files.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -20,69 +19,13 @@ from popctl.advisor.exchange import (
     PathDecision,
     ScanExport,
     SourceDecisions,
-    _parse_path_decision_list,
     cleanup_exchange_dir,
-    export_prompt_files,
-    export_scan_for_advisor,
-    get_decisions_path,
-    get_scan_json_path,
     import_decisions,
 )
-from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
-from popctl.models.scan_result import ScanResult
 
 # =============================================================================
 # Test Fixtures
 # =============================================================================
-
-
-@pytest.fixture
-def sample_packages() -> list[ScannedPackage]:
-    """Create sample packages for testing."""
-    return [
-        ScannedPackage(
-            name="firefox",
-            source=PackageSource.APT,
-            version="128.0",
-            status=PackageStatus.MANUAL,
-            description="Mozilla Firefox web browser",
-            size_bytes=204800,
-        ),
-        ScannedPackage(
-            name="libgtk-3-0",
-            source=PackageSource.APT,
-            version="3.24.41",
-            status=PackageStatus.AUTO_INSTALLED,
-            description="GTK graphical toolkit",
-            size_bytes=10240,
-        ),
-        ScannedPackage(
-            name="com.spotify.Client",
-            source=PackageSource.FLATPAK,
-            version="1.2.31",
-            status=PackageStatus.MANUAL,
-            description="Music streaming service",
-            size_bytes=1073741824,
-        ),
-        ScannedPackage(
-            name="vlc",
-            source=PackageSource.SNAP,
-            version="3.0.20",
-            status=PackageStatus.MANUAL,
-            description="VLC media player",
-            size_bytes=None,
-        ),
-    ]
-
-
-@pytest.fixture
-def sample_scan_result(sample_packages: list[ScannedPackage]) -> ScanResult:
-    """Create sample ScanResult for testing."""
-    return ScanResult.create(
-        packages=sample_packages,
-        sources=["apt", "flatpak", "snap"],
-        manual_only=False,
-    )
 
 
 @pytest.fixture
@@ -349,163 +292,6 @@ class TestDecisionsResult:
 
 
 # =============================================================================
-# Test export_scan_for_advisor
-# =============================================================================
-
-
-class TestExportScanForAdvisor:
-    """Tests for export_scan_for_advisor function."""
-
-    def test_export_creates_scan_json(self, tmp_path: Path, sample_scan_result: ScanResult) -> None:
-        """export_scan_for_advisor creates scan.json file."""
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path)
-
-        assert result_path.exists()
-        assert result_path.name == "scan.json"
-        assert result_path.parent == tmp_path
-
-    def test_export_creates_valid_json(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor creates valid JSON."""
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path)
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        assert "scan_date" in data
-        assert "system" in data
-        assert "summary" in data
-        assert "packages" in data
-
-    def test_export_includes_all_packages(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor includes all packages in unknown list."""
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path)
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        unknown_packages = data["packages"]["unknown"]
-        assert len(unknown_packages) == 4
-
-        names = {p["name"] for p in unknown_packages}
-        assert "firefox" in names
-        assert "libgtk-3-0" in names
-        assert "com.spotify.Client" in names
-        assert "vlc" in names
-
-    def test_export_includes_system_info(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor includes system information."""
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path)
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        assert "hostname" in data["system"]
-        assert "os" in data["system"]
-        assert data["system"]["os"] == "Pop!_OS 24.04 LTS"
-
-    def test_export_includes_manifest_path(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor includes manifest_path when provided."""
-        manifest_path = Path("/home/user/.config/popctl/manifest.toml")
-        result_path = export_scan_for_advisor(
-            sample_scan_result, tmp_path, manifest_path=manifest_path
-        )
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        assert "manifest_path" in data["system"]
-        assert data["system"]["manifest_path"] == str(manifest_path)
-
-    def test_export_calculates_summary(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor calculates correct summary."""
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path)
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        summary = data["summary"]
-        assert summary["total_packages"] == 4
-        assert summary["manual_apt"] == 1  # firefox
-        assert summary["auto_apt"] == 1  # libgtk-3-0
-        assert summary["flatpak"] == 1  # spotify
-        assert summary["snap"] == 1  # vlc
-
-    def test_export_creates_exchange_dir_if_not_exists(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor creates exchange directory if needed."""
-        exchange_dir = tmp_path / "nested" / "exchange"
-        assert not exchange_dir.exists()
-
-        result_path = export_scan_for_advisor(sample_scan_result, exchange_dir)
-
-        assert exchange_dir.exists()
-        assert result_path.exists()
-
-
-# =============================================================================
-# Test export_prompt_files
-# =============================================================================
-
-
-class TestExportPromptFiles:
-    """Tests for export_prompt_files function."""
-
-    def test_export_creates_prompt_txt(self, tmp_path: Path) -> None:
-        """export_prompt_files creates prompt.txt."""
-        prompt_path = export_prompt_files(tmp_path)
-
-        assert prompt_path.exists()
-        assert prompt_path.name == "prompt.txt"
-
-    def test_export_returns_path(self, tmp_path: Path) -> None:
-        """export_prompt_files returns Path (not tuple)."""
-        result = export_prompt_files(tmp_path)
-
-        assert isinstance(result, Path)
-
-    def test_prompt_contains_file_paths(self, tmp_path: Path) -> None:
-        """export_prompt_files includes correct file paths in prompt."""
-        prompt_path = export_prompt_files(tmp_path)
-
-        content = prompt_path.read_text()
-
-        assert "scan.json" in content
-        assert "decisions.toml" in content
-
-    def test_prompt_contains_system_info(self, tmp_path: Path) -> None:
-        """export_prompt_files includes system info in prompt."""
-        prompt_path = export_prompt_files(tmp_path)
-
-        content = prompt_path.read_text()
-
-        # Should have hostname somewhere in the prompt
-        import socket
-
-        hostname = socket.gethostname()
-        assert hostname in content
-
-    def test_export_creates_dir_if_not_exists(self, tmp_path: Path) -> None:
-        """export_prompt_files creates directory if needed."""
-        exchange_dir = tmp_path / "new" / "dir"
-        assert not exchange_dir.exists()
-
-        export_prompt_files(exchange_dir)
-
-        assert exchange_dir.exists()
-
-
-# =============================================================================
 # Test import_decisions
 # =============================================================================
 
@@ -753,43 +539,6 @@ class TestCleanupExchangeDir:
 
 
 # =============================================================================
-# Test Path Helper Functions
-# =============================================================================
-
-
-class TestPathHelpers:
-    """Tests for path helper functions."""
-
-    def test_get_scan_json_path_with_dir(self, tmp_path: Path) -> None:
-        """get_scan_json_path returns correct path when dir provided."""
-        path = get_scan_json_path(tmp_path)
-
-        assert path == tmp_path / "scan.json"
-
-    def test_get_scan_json_path_default(self) -> None:
-        """get_scan_json_path uses default exchange dir when not provided."""
-        from popctl.core.paths import get_exchange_dir
-
-        path = get_scan_json_path()
-
-        assert path == get_exchange_dir() / "scan.json"
-
-    def test_get_decisions_path_with_dir(self, tmp_path: Path) -> None:
-        """get_decisions_path returns correct path when dir provided."""
-        path = get_decisions_path(tmp_path)
-
-        assert path == tmp_path / "decisions.toml"
-
-    def test_get_decisions_path_default(self) -> None:
-        """get_decisions_path uses default exchange dir when not provided."""
-        from popctl.core.paths import get_exchange_dir
-
-        path = get_decisions_path()
-
-        assert path == get_exchange_dir() / "decisions.toml"
-
-
-# =============================================================================
 # Test Module Exports
 # =============================================================================
 
@@ -813,13 +562,8 @@ class TestModuleExports:
         assert hasattr(exchange, "ConfigOrphanEntry")
 
         # Functions
-        assert hasattr(exchange, "export_scan_for_advisor")
-        assert hasattr(exchange, "export_prompt_files")
         assert hasattr(exchange, "import_decisions")
         assert hasattr(exchange, "cleanup_exchange_dir")
-        assert hasattr(exchange, "get_scan_json_path")
-        assert hasattr(exchange, "get_decisions_path")
-        assert hasattr(exchange, "_parse_path_decision_list")
 
     def test_advisor_init_exports_exchange(self) -> None:
         """advisor __init__ exports exchange symbols."""
@@ -834,20 +578,12 @@ class TestModuleExports:
             ScanExport,
             SourceDecisions,
             cleanup_exchange_dir,
-            export_prompt_files,
-            export_scan_for_advisor,
-            get_decisions_path,
-            get_scan_json_path,
             import_decisions,
         )
 
         # Verify imports work and are callable/classes
-        assert callable(export_scan_for_advisor)
-        assert callable(export_prompt_files)
         assert callable(import_decisions)
         assert callable(cleanup_exchange_dir)
-        assert callable(get_scan_json_path)
-        assert callable(get_decisions_path)
         assert PackageScanEntry is not None
         assert ScanExport is not None
         assert PackageDecision is not None
@@ -1183,62 +919,6 @@ class TestDecisionsResultWithFilesystem:
 
 
 # =============================================================================
-# Test export_scan_for_advisor with Filesystem Orphans
-# =============================================================================
-
-
-class TestExportScanWithFilesystem:
-    """Tests for export_scan_for_advisor with filesystem orphans."""
-
-    def test_export_scan_with_filesystem_orphans(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor includes filesystem_orphans when provided."""
-        orphans = [
-            FilesystemOrphanEntry(
-                path="~/.config/vlc",
-                path_type="directory",
-                size_bytes=4096,
-                mtime="2024-01-15T10:00:00Z",
-                parent_target="~/.config",
-                orphan_reason="no_package_match",
-                confidence=0.70,
-            ),
-            FilesystemOrphanEntry(
-                path="~/.cache/old-app",
-                path_type="directory",
-                parent_target="~/.cache",
-                orphan_reason="stale_cache",
-                confidence=0.85,
-            ),
-        ]
-
-        result_path = export_scan_for_advisor(
-            sample_scan_result, tmp_path, filesystem_orphans=orphans
-        )
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        assert "filesystem_orphans" in data
-        assert len(data["filesystem_orphans"]) == 2
-        assert data["filesystem_orphans"][0]["path"] == "~/.config/vlc"
-        assert data["filesystem_orphans"][1]["path"] == "~/.cache/old-app"
-        assert data["filesystem_orphans"][1]["size_bytes"] is None
-
-    def test_export_scan_without_filesystem_orphans(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor defaults filesystem_orphans to empty list."""
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path)
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        assert data["filesystem_orphans"] == []
-
-
-# =============================================================================
 # Test import_decisions with Filesystem
 # =============================================================================
 
@@ -1352,93 +1032,6 @@ ask = []
         assert result.filesystem.keep == []
         assert result.filesystem.remove == []
         assert result.filesystem.ask == []
-
-
-# =============================================================================
-# Test _parse_path_decision_list
-# =============================================================================
-
-
-class TestParsePathDecisionList:
-    """Tests for _parse_path_decision_list helper function."""
-
-    def test_parse_path_decision_list_valid(self) -> None:
-        """_parse_path_decision_list parses valid input."""
-        items = [
-            {
-                "path": "~/.config/nvim",
-                "reason": "User config",
-                "confidence": 0.95,
-                "category": "config",
-            },
-            {
-                "path": "~/.config/vlc",
-                "reason": "Removed",
-                "confidence": 0.90,
-                "category": "obsolete",
-            },
-        ]
-
-        result = _parse_path_decision_list(items)
-
-        assert len(result) == 2
-        assert result[0].path == "~/.config/nvim"
-        assert result[1].path == "~/.config/vlc"
-
-    def test_parse_path_decision_list_not_list(self) -> None:
-        """_parse_path_decision_list returns empty for non-list input."""
-        assert _parse_path_decision_list("not a list") == []
-        assert _parse_path_decision_list(42) == []
-        assert _parse_path_decision_list(None) == []
-
-    def test_parse_path_decision_list_skips_non_dict(self) -> None:
-        """_parse_path_decision_list skips non-dict items."""
-        items = [
-            "not a dict",
-            {
-                "path": "~/.config/nvim",
-                "reason": "User config",
-                "confidence": 0.95,
-                "category": "config",
-            },
-            42,
-        ]
-
-        result = _parse_path_decision_list(items)
-
-        assert len(result) == 1
-        assert result[0].path == "~/.config/nvim"
-
-    def test_parse_path_decision_list_empty(self) -> None:
-        """_parse_path_decision_list handles empty list."""
-        assert _parse_path_decision_list([]) == []
-
-    def test_parse_path_decision_list_defaults(self) -> None:
-        """_parse_path_decision_list uses defaults for missing fields."""
-        items: list[dict[str, str]] = [{}]
-
-        result = _parse_path_decision_list(items)
-
-        assert len(result) == 1
-        assert result[0].path == ""
-        assert result[0].reason == ""
-        assert result[0].confidence == 0.0
-        assert result[0].category is None
-
-    def test_parse_path_decision_list_optional_category(self) -> None:
-        """_parse_path_decision_list handles missing category as None."""
-        items = [
-            {
-                "path": "~/.config/vlc",
-                "reason": "Removed",
-                "confidence": 0.85,
-            },
-        ]
-
-        result = _parse_path_decision_list(items)
-
-        assert len(result) == 1
-        assert result[0].category is None
 
 
 # =============================================================================
@@ -1655,59 +1248,6 @@ class TestDecisionsResultWithConfigs:
         )
 
         assert result.configs is None
-
-
-# =============================================================================
-# Test export_scan_for_advisor with Config Orphans
-# =============================================================================
-
-
-class TestExportScanWithConfigs:
-    """Tests for export_scan_for_advisor with config orphans."""
-
-    def test_export_with_config_orphans(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor includes config_orphans when provided."""
-        orphans = [
-            ConfigOrphanEntry(
-                path="~/.config/vlc",
-                config_type="directory",
-                size_bytes=4096,
-                mtime="2024-01-15T10:00:00Z",
-                orphan_reason="app_not_installed",
-                confidence=0.70,
-            ),
-            ConfigOrphanEntry(
-                path="~/.config/sublime-text",
-                config_type="directory",
-                orphan_reason="no_package_match",
-                confidence=0.65,
-            ),
-        ]
-
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path, config_orphans=orphans)
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        assert "config_orphans" in data
-        assert len(data["config_orphans"]) == 2
-        assert data["config_orphans"][0]["path"] == "~/.config/vlc"
-        assert data["config_orphans"][0]["config_type"] == "directory"
-        assert data["config_orphans"][1]["path"] == "~/.config/sublime-text"
-        assert data["config_orphans"][1]["size_bytes"] is None
-
-    def test_export_without_config_orphans(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor defaults config_orphans to empty list."""
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path)
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        assert data["config_orphans"] == []
 
 
 # =============================================================================

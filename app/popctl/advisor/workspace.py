@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 from popctl.advisor.prompts import build_session_claude_md
 
 if TYPE_CHECKING:
+    from popctl.advisor.exchange import ConfigOrphanEntry, FilesystemOrphanEntry
     from popctl.models.scan_result import ScanResult
 
 
@@ -35,6 +36,8 @@ def create_session_workspace(
     manifest_path: Path | None = None,
     system_info: dict[str, str] | None = None,
     memory_path: Path | None = None,
+    filesystem_orphans: list[FilesystemOrphanEntry] | None = None,
+    config_orphans: list[ConfigOrphanEntry] | None = None,
 ) -> Path:
     """Create an ephemeral workspace directory for a classification session.
 
@@ -47,6 +50,8 @@ def create_session_workspace(
         manifest_path: Optional path to manifest file to copy.
         system_info: Optional system context for CLAUDE.md.
         memory_path: Optional path to persistent memory.md to copy.
+        filesystem_orphans: Optional filesystem orphan entries for FS advisor.
+        config_orphans: Optional config orphan entries for config advisor.
 
     Returns:
         Path to the created session workspace directory.
@@ -87,7 +92,7 @@ def create_session_workspace(
         raise RuntimeError(msg) from e
 
     # Write scan.json
-    scan_data = scan_result.to_dict()
+    scan_data = _build_scan_data(scan_result, system_info, filesystem_orphans, config_orphans)
     try:
         with (session_dir / "scan.json").open("w", encoding="utf-8") as f:
             json.dump(scan_data, f, indent=2, ensure_ascii=False)
@@ -109,6 +114,57 @@ def create_session_workspace(
     _copy_memory_to_workspace(memory_path, sessions_dir, session_dir)
 
     return session_dir
+
+
+def _build_scan_data(
+    scan_result: ScanResult,
+    system_info: dict[str, str],
+    filesystem_orphans: list[FilesystemOrphanEntry] | None,
+    config_orphans: list[ConfigOrphanEntry] | None,
+) -> dict[str, object]:
+    """Build scan.json data, using ScanExport when FS/config data is present.
+
+    Falls back to the simple ``scan_result.to_dict()`` format when no
+    orphan data is provided (backward-compatible package-only sessions).
+
+    Args:
+        scan_result: Package scan data.
+        system_info: System context dict.
+        filesystem_orphans: Optional FS orphan entries.
+        config_orphans: Optional config orphan entries.
+
+    Returns:
+        Dictionary ready for JSON serialization.
+    """
+    if not filesystem_orphans and not config_orphans:
+        return scan_result.to_dict()
+
+    from popctl.advisor.exchange import (
+        PackageScanEntry,
+        ScanExport,
+    )
+
+    pkg_entries = [
+        PackageScanEntry(
+            name=p.name,
+            source=p.source.value,
+            version=p.version,
+            status=p.status.value,
+            description=p.description,
+            size_bytes=p.size_bytes,
+        )
+        for p in scan_result.packages
+    ]
+
+    scan_export = ScanExport(
+        scan_date=datetime.now(UTC).isoformat(),
+        system=system_info,
+        summary=dict(scan_result.summary),
+        packages={"unknown": pkg_entries},
+        filesystem_orphans=filesystem_orphans or [],
+        config_orphans=config_orphans or [],
+    )
+    return scan_export.model_dump(mode="json", exclude_none=True)
 
 
 _MEMORY_SIZE_WARN_KB = 50

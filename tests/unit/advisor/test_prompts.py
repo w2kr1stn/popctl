@@ -14,9 +14,7 @@ from popctl.advisor.prompts import (
     INITIAL_PROMPT,
     SESSION_CLAUDE_MD,
     build_headless_prompt,
-    build_initial_prompt,
     build_session_claude_md,
-    get_decisions_schema,
     get_prompt_file_path,
 )
 
@@ -375,64 +373,6 @@ class TestBuildSessionClaudeMd:
         assert "core*" in result
 
 
-class TestBuildInitialPrompt:
-    """Tests for build_initial_prompt function."""
-
-    def test_build_initial_prompt_returns_string(self) -> None:
-        """build_initial_prompt returns a non-empty string."""
-        result = build_initial_prompt()
-
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-    def test_build_initial_prompt_returns_constant(self) -> None:
-        """build_initial_prompt returns the INITIAL_PROMPT constant."""
-        assert build_initial_prompt() == INITIAL_PROMPT
-
-    def test_build_initial_prompt_mentions_key_files(self) -> None:
-        """build_initial_prompt references key files and workflow."""
-        result = build_initial_prompt()
-
-        assert "scan.json" in result
-        assert "CLAUDE.md" in result
-        assert "memory.md" in result
-        assert "Phase 0" in result
-
-
-class TestGetDecisionsSchema:
-    """Tests for get_decisions_schema function."""
-
-    def test_get_decisions_schema_default_provider(self) -> None:
-        """get_decisions_schema uses claude as default provider."""
-        schema = get_decisions_schema()
-
-        assert "claude" in schema.lower()
-
-    def test_get_decisions_schema_custom_provider(self) -> None:
-        """get_decisions_schema accepts custom provider."""
-        schema = get_decisions_schema(provider="gemini")
-
-        assert "gemini" in schema.lower()
-
-    def test_get_decisions_schema_has_timestamp(self) -> None:
-        """get_decisions_schema includes timestamp."""
-        schema = get_decisions_schema()
-
-        timestamp_pattern = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
-        assert re.search(timestamp_pattern, schema) is not None
-
-    def test_get_decisions_schema_is_valid_toml_structure(self) -> None:
-        """get_decisions_schema shows valid TOML structure."""
-        schema = get_decisions_schema()
-
-        assert "[packages.apt]" in schema
-        assert "[packages.flatpak]" in schema
-        assert "[packages.snap]" in schema
-        assert "keep = [" in schema
-        assert "remove = [" in schema
-        assert "ask = [" in schema
-
-
 class TestPathHelpers:
     """Tests for path helper functions."""
 
@@ -506,8 +446,6 @@ class TestModuleExports:
         assert hasattr(prompts, "DECISIONS_SCHEMA")
         assert hasattr(prompts, "build_headless_prompt")
         assert hasattr(prompts, "build_session_claude_md")
-        assert hasattr(prompts, "build_initial_prompt")
-        assert hasattr(prompts, "get_decisions_schema")
         assert hasattr(prompts, "get_prompt_file_path")
 
     def test_advisor_init_exports_prompts(self) -> None:
@@ -515,16 +453,12 @@ class TestModuleExports:
         from popctl.advisor import (
             CATEGORIES,
             build_headless_prompt,
-            build_initial_prompt,
             build_session_claude_md,
-            get_decisions_schema,
             get_prompt_file_path,
         )
 
         assert callable(build_headless_prompt)
         assert callable(build_session_claude_md)
-        assert callable(build_initial_prompt)
-        assert callable(get_decisions_schema)
         assert callable(get_prompt_file_path)
         assert isinstance(CATEGORIES, tuple)
 
@@ -584,16 +518,6 @@ class TestFilesystemPromptIntegration:
 
         assert "[filesystem]" in result
 
-    def test_decisions_schema_filesystem_structure(self) -> None:
-        """DECISIONS_SCHEMA [filesystem] section has keep/remove/ask."""
-        schema = get_decisions_schema()
-
-        assert "[filesystem]" in schema
-        # Filesystem section should appear after packages sections
-        fs_pos = schema.index("[filesystem]")
-        snap_pos = schema.index("[packages.snap]")
-        assert fs_pos > snap_pos, "Filesystem section should come after package sections"
-
 
 # =============================================================================
 # Test Config Integration in Prompts
@@ -625,13 +549,6 @@ class TestConfigPromptIntegration:
     def test_decisions_schema_has_configs(self) -> None:
         """DECISIONS_SCHEMA includes [configs] section."""
         assert "[configs]" in DECISIONS_SCHEMA
-        schema = get_decisions_schema()
-        assert "[configs]" in schema
-
-        # Configs section should appear after filesystem section
-        cfg_pos = schema.index("[configs]")
-        fs_pos = schema.index("[filesystem]")
-        assert cfg_pos > fs_pos, "Configs section should come after filesystem section"
 
     def test_headless_prompt_has_config_keep_rules(self) -> None:
         """HEADLESS_PROMPT lists config KEEP criteria."""
@@ -656,15 +573,3 @@ class TestConfigPromptIntegration:
         """SESSION_CLAUDE_MD output format includes [configs] section."""
         result = build_session_claude_md()
         assert "[configs]" in result
-
-    def test_decisions_schema_config_structure(self) -> None:
-        """DECISIONS_SCHEMA [configs] section has keep/remove/ask with config examples."""
-        schema = get_decisions_schema()
-
-        # Find the configs section and verify it has examples
-        cfg_pos = schema.index("[configs]")
-        cfg_section = schema[cfg_pos:]
-        assert "path =" in cfg_section
-        assert "reason =" in cfg_section
-        assert "confidence =" in cfg_section
-        assert "category =" in cfg_section

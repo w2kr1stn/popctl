@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from popctl.advisor.config import AdvisorConfig
-from popctl.advisor.prompts import build_initial_prompt
+from popctl.advisor.prompts import INITIAL_PROMPT
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,7 +180,7 @@ class AgentRunner:
             return None
 
         remote_dir = "/tmp/popctl-advisor"
-        initial_prompt = build_initial_prompt()
+        initial_prompt = INITIAL_PROMPT
         provider = self.config.provider
 
         # Pre-clean to ensure idempotent docker cp behavior
@@ -311,7 +311,7 @@ class AgentRunner:
         import shutil
 
         provider = self.config.provider
-        initial_prompt = build_initial_prompt()
+        initial_prompt = INITIAL_PROMPT
 
         if provider == "claude" and shutil.which("claude") is not None:
             os.chdir(workspace_dir)
@@ -325,7 +325,7 @@ class AgentRunner:
 
     def _manual_instructions(self, workspace_dir: Path) -> AgentResult:
         """Return manual instructions when no automated launch is possible."""
-        initial_prompt = build_initial_prompt()
+        initial_prompt = INITIAL_PROMPT
         provider = self.config.provider
 
         return AgentResult(
@@ -375,7 +375,7 @@ class AgentRunner:
         """
         provider = self.config.provider
         model = self.config.effective_model
-        initial_prompt = build_initial_prompt()
+        initial_prompt = INITIAL_PROMPT
 
         if self._is_container_mode():
             return [

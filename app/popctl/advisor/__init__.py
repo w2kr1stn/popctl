@@ -13,11 +13,8 @@ Public API:
 - AgentRunner: Runs AI agents for package classification
 - build_headless_prompt: Build prompt for headless classification
 - build_session_claude_md: Build CLAUDE.md for interactive workspace
-- build_initial_prompt: Get initial prompt for interactive session
 - create_session_workspace: Create ephemeral workspace for session
 - find_latest_decisions: Find decisions from most recent session
-- export_scan_for_advisor: Export scan results for AI agent
-- export_prompt_files: Export prompt files to exchange directory
 - import_decisions: Import and validate decisions.toml
 - cleanup_exchange_dir: Remove files from exchange directory
 """
@@ -30,28 +27,22 @@ from popctl.advisor.config import (
     save_advisor_config,
 )
 from popctl.advisor.exchange import (
+    ConfigOrphanEntry,
     DecisionsResult,
-    FilesystemDecisions,
+    DomainDecisions,
     FilesystemOrphanEntry,
-    FilesystemPathDecision,
-    FilesystemScanSection,
     PackageDecision,
     PackageScanEntry,
+    PathDecision,
     ScanExport,
     SourceDecisions,
     cleanup_exchange_dir,
-    export_prompt_files,
-    export_scan_for_advisor,
-    get_decisions_path,
-    get_scan_json_path,
     import_decisions,
 )
 from popctl.advisor.prompts import (
     CATEGORIES,
     build_headless_prompt,
-    build_initial_prompt,
     build_session_claude_md,
-    get_decisions_schema,
     get_prompt_file_path,
 )
 from popctl.advisor.runner import AgentResult, AgentRunner
@@ -67,27 +58,21 @@ __all__ = [
     "AgentResult",
     "AgentRunner",
     "CATEGORIES",
+    "ConfigOrphanEntry",
     "DecisionsResult",
-    "FilesystemDecisions",
+    "DomainDecisions",
     "FilesystemOrphanEntry",
-    "FilesystemPathDecision",
-    "FilesystemScanSection",
     "PackageDecision",
     "PackageScanEntry",
+    "PathDecision",
     "ScanExport",
     "SourceDecisions",
     "build_headless_prompt",
-    "build_initial_prompt",
     "build_session_claude_md",
     "cleanup_exchange_dir",
     "create_session_workspace",
-    "export_prompt_files",
-    "export_scan_for_advisor",
     "find_latest_decisions",
-    "get_decisions_path",
-    "get_decisions_schema",
     "get_prompt_file_path",
-    "get_scan_json_path",
     "import_decisions",
     "is_running_in_container",
     "list_sessions",
