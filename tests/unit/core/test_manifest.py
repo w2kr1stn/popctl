@@ -15,7 +15,8 @@ from popctl.core.manifest import (
     manifest_exists,
     save_manifest,
 )
-from popctl.filesystem.manifest import FilesystemConfig, FilesystemEntry
+from popctl.domain.manifest import DomainConfig as FilesystemConfig
+from popctl.domain.manifest import DomainEntry as FilesystemEntry
 from popctl.models.manifest import (
     Manifest,
     ManifestMeta,
@@ -389,7 +390,8 @@ class TestManifestConfigsIO:
     @pytest.fixture
     def manifest_with_configs(self) -> Manifest:
         """Create a manifest with configs section."""
-        from popctl.configs.manifest import ConfigEntry, ConfigsConfig
+        from popctl.domain.manifest import DomainConfig as ConfigsConfig
+        from popctl.domain.manifest import DomainEntry as ConfigEntry
 
         now = datetime.now(UTC)
         return Manifest(
@@ -536,7 +538,8 @@ name = "test-machine"
         """ConfigEntry with no reason/category produces empty dict."""
         import tomllib
 
-        from popctl.configs.manifest import ConfigEntry, ConfigsConfig
+        from popctl.domain.manifest import DomainConfig as ConfigsConfig
+        from popctl.domain.manifest import DomainEntry as ConfigEntry
 
         now = datetime.now(UTC)
         manifest = Manifest(

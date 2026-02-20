@@ -1,7 +1,8 @@
 """Tests for config manifest Pydantic models."""
 
 import pytest
-from popctl.configs.manifest import ConfigEntry, ConfigsConfig
+from popctl.domain.manifest import DomainConfig as ConfigsConfig
+from popctl.domain.manifest import DomainEntry as ConfigEntry
 from pydantic import ValidationError
 
 

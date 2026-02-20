@@ -256,9 +256,9 @@ class TestConfigOperator:
         with pytest.raises(AttributeError):
             result.success = False  # type: ignore[misc]
 
-    @patch("popctl.configs.operator.is_protected_config")
+    @patch("popctl.configs.operator.is_protected")
     def test_delete_protected_via_mock(self, mock_protected: MagicMock, tmp_path: Path) -> None:
-        """Protected path check delegates to is_protected_config."""
+        """Protected path check delegates to is_protected."""
         mock_protected.return_value = True
 
         backup_base = tmp_path / "backups"
@@ -273,4 +273,4 @@ class TestConfigOperator:
 
         assert len(results) == 1
         assert results[0].success is False
-        mock_protected.assert_called_once_with("/some/random/path")
+        mock_protected.assert_called_once_with("/some/random/path", "configs")

@@ -110,7 +110,7 @@ class TestScanFindsOrphans:
     """Tests for orphan detection in ~/.config/."""
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_finds_orphans(
         self,
         _mock_protected: object,
@@ -133,7 +133,7 @@ class TestScanFindsOrphans:
         assert results[0].config_type == ConfigType.DIRECTORY
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_orphan_has_correct_fields(
         self,
         _mock_protected: object,
@@ -162,7 +162,7 @@ class TestScanFindsOrphans:
 class TestScanSkipsOwnedPackages:
     """Tests for dpkg ownership detection."""
 
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_skips_owned_packages(
         self,
         _mock_protected: object,
@@ -206,11 +206,11 @@ class TestScanSkipsProtectedConfigs:
         orphan_dir = config_dir / "unknown-app"
         orphan_dir.mkdir()
 
-        def mock_protected(path: str) -> bool:
+        def mock_protected(path: str, _domain: str = "configs") -> bool:
             return "popctl" in path
 
         with (
-            patch("popctl.configs.scanner.is_protected_config", side_effect=mock_protected),
+            patch("popctl.configs.scanner.is_protected", side_effect=mock_protected),
             patch("popctl.configs.scanner.Path.home", return_value=tmp_path),
         ):
             scanner = ConfigScanner()
@@ -225,7 +225,7 @@ class TestScanConfidence:
     """Tests for confidence score assignment."""
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_confidence_directory(
         self,
         _mock_protected: object,
@@ -247,7 +247,7 @@ class TestScanConfidence:
         assert results[0].config_type == ConfigType.DIRECTORY
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_confidence_dotfile(
         self,
         _mock_protected: object,
@@ -274,7 +274,7 @@ class TestScanDotfiles:
     """Tests for shell dotfile scanning."""
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_dotfiles(
         self,
         _mock_protected: object,
@@ -297,7 +297,7 @@ class TestScanDotfiles:
         assert str(tmp_path / ".tmux.conf") in paths
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_dotfiles_nonexistent_skipped(
         self,
         _mock_protected: object,
@@ -317,7 +317,7 @@ class TestScanHandlesPermissionError:
     """Tests for permission error handling."""
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_handles_permission_error(
         self,
         _mock_protected: object,
@@ -340,7 +340,7 @@ class TestScanHandlesPermissionError:
             config_dir.chmod(0o755)
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_handles_permission_error_on_entry(
         self,
         _mock_protected: object,
@@ -413,7 +413,7 @@ class TestDeadSymlinkDetection:
     """Tests for dead symlink detection."""
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_dead_symlink_detection(
         self,
         _mock_protected: object,
@@ -436,7 +436,7 @@ class TestDeadSymlinkDetection:
         assert results[0].status == ConfigStatus.ORPHAN
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_dead_symlink_dotfile(
         self,
         _mock_protected: object,
@@ -459,7 +459,7 @@ class TestDeadSymlinkDetection:
 class TestCachesResetPerScan:
     """Tests for cache reset behavior between scan() calls."""
 
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_caches_reset_per_scan(
         self,
         _mock_protected: object,
@@ -529,7 +529,7 @@ class TestScanIntegration:
     """Integration-level tests for the full config scan pipeline."""
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_skips_owned_by_app(
         self,
         _mock_protected: object,
@@ -555,7 +555,7 @@ class TestScanIntegration:
         assert str(unknown_dir) in paths
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_multiple_orphans(
         self,
         _mock_protected: object,

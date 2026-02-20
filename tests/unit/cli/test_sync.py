@@ -985,7 +985,8 @@ class TestSyncConfigs:
         ]
 
         # Build a manifest with configs.remove section
-        from popctl.configs.manifest import ConfigEntry, ConfigsConfig
+        from popctl.domain.manifest import DomainConfig as ConfigsConfig
+        from popctl.domain.manifest import DomainEntry as ConfigEntry
 
         manifest_with_configs = sample_manifest.model_copy(
             update={
@@ -1017,7 +1018,7 @@ class TestSyncConfigs:
                 "popctl.configs.operator.ConfigOperator.delete",
                 return_value=mock_action_results,
             ),
-            patch("popctl.configs.history.record_config_deletions"),
+            patch("popctl.domain.history.record_domain_deletions"),
         ):
             result = runner.invoke(app, ["sync", "--yes"])
 

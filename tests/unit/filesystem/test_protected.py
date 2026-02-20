@@ -3,7 +3,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from popctl.filesystem.protected import PROTECTED_PATH_PATTERNS, is_protected_path
+from popctl.filesystem import PROTECTED_PATH_PATTERNS, is_protected_path
 
 
 class TestProtectedPathPatterns:

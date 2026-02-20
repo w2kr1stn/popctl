@@ -6,8 +6,10 @@ Tests for the Pydantic models representing manifest.toml structure.
 from datetime import UTC, datetime
 
 import pytest
-from popctl.configs.manifest import ConfigEntry, ConfigsConfig
-from popctl.filesystem.manifest import FilesystemConfig, FilesystemEntry
+from popctl.domain.manifest import DomainConfig as ConfigsConfig
+from popctl.domain.manifest import DomainConfig as FilesystemConfig
+from popctl.domain.manifest import DomainEntry as ConfigEntry
+from popctl.domain.manifest import DomainEntry as FilesystemEntry
 from popctl.models.manifest import (
     Manifest,
     ManifestMeta,

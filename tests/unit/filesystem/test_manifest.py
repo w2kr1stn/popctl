@@ -1,7 +1,8 @@
 """Tests for filesystem manifest Pydantic models."""
 
 import pytest
-from popctl.filesystem.manifest import FilesystemConfig, FilesystemEntry
+from popctl.domain.manifest import DomainConfig as FilesystemConfig
+from popctl.domain.manifest import DomainEntry as FilesystemEntry
 from pydantic import ValidationError
 
 

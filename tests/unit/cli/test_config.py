@@ -9,9 +9,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from popctl.cli.main import app
-from popctl.configs.manifest import ConfigEntry, ConfigsConfig
 from popctl.configs.models import ConfigOrphanReason, ConfigStatus, ConfigType, ScannedConfig
 from popctl.configs.operator import ConfigActionResult
+from popctl.domain.manifest import DomainConfig as ConfigsConfig
+from popctl.domain.manifest import DomainEntry as ConfigEntry
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -271,7 +272,7 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.record_config_deletions") as mock_record,
+            patch("popctl.cli.commands.config.record_domain_deletions") as mock_record,
             patch("popctl.cli.commands.config.is_protected_config", return_value=False),
         ):
             mock_op = MagicMock()
@@ -321,7 +322,7 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.record_config_deletions") as mock_record,
+            patch("popctl.cli.commands.config.record_domain_deletions") as mock_record,
             patch("popctl.cli.commands.config.is_protected_config", return_value=False),
         ):
             mock_op = MagicMock()
@@ -332,6 +333,7 @@ class TestConfigClean:
 
         assert result.exit_code == 0
         mock_record.assert_called_once_with(
+            "configs",
             ["/home/user/.config/vlc", "/home/user/.config/obs-studio"],
             command="popctl config clean",
         )
@@ -358,7 +360,7 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.record_config_deletions"),
+            patch("popctl.cli.commands.config.record_domain_deletions"),
             patch("popctl.cli.commands.config.is_protected_config", return_value=False),
         ):
             mock_op = MagicMock()
@@ -395,7 +397,7 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.record_config_deletions"),
+            patch("popctl.cli.commands.config.record_domain_deletions"),
             patch(
                 "popctl.cli.commands.config.is_protected_config",
                 side_effect=mock_is_protected,

@@ -6,7 +6,7 @@ to the shared history file with proper metadata and action types.
 
 from unittest.mock import MagicMock, patch
 
-from popctl.filesystem.history import record_fs_deletions
+from popctl.domain.history import record_domain_deletions
 from popctl.models.history import HistoryActionType, HistoryEntry
 
 
@@ -19,7 +19,7 @@ class TestRecordFsDeletions:
         mock_sm = MagicMock()
         mock_sm_cls.return_value = mock_sm
 
-        record_fs_deletions(["/home/user/.config/old_app"])
+        record_domain_deletions("filesystem", ["/home/user/.config/old_app"])
 
         mock_sm.record_action.assert_called_once()
         entry: HistoryEntry = mock_sm.record_action.call_args[0][0]
@@ -32,7 +32,8 @@ class TestRecordFsDeletions:
         mock_sm = MagicMock()
         mock_sm_cls.return_value = mock_sm
 
-        record_fs_deletions(
+        record_domain_deletions(
+            "filesystem",
             ["/home/user/.cache/stale"],
             command="popctl sync",
         )
@@ -47,7 +48,7 @@ class TestRecordFsDeletions:
         mock_sm = MagicMock()
         mock_sm_cls.return_value = mock_sm
 
-        record_fs_deletions(["/home/user/.config/old_app"])
+        record_domain_deletions("filesystem", ["/home/user/.config/old_app"])
 
         entry: HistoryEntry = mock_sm.record_action.call_args[0][0]
         assert entry.metadata["command"] == "popctl fs clean"
@@ -58,7 +59,7 @@ class TestRecordFsDeletions:
         mock_sm = MagicMock()
         mock_sm_cls.return_value = mock_sm
 
-        record_fs_deletions(["/home/user/.config/old_app"])
+        record_domain_deletions("filesystem", ["/home/user/.config/old_app"])
 
         entry: HistoryEntry = mock_sm.record_action.call_args[0][0]
         assert entry.reversible is False
@@ -69,7 +70,7 @@ class TestRecordFsDeletions:
         mock_sm = MagicMock()
         mock_sm_cls.return_value = mock_sm
 
-        record_fs_deletions(["/home/user/.config/old_app"])
+        record_domain_deletions("filesystem", ["/home/user/.config/old_app"])
 
         entry: HistoryEntry = mock_sm.record_action.call_args[0][0]
         assert entry.action_type == HistoryActionType.FS_DELETE
@@ -85,7 +86,7 @@ class TestRecordFsDeletions:
             "/home/user/.cache/app2",
             "/home/user/.local/share/app3",
         ]
-        record_fs_deletions(paths)
+        record_domain_deletions("filesystem", paths)
 
         entry: HistoryEntry = mock_sm.record_action.call_args[0][0]
         assert len(entry.items) == 3
@@ -101,7 +102,7 @@ class TestRecordFsDeletions:
         mock_sm = MagicMock()
         mock_sm_cls.return_value = mock_sm
 
-        record_fs_deletions(["/home/user/.config/old_app"])
+        record_domain_deletions("filesystem", ["/home/user/.config/old_app"])
 
         entry: HistoryEntry = mock_sm.record_action.call_args[0][0]
         assert entry.items[0].source == PackageSource.APT

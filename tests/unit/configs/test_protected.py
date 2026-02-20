@@ -3,7 +3,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from popctl.configs.protected import PROTECTED_CONFIG_PATTERNS, is_protected_config
+from popctl.configs import PROTECTED_CONFIG_PATTERNS, is_protected_config
 
 
 class TestProtectedConfigPatterns:

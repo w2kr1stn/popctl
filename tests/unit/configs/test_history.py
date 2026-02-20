@@ -6,7 +6,7 @@ to the shared history file with proper metadata and action types.
 
 from unittest.mock import MagicMock, patch
 
-from popctl.configs.history import record_config_deletions
+from popctl.domain.history import record_domain_deletions
 from popctl.models.history import HistoryActionType, HistoryEntry
 from popctl.models.package import PackageSource
 
@@ -20,7 +20,7 @@ class TestRecordConfigDeletions:
         mock_sm = MagicMock()
         mock_sm_cls.return_value = mock_sm
 
-        record_config_deletions(["/home/user/.config/old_app"])
+        record_domain_deletions("configs", ["/home/user/.config/old_app"])
 
         mock_sm.record_action.assert_called_once()
         entry: HistoryEntry = mock_sm.record_action.call_args[0][0]
@@ -33,7 +33,8 @@ class TestRecordConfigDeletions:
         mock_sm = MagicMock()
         mock_sm_cls.return_value = mock_sm
 
-        record_config_deletions(
+        record_domain_deletions(
+            "configs",
             ["/home/user/.config/stale"],
             command="popctl sync",
         )
@@ -48,7 +49,7 @@ class TestRecordConfigDeletions:
         mock_sm = MagicMock()
         mock_sm_cls.return_value = mock_sm
 
-        record_config_deletions(["/home/user/.config/old_app"])
+        record_domain_deletions("configs", ["/home/user/.config/old_app"])
 
         entry: HistoryEntry = mock_sm.record_action.call_args[0][0]
         assert entry.reversible is False
@@ -59,7 +60,7 @@ class TestRecordConfigDeletions:
         mock_sm = MagicMock()
         mock_sm_cls.return_value = mock_sm
 
-        record_config_deletions(["/home/user/.config/old_app"])
+        record_domain_deletions("configs", ["/home/user/.config/old_app"])
 
         entry: HistoryEntry = mock_sm.record_action.call_args[0][0]
         assert entry.action_type == HistoryActionType.CONFIG_DELETE
@@ -70,7 +71,7 @@ class TestRecordConfigDeletions:
         mock_sm = MagicMock()
         mock_sm_cls.return_value = mock_sm
 
-        record_config_deletions(["/home/user/.config/old_app"])
+        record_domain_deletions("configs", ["/home/user/.config/old_app"])
 
         entry: HistoryEntry = mock_sm.record_action.call_args[0][0]
         assert entry.metadata["command"] == "popctl config clean"
@@ -86,7 +87,7 @@ class TestRecordConfigDeletions:
             "/home/user/.config/app2",
             "/home/user/.config/app3",
         ]
-        record_config_deletions(paths)
+        record_domain_deletions("configs", paths)
 
         entry: HistoryEntry = mock_sm.record_action.call_args[0][0]
         assert len(entry.items) == 3
@@ -100,7 +101,7 @@ class TestRecordConfigDeletions:
         mock_sm = MagicMock()
         mock_sm_cls.return_value = mock_sm
 
-        record_config_deletions(["/home/user/.config/old_app"])
+        record_domain_deletions("configs", ["/home/user/.config/old_app"])
 
         entry: HistoryEntry = mock_sm.record_action.call_args[0][0]
         assert entry.items[0].source == PackageSource.APT

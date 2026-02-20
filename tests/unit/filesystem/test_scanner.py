@@ -98,7 +98,7 @@ class TestScanFindsOrphans:
     """Tests for orphan detection."""
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.filesystem.scanner.is_protected_path", return_value=False)
+    @patch("popctl.filesystem.scanner.is_protected", return_value=False)
     def test_scan_finds_orphans(
         self,
         _mock_protected: object,
@@ -120,7 +120,7 @@ class TestScanFindsOrphans:
         assert results[0].path_type == PathType.DIRECTORY
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.filesystem.scanner.is_protected_path", return_value=False)
+    @patch("popctl.filesystem.scanner.is_protected", return_value=False)
     def test_scan_orphan_has_correct_fields(
         self,
         _mock_protected: object,
@@ -148,7 +148,7 @@ class TestScanFindsOrphans:
 class TestScanSkipsOwnedPackages:
     """Tests for dpkg ownership detection."""
 
-    @patch("popctl.filesystem.scanner.is_protected_path", return_value=False)
+    @patch("popctl.filesystem.scanner.is_protected", return_value=False)
     def test_scan_skips_owned_by_dpkg(
         self,
         _mock_protected: object,
@@ -189,10 +189,10 @@ class TestScanSkipsProtectedPaths:
         orphan_dir = config / "unknown-app"
         orphan_dir.mkdir()
 
-        def mock_protected(path: str) -> bool:
+        def mock_protected(path: str, _domain: str = "filesystem") -> bool:
             return "popctl" in path
 
-        with patch("popctl.filesystem.scanner.is_protected_path", side_effect=mock_protected):
+        with patch("popctl.filesystem.scanner.is_protected", side_effect=mock_protected):
             scanner = FilesystemScanner(targets=(config,))
             results = list(scanner.scan())
 
@@ -204,7 +204,7 @@ class TestScanSkipsProtectedPaths:
 class TestScanAppNameMatching:
     """Tests for app name matching (flatpak/snap)."""
 
-    @patch("popctl.filesystem.scanner.is_protected_path", return_value=False)
+    @patch("popctl.filesystem.scanner.is_protected", return_value=False)
     def test_scan_skips_owned_by_app(
         self,
         _mock_protected: object,
@@ -267,7 +267,7 @@ class TestScanFileHandling:
     """Tests for file inclusion/exclusion behavior."""
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.filesystem.scanner.is_protected_path", return_value=False)
+    @patch("popctl.filesystem.scanner.is_protected", return_value=False)
     def test_scan_excludes_files_by_default(
         self,
         _mock_protected: object,
@@ -288,7 +288,7 @@ class TestScanFileHandling:
         assert PathType.DIRECTORY in types
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.filesystem.scanner.is_protected_path", return_value=False)
+    @patch("popctl.filesystem.scanner.is_protected", return_value=False)
     def test_scan_includes_files_when_flag_set(
         self,
         _mock_protected: object,
@@ -327,7 +327,7 @@ class TestScanErrorHandling:
     """Tests for error handling during scanning."""
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.filesystem.scanner.is_protected_path", return_value=False)
+    @patch("popctl.filesystem.scanner.is_protected", return_value=False)
     def test_scan_handles_permission_error(
         self,
         _mock_protected: object,
@@ -348,7 +348,7 @@ class TestScanErrorHandling:
             restricted.chmod(0o755)
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.filesystem.scanner.is_protected_path", return_value=False)
+    @patch("popctl.filesystem.scanner.is_protected", return_value=False)
     def test_scan_handles_permission_error_on_entry(
         self,
         _mock_protected: object,
@@ -380,7 +380,7 @@ class TestDeadSymlinkDetection:
     """Tests for dead symlink detection."""
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.filesystem.scanner.is_protected_path", return_value=False)
+    @patch("popctl.filesystem.scanner.is_protected", return_value=False)
     def test_dead_symlink_detection(
         self,
         _mock_protected: object,
@@ -401,7 +401,7 @@ class TestDeadSymlinkDetection:
         assert results[0].orphan_reason == OrphanReason.DEAD_LINK
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.filesystem.scanner.is_protected_path", return_value=False)
+    @patch("popctl.filesystem.scanner.is_protected", return_value=False)
     def test_live_symlink_detection(
         self,
         _mock_protected: object,
@@ -506,7 +506,7 @@ class TestScanIntegration:
     """Integration-level tests for the full scan pipeline."""
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.filesystem.scanner.is_protected_path", return_value=False)
+    @patch("popctl.filesystem.scanner.is_protected", return_value=False)
     def test_scan_multiple_targets(
         self,
         _mock_protected: object,
@@ -529,7 +529,7 @@ class TestScanIntegration:
         names = {Path(r.path).name for r in results}
         assert names == {"app1", "app2"}
 
-    @patch("popctl.filesystem.scanner.is_protected_path", return_value=False)
+    @patch("popctl.filesystem.scanner.is_protected", return_value=False)
     def test_scan_resets_caches_between_scans(
         self,
         _mock_protected: object,
@@ -566,7 +566,7 @@ class TestScanIntegration:
         assert first_count > 0
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.filesystem.scanner.is_protected_path", return_value=False)
+    @patch("popctl.filesystem.scanner.is_protected", return_value=False)
     def test_scan_confidence_matches_target(
         self,
         _mock_protected: object,

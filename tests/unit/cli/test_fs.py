@@ -9,7 +9,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from popctl.cli.main import app
-from popctl.filesystem.manifest import FilesystemConfig, FilesystemEntry
+from popctl.domain.manifest import DomainConfig as FilesystemConfig
+from popctl.domain.manifest import DomainEntry as FilesystemEntry
 from popctl.filesystem.models import OrphanReason, PathStatus, PathType, ScannedPath
 from popctl.filesystem.operator import FilesystemActionResult
 from typer.testing import CliRunner
@@ -272,7 +273,7 @@ class TestFsClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.fs.FilesystemOperator") as mock_op_class,
-            patch("popctl.cli.commands.fs.record_fs_deletions") as mock_record,
+            patch("popctl.cli.commands.fs.record_domain_deletions") as mock_record,
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = success_results
@@ -313,7 +314,7 @@ class TestFsClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.fs.FilesystemOperator") as mock_op_class,
-            patch("popctl.cli.commands.fs.record_fs_deletions") as mock_record,
+            patch("popctl.cli.commands.fs.record_domain_deletions") as mock_record,
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = success_results
@@ -323,6 +324,7 @@ class TestFsClean:
 
         assert result.exit_code == 0
         mock_record.assert_called_once_with(
+            "filesystem",
             ["/home/user/.config/vlc", "/home/user/.cache/mozilla"],
             command="popctl fs clean",
         )
@@ -345,7 +347,7 @@ class TestFsClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.fs.FilesystemOperator") as mock_op_class,
-            patch("popctl.cli.commands.fs.record_fs_deletions"),
+            patch("popctl.cli.commands.fs.record_domain_deletions"),
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = success_results
