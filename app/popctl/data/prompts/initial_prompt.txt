@@ -1,0 +1,1 @@
+Lies scan.json, CLAUDE.md und memory.md (falls vorhanden). Beginne mit Phase 0: Stelle dich kurz vor und praesentiere die Agenda. Folge dann dem Workflow in CLAUDE.md strikt — Phase fuer Phase.
