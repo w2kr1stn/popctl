@@ -133,23 +133,6 @@ class TestScannedPackage:
         assert manual_pkg.is_manual is True
         assert auto_pkg.is_manual is False
 
-    def test_is_auto_property(self) -> None:
-        """is_auto property returns correct value."""
-        manual_pkg = ScannedPackage(
-            name="firefox",
-            source=PackageSource.APT,
-            version="1.0",
-            status=PackageStatus.MANUAL,
-        )
-        auto_pkg = ScannedPackage(
-            name="libfoo",
-            source=PackageSource.APT,
-            version="1.0",
-            status=PackageStatus.AUTO_INSTALLED,
-        )
-        assert manual_pkg.is_auto is False
-        assert auto_pkg.is_auto is True
-
     def test_size_human_bytes(self) -> None:
         """size_human formats bytes correctly."""
         pkg = ScannedPackage(

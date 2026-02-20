@@ -65,11 +65,9 @@ def _make_manifest(
         )
         manifest.filesystem = fs_config
         manifest.get_fs_remove_paths.return_value = fs_config.remove
-        manifest.get_fs_keep_paths.return_value = fs_config.keep
     else:
         manifest.filesystem = None
         manifest.get_fs_remove_paths.return_value = {}
-        manifest.get_fs_keep_paths.return_value = {}
     return manifest
 
 

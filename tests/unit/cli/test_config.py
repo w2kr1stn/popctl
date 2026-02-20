@@ -63,11 +63,9 @@ def _make_manifest(
         )
         manifest.configs = configs_config
         manifest.get_config_remove_paths.return_value = configs_config.remove
-        manifest.get_config_keep_paths.return_value = configs_config.keep
     else:
         manifest.configs = None
         manifest.get_config_remove_paths.return_value = {}
-        manifest.get_config_keep_paths.return_value = {}
     return manifest
 
 

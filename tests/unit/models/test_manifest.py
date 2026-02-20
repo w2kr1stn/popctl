@@ -193,10 +193,6 @@ class TestManifest:
         assert len(packages) == 1
         assert "bloatware" in packages
 
-    def test_package_count(self, sample_manifest: Manifest) -> None:
-        """package_count returns total tracked packages."""
-        assert sample_manifest.package_count == 3
-
 
 class TestManifestFilesystem:
     """Tests for filesystem integration in Manifest model."""
@@ -264,16 +260,6 @@ class TestManifestFilesystem:
         )
         assert manifest.filesystem is None
 
-    def test_get_fs_keep_paths(self, manifest_with_fs: Manifest) -> None:
-        """get_fs_keep_paths returns keep dict when filesystem is present."""
-        paths = manifest_with_fs.get_fs_keep_paths()
-
-        assert len(paths) == 2
-        assert "~/.config/nvim" in paths
-        assert "~/.config/git" in paths
-        assert paths["~/.config/nvim"].reason == "User config"
-        assert paths["~/.config/nvim"].category == "config"
-
     def test_get_fs_remove_paths(self, manifest_with_fs: Manifest) -> None:
         """get_fs_remove_paths returns remove dict when filesystem is present."""
         paths = manifest_with_fs.get_fs_remove_paths()
@@ -283,11 +269,6 @@ class TestManifestFilesystem:
         assert "~/.cache/stale" in paths
         assert paths["~/.config/old-app"].reason == "App uninstalled"
         assert paths["~/.config/old-app"].category == "stale"
-
-    def test_get_fs_keep_paths_when_none(self, manifest_without_fs: Manifest) -> None:
-        """get_fs_keep_paths returns empty dict when filesystem is None."""
-        paths = manifest_without_fs.get_fs_keep_paths()
-        assert paths == {}
 
     def test_get_fs_remove_paths_when_none(self, manifest_without_fs: Manifest) -> None:
         """get_fs_remove_paths returns empty dict when filesystem is None."""
@@ -361,16 +342,6 @@ class TestManifestConfigs:
         )
         assert manifest.configs is None
 
-    def test_get_config_keep_paths(self, manifest_with_configs: Manifest) -> None:
-        """get_config_keep_paths returns keep dict when configs is present."""
-        paths = manifest_with_configs.get_config_keep_paths()
-
-        assert len(paths) == 2
-        assert "~/.config/Code" in paths
-        assert "~/.config/nvim" in paths
-        assert paths["~/.config/Code"].reason == "VS Code settings"
-        assert paths["~/.config/Code"].category == "editor"
-
     def test_get_config_remove_paths(self, manifest_with_configs: Manifest) -> None:
         """get_config_remove_paths returns remove dict when configs is present."""
         paths = manifest_with_configs.get_config_remove_paths()
@@ -380,11 +351,6 @@ class TestManifestConfigs:
         assert "~/.config/sublime-text" in paths
         assert paths["~/.config/vlc"].reason == "VLC not installed"
         assert paths["~/.config/vlc"].category == "obsolete"
-
-    def test_get_config_keep_paths_when_none(self, manifest_without_configs: Manifest) -> None:
-        """get_config_keep_paths returns empty dict when configs is None."""
-        paths = manifest_without_configs.get_config_keep_paths()
-        assert paths == {}
 
     def test_get_config_remove_paths_when_none(self, manifest_without_configs: Manifest) -> None:
         """get_config_remove_paths returns empty dict when configs is None."""

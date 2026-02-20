@@ -11,9 +11,7 @@ from popctl.core.paths import (
     APP_NAME,
     ensure_advisor_memory_dir,
     ensure_advisor_sessions_dir,
-    ensure_cache_dir,
     ensure_config_dir,
-    ensure_dirs,
     ensure_exchange_dir,
     ensure_state_dir,
     get_advisor_config_path,
@@ -22,8 +20,6 @@ from popctl.core.paths import (
     get_cache_dir,
     get_config_dir,
     get_exchange_dir,
-    get_history_path,
-    get_last_scan_path,
     get_manifest_path,
     get_state_dir,
 )
@@ -102,24 +98,6 @@ class TestConveniencePaths:
 
         assert result == Path.home() / ".config" / APP_NAME / "manifest.toml"
 
-    def test_get_history_path(self) -> None:
-        """get_history_path returns history.jsonl in state dir."""
-        with patch.dict(os.environ, {}, clear=True):
-            os.environ.pop("XDG_STATE_HOME", None)
-
-            result = get_history_path()
-
-        assert result == Path.home() / ".local" / "state" / APP_NAME / "history.jsonl"
-
-    def test_get_last_scan_path(self) -> None:
-        """get_last_scan_path returns last-scan.json in state dir."""
-        with patch.dict(os.environ, {}, clear=True):
-            os.environ.pop("XDG_STATE_HOME", None)
-
-            result = get_last_scan_path()
-
-        assert result == Path.home() / ".local" / "state" / APP_NAME / "last-scan.json"
-
 
 class TestEnsureDirs:
     """Tests for directory creation functions."""
@@ -153,32 +131,6 @@ class TestEnsureDirs:
 
         assert result == state_dir
         assert state_dir.exists()
-
-    def test_ensure_cache_dir_creates_directory(self, tmp_path: Path) -> None:
-        """ensure_cache_dir creates the cache directory."""
-        cache_dir = tmp_path / "cache" / APP_NAME
-
-        with patch.dict(os.environ, {"XDG_CACHE_HOME": str(tmp_path / "cache")}):
-            result = ensure_cache_dir()
-
-        assert result == cache_dir
-        assert cache_dir.exists()
-
-    def test_ensure_dirs_creates_all_directories(self, tmp_path: Path) -> None:
-        """ensure_dirs creates config, state, and cache directories."""
-        with patch.dict(
-            os.environ,
-            {
-                "XDG_CONFIG_HOME": str(tmp_path / "config"),
-                "XDG_STATE_HOME": str(tmp_path / "state"),
-                "XDG_CACHE_HOME": str(tmp_path / "cache"),
-            },
-        ):
-            ensure_dirs()
-
-        assert (tmp_path / "config" / APP_NAME).exists()
-        assert (tmp_path / "state" / APP_NAME).exists()
-        assert (tmp_path / "cache" / APP_NAME).exists()
 
 
 class TestAdvisorPaths:
