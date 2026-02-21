@@ -55,24 +55,6 @@ class TestAgentResult:
             result.success = False  # type: ignore[misc]
 
 
-class TestAgentRunnerIsContainerMode:
-    """Tests for AgentRunner._is_container_mode method."""
-
-    def test_host_mode_when_container_mode_false(self) -> None:
-        """_is_container_mode returns False when container_mode is False."""
-        config = AdvisorConfig(container_mode=False)
-        runner = AgentRunner(config=config)
-
-        assert runner._is_container_mode() is False
-
-    def test_container_mode_when_enabled(self) -> None:
-        """_is_container_mode returns True when container_mode is True."""
-        config = AdvisorConfig(container_mode=True)
-        runner = AgentRunner(config=config)
-
-        assert runner._is_container_mode() is True
-
-
 class TestAgentRunnerBuildHeadlessCommand:
     """Tests for AgentRunner._build_headless_command method."""
 
@@ -611,7 +593,7 @@ class TestAgentRunnerIntegration:
         runner = AgentRunner(config=config)
 
         # Should be container mode (container_mode defaults to True)
-        assert runner._is_container_mode() is True
+        assert runner.config.container_mode is True
 
         # Container mode builds codeagent command
         command = runner._build_headless_command(tmp_path)
@@ -628,7 +610,7 @@ class TestAgentRunnerIntegration:
         runner = AgentRunner(config=config)
 
         # Container mode
-        assert runner._is_container_mode() is True
+        assert runner.config.container_mode is True
 
         # Correct model in command
         command = runner._build_headless_command(tmp_path)

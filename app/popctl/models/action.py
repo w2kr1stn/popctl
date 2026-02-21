@@ -70,11 +70,6 @@ class Action:
         """Check if this is a purge action."""
         return self.action_type == ActionType.PURGE
 
-    @property
-    def is_destructive(self) -> bool:
-        """Check if this action removes a package (remove or purge)."""
-        return self.action_type in (ActionType.REMOVE, ActionType.PURGE)
-
 
 @dataclass(frozen=True, slots=True)
 class ActionResult:
@@ -99,52 +94,3 @@ class ActionResult:
     def failed(self) -> bool:
         """Check if the action failed."""
         return not self.success
-
-
-def create_install_action(
-    package: str,
-    source: PackageSource,
-    reason: str | None = None,
-) -> Action:
-    """Create an install action for a package.
-
-    Args:
-        package: Name of the package to install.
-        source: Package manager that handles this package.
-        reason: Optional explanation for the installation.
-
-    Returns:
-        Action configured for installation.
-    """
-    return Action(
-        action_type=ActionType.INSTALL,
-        package=package,
-        source=source,
-        reason=reason,
-    )
-
-
-def create_remove_action(
-    package: str,
-    source: PackageSource,
-    reason: str | None = None,
-    purge: bool = False,
-) -> Action:
-    """Create a remove action for a package.
-
-    Args:
-        package: Name of the package to remove.
-        source: Package manager that handles this package.
-        reason: Optional explanation for the removal.
-        purge: If True, create a purge action instead of remove.
-
-    Returns:
-        Action configured for removal or purge.
-    """
-    action_type = ActionType.PURGE if purge else ActionType.REMOVE
-    return Action(
-        action_type=action_type,
-        package=package,
-        source=source,
-        reason=reason,
-    )

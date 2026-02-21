@@ -168,12 +168,8 @@ class AgentRunner:
 
         Returns AgentResult if container was found, None to continue cascade.
         """
-        from popctl.utils.shell import (
-            docker_cp,
-            find_running_container,
-            run_command,
-            run_interactive,
-        )
+        from popctl.advisor.docker import docker_cp, find_running_container
+        from popctl.utils.shell import run_command, run_interactive
 
         container_name = find_running_container("ai-dev")
         if container_name is None:
@@ -257,7 +253,7 @@ class AgentRunner:
         import shutil
         import time
 
-        from popctl.utils.shell import is_container_running
+        from popctl.advisor.docker import is_container_running
 
         if shutil.which("codeagent") is None:
             return None
@@ -353,7 +349,7 @@ class AgentRunner:
         import logging
         import shutil
 
-        from popctl.core.paths import ensure_advisor_memory_dir, get_advisor_memory_path
+        from popctl.advisor.paths import ensure_advisor_memory_dir, get_advisor_memory_path
 
         logger = logging.getLogger(__name__)
         try:
@@ -377,7 +373,7 @@ class AgentRunner:
         model = self.config.effective_model
         initial_prompt = INITIAL_PROMPT
 
-        if self._is_container_mode():
+        if self.config.container_mode:
             return [
                 "codeagent",
                 "run",
@@ -404,11 +400,3 @@ class AgentRunner:
             "--prompt",
             initial_prompt,
         ]
-
-    def _is_container_mode(self) -> bool:
-        """Check if running in container mode.
-
-        Returns:
-            True if container_mode is enabled in config.
-        """
-        return self.config.container_mode

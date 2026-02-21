@@ -8,7 +8,7 @@ import logging
 from popctl.models.action import Action, ActionResult, ActionType
 from popctl.models.package import PackageSource
 from popctl.operators.base import Operator
-from popctl.utils.shell import CommandResult, command_exists, run_command
+from popctl.utils.shell import command_exists, run_command
 
 logger = logging.getLogger(__name__)
 
@@ -44,21 +44,11 @@ class SnapOperator(Operator):
         Returns:
             List of ActionResult for each package.
 
-        Raises:
-            RuntimeError: If snap is not available.
         """
-        if not self.is_available():
-            msg = "Snap is not available on this system"
-            raise RuntimeError(msg)
-
         if not packages:
             return []
 
-        results: list[ActionResult] = []
-        for package in packages:
-            result = self._install_single(package)
-            results.append(result)
-        return results
+        return [self._install_single(pkg) for pkg in packages]
 
     def remove(self, packages: list[str], purge: bool = False) -> list[ActionResult]:
         """Remove Snap packages.
@@ -70,21 +60,11 @@ class SnapOperator(Operator):
         Returns:
             List of ActionResult for each package.
 
-        Raises:
-            RuntimeError: If snap is not available.
         """
-        if not self.is_available():
-            msg = "Snap is not available on this system"
-            raise RuntimeError(msg)
-
         if not packages:
             return []
 
-        results: list[ActionResult] = []
-        for package in packages:
-            result = self._remove_single(package, purge=purge)
-            results.append(result)
-        return results
+        return [self._remove_single(pkg, purge=purge) for pkg in packages]
 
     def _install_single(self, package: str) -> ActionResult:
         """Install a single Snap package.
@@ -151,28 +131,3 @@ class SnapOperator(Operator):
         result = run_command(args, timeout=self._SNAP_TIMEOUT)
 
         return self._create_result(action, result)
-
-    @staticmethod
-    def _create_result(action: Action, result: CommandResult) -> ActionResult:
-        """Create an ActionResult from a CommandResult.
-
-        Args:
-            action: The action that was executed.
-            result: The command execution result.
-
-        Returns:
-            ActionResult with appropriate success/error info.
-        """
-        if result.success:
-            return ActionResult(
-                action=action,
-                success=True,
-                message="Operation completed",
-            )
-
-        error_msg = result.stderr.strip() or result.stdout.strip() or "snap command failed"
-        return ActionResult(
-            action=action,
-            success=False,
-            error=error_msg,
-        )

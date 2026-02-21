@@ -108,14 +108,6 @@ class TestFlatpakOperator:
         # No actual command should have been run
         mock_run.assert_not_called()
 
-    def test_install_raises_when_unavailable(self, operator: FlatpakOperator) -> None:
-        """install() raises RuntimeError when Flatpak unavailable."""
-        with (
-            patch("popctl.operators.flatpak.command_exists", return_value=False),
-            pytest.raises(RuntimeError, match="not available"),
-        ):
-            operator.install(["com.spotify.Client"])
-
     def test_install_empty_list(self, operator: FlatpakOperator) -> None:
         """install() with empty list returns empty results."""
         with patch("popctl.operators.flatpak.command_exists", return_value=True):
@@ -186,14 +178,6 @@ class TestFlatpakOperator:
 
         # No actual command should have been run
         mock_run.assert_not_called()
-
-    def test_remove_raises_when_unavailable(self, operator: FlatpakOperator) -> None:
-        """remove() raises RuntimeError when Flatpak unavailable."""
-        with (
-            patch("popctl.operators.flatpak.command_exists", return_value=False),
-            pytest.raises(RuntimeError, match="not available"),
-        ):
-            operator.remove(["com.spotify.Client"])
 
     def test_remove_empty_list(self, operator: FlatpakOperator) -> None:
         """remove() with empty list returns empty results."""

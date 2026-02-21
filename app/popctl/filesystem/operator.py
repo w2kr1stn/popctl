@@ -9,7 +9,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from popctl.filesystem.protected import is_protected_path
+from popctl.domain.protected import is_protected
 from popctl.utils.shell import run_command
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ class FilesystemOperator:
         results: list[FilesystemActionResult] = []
 
         for path in paths:
-            if self._is_protected(path):
+            if is_protected(path, "filesystem"):
                 results.append(
                     FilesystemActionResult(
                         path=path,
@@ -79,17 +79,6 @@ class FilesystemOperator:
             results.append(self._delete_single(path))
 
         return results
-
-    def is_available(self) -> bool:
-        """Check if the operator is available.
-
-        The filesystem operator is always available since it uses
-        standard OS operations.
-
-        Returns:
-            Always True.
-        """
-        return True
 
     def _delete_single(self, path: str) -> FilesystemActionResult:
         """Delete a single filesystem path.
@@ -151,14 +140,3 @@ class FilesystemOperator:
                 success=False,
                 error=str(e),
             )
-
-    def _is_protected(self, path: str) -> bool:
-        """Check if a path is protected from deletion.
-
-        Args:
-            path: Absolute filesystem path to check.
-
-        Returns:
-            True if the path matches a protected pattern.
-        """
-        return is_protected_path(path)

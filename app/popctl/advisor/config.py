@@ -17,7 +17,7 @@ from typing import Annotated, Literal
 import tomli_w
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from popctl.core.paths import get_advisor_config_path
+from popctl.advisor.paths import get_advisor_config_path
 
 # Provider type alias
 AdvisorProvider = Literal["claude", "gemini"]

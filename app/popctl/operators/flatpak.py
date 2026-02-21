@@ -8,7 +8,7 @@ import logging
 from popctl.models.action import Action, ActionResult, ActionType
 from popctl.models.package import PackageSource
 from popctl.operators.base import Operator
-from popctl.utils.shell import CommandResult, command_exists, run_command
+from popctl.utils.shell import command_exists, run_command
 
 logger = logging.getLogger(__name__)
 
@@ -43,17 +43,11 @@ class FlatpakOperator(Operator):
         Returns:
             List of ActionResult for each package.
 
-        Raises:
-            RuntimeError: If flatpak is not available.
         """
-        if not self.is_available():
-            msg = "Flatpak is not available on this system"
-            raise RuntimeError(msg)
-
         if not packages:
             return []
 
-        return self._execute_flatpak_install(packages)
+        return [self._install_single(pkg) for pkg in packages]
 
     def remove(self, packages: list[str], purge: bool = False) -> list[ActionResult]:
         """Remove Flatpak applications.
@@ -68,13 +62,7 @@ class FlatpakOperator(Operator):
         Returns:
             List of ActionResult for each package.
 
-        Raises:
-            RuntimeError: If flatpak is not available.
         """
-        if not self.is_available():
-            msg = "Flatpak is not available on this system"
-            raise RuntimeError(msg)
-
         if not packages:
             return []
 
@@ -82,25 +70,7 @@ class FlatpakOperator(Operator):
         if purge:
             logger.debug("Flatpak does not support purge, using standard uninstall")
 
-        return self._execute_flatpak_uninstall(packages)
-
-    def _execute_flatpak_install(self, packages: list[str]) -> list[ActionResult]:
-        """Execute flatpak install for a list of applications.
-
-        Args:
-            packages: List of application IDs to install.
-
-        Returns:
-            List of ActionResult for each package.
-        """
-        results: list[ActionResult] = []
-
-        # Flatpak install works best one app at a time for better error reporting
-        for package in packages:
-            result = self._install_single(package)
-            results.append(result)
-
-        return results
+        return [self._uninstall_single(pkg) for pkg in packages]
 
     def _install_single(self, package: str) -> ActionResult:
         """Install a single Flatpak application.
@@ -134,24 +104,6 @@ class FlatpakOperator(Operator):
 
         return self._create_result(action, result)
 
-    def _execute_flatpak_uninstall(self, packages: list[str]) -> list[ActionResult]:
-        """Execute flatpak uninstall for a list of applications.
-
-        Args:
-            packages: List of application IDs to uninstall.
-
-        Returns:
-            List of ActionResult for each package.
-        """
-        results: list[ActionResult] = []
-
-        # Flatpak uninstall works best one app at a time for better error reporting
-        for package in packages:
-            result = self._uninstall_single(package)
-            results.append(result)
-
-        return results
-
     def _uninstall_single(self, package: str) -> ActionResult:
         """Uninstall a single Flatpak application.
 
@@ -183,27 +135,3 @@ class FlatpakOperator(Operator):
         result = run_command(args, timeout=self._FLATPAK_TIMEOUT)
 
         return self._create_result(action, result)
-
-    def _create_result(self, action: Action, result: CommandResult) -> ActionResult:
-        """Create an ActionResult from a CommandResult.
-
-        Args:
-            action: The action that was executed.
-            result: The command execution result.
-
-        Returns:
-            ActionResult with appropriate success/error info.
-        """
-        if result.success:
-            return ActionResult(
-                action=action,
-                success=True,
-                message="Operation completed",
-            )
-
-        error_msg = result.stderr.strip() or result.stdout.strip() or "flatpak command failed"
-        return ActionResult(
-            action=action,
-            success=False,
-            error=error_msg,
-        )

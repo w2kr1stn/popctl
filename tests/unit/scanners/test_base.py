@@ -83,43 +83,6 @@ class TestScanner:
         scanner = ConcreteScanner(sample_packages, available=False)
         assert scanner.is_available() is False
 
-    def test_scan_manual_only(self, sample_packages: list[ScannedPackage]) -> None:
-        """scan_manual_only yields only manually installed packages."""
-        scanner = ConcreteScanner(sample_packages)
-        manual_packages = list(scanner.scan_manual_only())
-        assert len(manual_packages) == 2
-        assert all(pkg.status == PackageStatus.MANUAL for pkg in manual_packages)
-        assert manual_packages[0].name == "firefox"
-        assert manual_packages[1].name == "neovim"
-
-    def test_scan_manual_only_empty(self) -> None:
-        """scan_manual_only handles no manual packages."""
-        auto_only = [
-            ScannedPackage(
-                name="libfoo",
-                source=PackageSource.APT,
-                version="1.0",
-                status=PackageStatus.AUTO_INSTALLED,
-            )
-        ]
-        scanner = ConcreteScanner(auto_only)
-        manual_packages = list(scanner.scan_manual_only())
-        assert len(manual_packages) == 0
-
-    def test_count_returns_totals(self, sample_packages: list[ScannedPackage]) -> None:
-        """count returns correct total and manual counts."""
-        scanner = ConcreteScanner(sample_packages)
-        total, manual = scanner.count()
-        assert total == 4
-        assert manual == 2
-
-    def test_count_empty_scanner(self) -> None:
-        """count handles empty package list."""
-        scanner = ConcreteScanner([])
-        total, manual = scanner.count()
-        assert total == 0
-        assert manual == 0
-
     def test_scanner_is_abstract(self) -> None:
         """Scanner cannot be instantiated directly."""
         with pytest.raises(TypeError):

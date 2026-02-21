@@ -17,8 +17,8 @@ from popctl.domain.ownership import (
     get_path_mtime,
     get_path_size,
 )
+from popctl.domain.protected import is_protected
 from popctl.filesystem.models import OrphanReason, PathStatus, PathType, ScannedPath
-from popctl.filesystem.protected import is_protected_path
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ class FilesystemScanner:
         Returns:
             PathStatus indicating ownership classification.
         """
-        if is_protected_path(str(path)):
+        if is_protected(str(path), "filesystem"):
             return PathStatus.PROTECTED
 
         if dpkg_owns_path(path, self._dpkg_cache):

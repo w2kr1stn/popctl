@@ -44,13 +44,7 @@ class AptOperator(Operator):
         Returns:
             List of ActionResult for each package.
 
-        Raises:
-            RuntimeError: If apt-get is not available.
         """
-        if not self.is_available():
-            msg = "APT package manager is not available on this system"
-            raise RuntimeError(msg)
-
         if not packages:
             return []
 
@@ -66,13 +60,7 @@ class AptOperator(Operator):
         Returns:
             List of ActionResult for each package.
 
-        Raises:
-            RuntimeError: If apt-get is not available.
         """
-        if not self.is_available():
-            msg = "APT package manager is not available on this system"
-            raise RuntimeError(msg)
-
         if not packages:
             return []
 

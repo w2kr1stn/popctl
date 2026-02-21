@@ -31,7 +31,8 @@ from popctl.advisor.config import (
     load_advisor_config,
     save_advisor_config,
 )
-from popctl.core.paths import ensure_advisor_sessions_dir, get_manifest_path
+from popctl.advisor.paths import ensure_advisor_sessions_dir
+from popctl.core.paths import get_manifest_path
 from popctl.models.package import PackageSource
 from popctl.models.scan_result import ScanResult
 from popctl.utils.formatting import (
@@ -243,7 +244,7 @@ def _create_workspace(scan_result: ScanResult) -> Path:
     Returns:
         Path to the created workspace directory.
     """
-    from popctl.core.paths import get_advisor_memory_path
+    from popctl.advisor.paths import get_advisor_memory_path
 
     sessions_dir = ensure_advisor_sessions_dir()
     manifest_path = get_manifest_path()
@@ -447,13 +448,13 @@ def apply(
     from rich.table import Table
 
     from popctl.advisor import import_decisions
+    from popctl.advisor.paths import get_exchange_dir
     from popctl.core.manifest import (
         ManifestError,
         ManifestNotFoundError,
         load_manifest,
         save_manifest,
     )
-    from popctl.core.paths import get_exchange_dir
     from popctl.models.manifest import PackageEntry
     from popctl.models.package import PACKAGE_SOURCE_KEYS
 

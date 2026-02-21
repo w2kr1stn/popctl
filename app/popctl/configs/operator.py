@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from popctl.configs.protected import is_protected_config
 from popctl.core.paths import ensure_config_backup_dir
+from popctl.domain.protected import is_protected
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,7 @@ class ConfigOperator:
             ConfigActionResult indicating success or failure.
         """
         # 1. Check protected
-        if is_protected_config(path):
+        if is_protected(path, "configs"):
             return ConfigActionResult(
                 path=path,
                 success=False,

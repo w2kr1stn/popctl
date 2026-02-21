@@ -7,7 +7,7 @@ scanners must implement.
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 
-from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
+from popctl.models.package import PackageSource, ScannedPackage
 
 
 class Scanner(ABC):
@@ -50,30 +50,3 @@ class Scanner(ABC):
         Returns:
             True if the package manager can be used, False otherwise.
         """
-
-    def scan_manual_only(self) -> Iterator[ScannedPackage]:
-        """Yield only manually-installed packages.
-
-        This is a convenience method that filters the full scan
-        to include only packages explicitly installed by the user.
-
-        Yields:
-            ScannedPackage instances with status == MANUAL.
-        """
-        for pkg in self.scan():
-            if pkg.status == PackageStatus.MANUAL:
-                yield pkg
-
-    def count(self) -> tuple[int, int]:
-        """Count total and manual packages.
-
-        Returns:
-            Tuple of (total_count, manual_count).
-        """
-        total = 0
-        manual = 0
-        for pkg in self.scan():
-            total += 1
-            if pkg.status == PackageStatus.MANUAL:
-                manual += 1
-        return total, manual

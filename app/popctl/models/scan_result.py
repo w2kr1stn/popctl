@@ -12,8 +12,8 @@ from popctl.models.package import ScannedPackage
 
 
 @dataclass(frozen=True, slots=True)
-class ScanMetadata:
-    """Metadata for a scan result.
+class ScanResult:
+    """Complete scan result for export.
 
     Attributes:
         timestamp: ISO format timestamp when the scan was performed.
@@ -21,43 +21,28 @@ class ScanMetadata:
         popctl_version: Version of popctl that performed the scan.
         sources: Tuple of package sources that were scanned (immutable).
         manual_only: Whether only manually installed packages were included.
+        packages: Tuple of scanned packages (immutable).
+        summary: Package count summary.
     """
 
     timestamp: str
     hostname: str
     popctl_version: str
     sources: tuple[str, ...]
-    manual_only: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return {
-            "timestamp": self.timestamp,
-            "hostname": self.hostname,
-            "popctl_version": self.popctl_version,
-            "sources": list(self.sources),  # Convert back to list for JSON
-            "manual_only": self.manual_only,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ScanResult:
-    """Complete scan result for export.
-
-    Attributes:
-        metadata: Scan metadata including timestamp and hostname.
-        packages: Tuple of scanned packages (immutable).
-        summary: Package count summary.
-    """
-
-    metadata: ScanMetadata
     packages: tuple[ScannedPackage, ...]
+    manual_only: bool = False
     summary: dict[str, int] = field(default_factory=lambda: {})
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
-            "metadata": self.metadata.to_dict(),
+            "metadata": {
+                "timestamp": self.timestamp,
+                "hostname": self.hostname,
+                "popctl_version": self.popctl_version,
+                "sources": list(self.sources),
+                "manual_only": self.manual_only,
+            },
             "packages": [_package_to_dict(pkg) for pkg in self.packages],
             "summary": self.summary,
         }
@@ -100,15 +85,15 @@ class ScanResult:
         summary["manual"] = manual_count
         summary["auto"] = auto_count
 
-        metadata = ScanMetadata(
+        return cls(
             timestamp=datetime.now(UTC).isoformat(),
             hostname=socket.gethostname(),
             popctl_version=__version__,
             sources=tuple(sources),
+            packages=tuple(packages),
             manual_only=manual_only,
+            summary=summary,
         )
-
-        return cls(metadata=metadata, packages=tuple(packages), summary=summary)
 
 
 def _package_to_dict(pkg: ScannedPackage) -> dict[str, Any]:

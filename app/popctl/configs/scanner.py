@@ -11,7 +11,6 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from popctl.configs.models import ConfigOrphanReason, ConfigStatus, ConfigType, ScannedConfig
-from popctl.configs.protected import is_protected_config
 from popctl.domain.ownership import (
     app_name_matches,
     dpkg_owns_path,
@@ -20,6 +19,7 @@ from popctl.domain.ownership import (
     get_path_mtime,
     get_path_size,
 )
+from popctl.domain.protected import is_protected
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +136,7 @@ class ConfigScanner:
         name = entry.name
         path_str = str(entry)
 
-        if is_protected_config(path_str):
+        if is_protected(path_str, "configs"):
             return
 
         # Detect dead symlinks before checking ownership

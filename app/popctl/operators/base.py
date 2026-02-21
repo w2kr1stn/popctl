@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 
 from popctl.models.action import Action, ActionResult
 from popctl.models.package import PackageSource
+from popctl.utils.shell import CommandResult
 
 
 class Operator(ABC):
@@ -140,3 +141,21 @@ class Operator(ABC):
             results.extend(self.remove(purge_packages, purge=True))
 
         return results
+
+    def _create_result(self, action: Action, result: CommandResult) -> ActionResult:
+        """Create an ActionResult from a CommandResult.
+
+        Args:
+            action: The action that was executed.
+            result: The command execution result.
+
+        Returns:
+            ActionResult with appropriate success/error info.
+        """
+        if result.success:
+            return ActionResult(action=action, success=True, message="Operation completed")
+
+        error_msg = (
+            result.stderr.strip() or result.stdout.strip() or f"{self.source.value} command failed"
+        )
+        return ActionResult(action=action, success=False, error=error_msg)

@@ -8,8 +8,6 @@ from popctl.models.action import (
     Action,
     ActionResult,
     ActionType,
-    create_install_action,
-    create_remove_action,
 )
 from popctl.models.package import PackageSource
 
@@ -105,33 +103,6 @@ class TestAction:
         assert action.is_install is False
         assert action.is_remove is False
 
-    def test_is_destructive_for_remove(self) -> None:
-        """is_destructive returns True for remove actions."""
-        action = Action(
-            action_type=ActionType.REMOVE,
-            package="htop",
-            source=PackageSource.APT,
-        )
-        assert action.is_destructive is True
-
-    def test_is_destructive_for_purge(self) -> None:
-        """is_destructive returns True for purge actions."""
-        action = Action(
-            action_type=ActionType.PURGE,
-            package="htop",
-            source=PackageSource.APT,
-        )
-        assert action.is_destructive is True
-
-    def test_is_destructive_false_for_install(self) -> None:
-        """is_destructive returns False for install actions."""
-        action = Action(
-            action_type=ActionType.INSTALL,
-            package="htop",
-            source=PackageSource.APT,
-        )
-        assert action.is_destructive is False
-
     def test_purge_valid_for_snap(self) -> None:
         """PURGE action is valid for SNAP packages."""
         action = Action(
@@ -201,46 +172,3 @@ class TestActionResult:
 
         assert success_result.failed is False
         assert failure_result.failed is True
-
-
-class TestActionFactories:
-    """Tests for action factory functions."""
-
-    def test_create_install_action_factory(self) -> None:
-        """create_install_action creates correct action."""
-        action = create_install_action(
-            package="htop",
-            source=PackageSource.APT,
-            reason="Missing package",
-        )
-        assert action.action_type == ActionType.INSTALL
-        assert action.package == "htop"
-        assert action.source == PackageSource.APT
-        assert action.reason == "Missing package"
-
-    def test_create_remove_action_factory(self) -> None:
-        """create_remove_action creates remove action by default."""
-        action = create_remove_action(
-            package="bloatware",
-            source=PackageSource.APT,
-        )
-        assert action.action_type == ActionType.REMOVE
-        assert action.package == "bloatware"
-
-    def test_create_remove_action_with_purge(self) -> None:
-        """create_remove_action with purge=True creates purge action."""
-        action = create_remove_action(
-            package="bloatware",
-            source=PackageSource.APT,
-            purge=True,
-        )
-        assert action.action_type == ActionType.PURGE
-
-    def test_create_flatpak_action(self) -> None:
-        """Can create actions for Flatpak packages."""
-        action = create_install_action(
-            package="com.spotify.Client",
-            source=PackageSource.FLATPAK,
-        )
-        assert action.source == PackageSource.FLATPAK
-        assert action.package == "com.spotify.Client"

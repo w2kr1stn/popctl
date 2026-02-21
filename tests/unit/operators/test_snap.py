@@ -100,14 +100,6 @@ class TestSnapOperator:
 
         assert results == []
 
-    def test_install_raises_when_unavailable(self, operator: SnapOperator) -> None:
-        """install() raises RuntimeError when snap unavailable."""
-        with (
-            patch("popctl.operators.snap.command_exists", return_value=False),
-            pytest.raises(RuntimeError, match="not available"),
-        ):
-            operator.install(["firefox"])
-
     def test_remove_success(self, operator: SnapOperator) -> None:
         """remove() returns success results on snap success."""
         with (
@@ -188,11 +180,3 @@ class TestSnapOperator:
             results = operator.remove([])
 
         assert results == []
-
-    def test_remove_raises_when_unavailable(self, operator: SnapOperator) -> None:
-        """remove() raises RuntimeError when snap unavailable."""
-        with (
-            patch("popctl.operators.snap.command_exists", return_value=False),
-            pytest.raises(RuntimeError, match="not available"),
-        ):
-            operator.remove(["firefox"])
