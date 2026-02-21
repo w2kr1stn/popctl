@@ -4,10 +4,16 @@ Provides reusable table builders and summary printers for displaying
 planned actions and execution results across CLI commands (apply, sync).
 """
 
+import json
+from pathlib import Path
+from typing import Any
+
+import typer
 from rich.table import Table
 
+from popctl.domain.manifest import DomainEntry
 from popctl.models.action import Action, ActionResult
-from popctl.utils.formatting import console, print_success
+from popctl.utils.formatting import console, print_error, print_info, print_success
 
 
 def create_actions_table(actions: list[Action], dry_run: bool = False) -> Table:
@@ -147,3 +153,59 @@ def print_results_summary(results: list[ActionResult]) -> None:
         console.print(
             f"\n[success]{success_count} succeeded[/success], [error]{fail_count} failed[/error]"
         )
+
+
+def print_deletion_plan(
+    paths: list[str],
+    entries: dict[str, DomainEntry],
+    dry_run: bool,
+) -> None:
+    """Display planned deletions as a Rich table.
+
+    Used by both filesystem and config clean commands.
+
+    Args:
+        paths: List of paths to be deleted.
+        entries: Mapping of path strings to DomainEntry with reason metadata.
+        dry_run: Whether this is a dry-run (changes table title).
+    """
+    label = "Planned Deletions (dry-run)" if dry_run else "Planned Deletions"
+    table = Table(title=label, show_lines=False)
+    table.add_column("Path", style="bold")
+    table.add_column("Reason", style="dim")
+
+    for path_str in paths:
+        entry = entries.get(path_str)
+        reason = "-"
+        if isinstance(entry, DomainEntry) and entry.reason:
+            reason = entry.reason
+        table.add_row(path_str, reason)
+
+    console.print(table)
+
+
+def export_orphan_results(data: list[dict[str, Any]], export_path: Path) -> None:
+    """Export pre-serialized orphan results to a JSON file.
+
+    Handles path resolution, directory creation, and error reporting.
+    Used by both filesystem and config scan commands.
+
+    Args:
+        data: Pre-serialized list of dicts to write as JSON.
+        export_path: Target file path for the JSON export.
+
+    Raises:
+        typer.Exit: If export path is a directory or write fails.
+    """
+    export_path = export_path.resolve()
+    if export_path.is_dir():
+        print_error(f"Export path is a directory: {export_path}")
+        raise typer.Exit(code=1)
+
+    try:
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+        export_path.write_text(json.dumps(data, indent=2))
+        print_info(f"Results exported to {export_path}")
+    except OSError as e:
+        print_error(f"Failed to export: {e}")
+        raise typer.Exit(code=1) from e

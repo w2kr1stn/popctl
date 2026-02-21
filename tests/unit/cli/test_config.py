@@ -11,8 +11,7 @@ from unittest.mock import MagicMock, patch
 from popctl.cli.main import app
 from popctl.configs.models import ConfigOrphanReason, ConfigStatus, ConfigType, ScannedConfig
 from popctl.configs.operator import ConfigActionResult
-from popctl.domain.manifest import DomainConfig as ConfigsConfig
-from popctl.domain.manifest import DomainEntry as ConfigEntry
+from popctl.domain.manifest import DomainConfig, DomainEntry
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -50,13 +49,13 @@ def _make_owned(path: str) -> ScannedConfig:
 
 
 def _make_manifest(
-    remove_paths: dict[str, ConfigEntry] | None = None,
-    keep_paths: dict[str, ConfigEntry] | None = None,
+    remove_paths: dict[str, DomainEntry] | None = None,
+    keep_paths: dict[str, DomainEntry] | None = None,
 ) -> MagicMock:
     """Create a mock Manifest with optional configs section."""
     manifest = MagicMock()
     if remove_paths is not None or keep_paths is not None:
-        configs_config = ConfigsConfig(
+        configs_config = DomainConfig(
             keep=keep_paths or {},
             remove=remove_paths or {},
         )
@@ -205,7 +204,7 @@ class TestConfigClean:
         """Clean with --dry-run shows plan without deleting."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": ConfigEntry(reason="VLC uninstalled"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC uninstalled"),
             }
         )
         dry_results = [
@@ -235,7 +234,7 @@ class TestConfigClean:
         """Clean prompts for confirmation and aborts on 'n'."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": ConfigEntry(reason="VLC uninstalled"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC uninstalled"),
             }
         )
 
@@ -255,7 +254,7 @@ class TestConfigClean:
         """Clean with -y skips confirmation."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": ConfigEntry(reason="VLC uninstalled"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC uninstalled"),
             }
         )
         success_results = [
@@ -299,8 +298,8 @@ class TestConfigClean:
         """Clean records successful deletions to history."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": ConfigEntry(reason="VLC removed"),
-                "/home/user/.config/obs-studio": ConfigEntry(reason="OBS removed"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC removed"),
+                "/home/user/.config/obs-studio": DomainEntry(reason="OBS removed"),
             }
         )
         success_results = [
@@ -342,7 +341,7 @@ class TestConfigClean:
         """Clean results include backup paths in output."""
         manifest = _make_manifest(
             remove_paths={
-                "/tmp/vlc": ConfigEntry(reason="VLC removed"),
+                "/tmp/vlc": DomainEntry(reason="VLC removed"),
             }
         )
         backup_path = "/tmp/backups/vlc"
@@ -376,8 +375,8 @@ class TestConfigClean:
         """Clean skips protected config paths with warning."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.ssh/config": ConfigEntry(reason="Should not delete"),
-                "/home/user/.config/vlc": ConfigEntry(reason="VLC removed"),
+                "/home/user/.ssh/config": DomainEntry(reason="Should not delete"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC removed"),
             }
         )
         success_results = [
@@ -418,7 +417,7 @@ class TestConfigClean:
         """Clean exits with code 1 if any deletion fails."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": ConfigEntry(reason="VLC removed"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC removed"),
             }
         )
         fail_results = [

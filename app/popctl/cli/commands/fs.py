@@ -11,17 +11,19 @@ from typing import Annotated
 import typer
 from rich.table import Table
 
+from popctl.cli.display import export_orphan_results, print_deletion_plan
+from popctl.cli.manifest import require_manifest
 from popctl.cli.types import OutputFormat
-from popctl.core.manifest import require_manifest
-from popctl.filesystem.history import record_fs_deletions
-from popctl.filesystem.manifest import FilesystemEntry
+from popctl.domain.history import record_domain_deletions
+from popctl.filesystem import (
+    FilesystemActionResult,
+    FilesystemOperator,
+    FilesystemScanner,
+)
 from popctl.filesystem.models import PathStatus, ScannedPath
-from popctl.filesystem.operator import FilesystemActionResult, FilesystemOperator
-from popctl.filesystem.scanner import FilesystemScanner
 from popctl.utils.formatting import (
     console,
     format_size,
-    print_error,
     print_info,
     print_success,
     print_warning,
@@ -91,7 +93,20 @@ def scan(
 
     # Handle export
     if export_path is not None:
-        _export_results(orphans, export_path)  # Export ALL, not limited
+        data = [
+            {
+                "path": p.path,
+                "path_type": p.path_type.value,
+                "status": p.status.value,
+                "size_bytes": p.size_bytes,
+                "mtime": p.mtime,
+                "parent_target": p.parent_target,
+                "orphan_reason": p.orphan_reason.value if p.orphan_reason else None,
+                "confidence": p.confidence,
+            }
+            for p in orphans
+        ]
+        export_orphan_results(data, export_path)  # Export ALL, not limited
 
     # JSON output
     if output_format == OutputFormat.JSON:
@@ -147,7 +162,7 @@ def clean(
         return
 
     # Display planned deletions
-    _print_deletion_plan(paths_to_delete, remove_paths, dry_run)
+    print_deletion_plan(paths_to_delete, remove_paths, dry_run)
 
     # Confirm unless --yes or --dry-run
     if not dry_run and not yes:
@@ -171,7 +186,7 @@ def clean(
         successful_paths = [r.path for r in results if r.success]
         if successful_paths:
             try:
-                record_fs_deletions(successful_paths, command="popctl fs clean")
+                record_domain_deletions("filesystem", successful_paths, command="popctl fs clean")
                 print_info("Deletions recorded to history.")
             except (OSError, RuntimeError) as e:
                 print_warning(f"Could not record to history: {e}")
@@ -218,56 +233,6 @@ def _print_json(orphans: list[ScannedPath]) -> None:
         for p in orphans
     ]
     console.print_json(json.dumps(data))
-
-
-def _export_results(orphans: list[ScannedPath], export_path: Path) -> None:
-    """Export orphan results to a JSON file."""
-    export_path = export_path.resolve()
-    if export_path.is_dir():
-        print_error(f"Export path is a directory: {export_path}")
-        raise typer.Exit(code=1)
-
-    data = [
-        {
-            "path": p.path,
-            "path_type": p.path_type.value,
-            "status": p.status.value,
-            "size_bytes": p.size_bytes,
-            "mtime": p.mtime,
-            "parent_target": p.parent_target,
-            "orphan_reason": p.orphan_reason.value if p.orphan_reason else None,
-            "confidence": p.confidence,
-        }
-        for p in orphans
-    ]
-    try:
-        export_path.parent.mkdir(parents=True, exist_ok=True)
-        export_path.write_text(json.dumps(data, indent=2))
-        print_info(f"Results exported to {export_path}")
-    except OSError as e:
-        print_error(f"Failed to export: {e}")
-        raise typer.Exit(code=1) from e
-
-
-def _print_deletion_plan(
-    paths: list[str],
-    entries: dict[str, FilesystemEntry],
-    dry_run: bool,
-) -> None:
-    """Display planned deletions."""
-    label = "Planned Deletions (dry-run)" if dry_run else "Planned Deletions"
-    table = Table(title=label, show_lines=False)
-    table.add_column("Path", style="bold")
-    table.add_column("Reason", style="dim")
-
-    for path_str in paths:
-        entry = entries.get(path_str)
-        reason = "-"
-        if isinstance(entry, FilesystemEntry) and entry.reason:
-            reason = entry.reason
-        table.add_row(path_str, reason)
-
-    console.print(table)
 
 
 def _print_deletion_results(results: list[FilesystemActionResult]) -> None:

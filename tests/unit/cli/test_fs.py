@@ -9,8 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from popctl.cli.main import app
-from popctl.domain.manifest import DomainConfig as FilesystemConfig
-from popctl.domain.manifest import DomainEntry as FilesystemEntry
+from popctl.domain.manifest import DomainConfig, DomainEntry
 from popctl.filesystem.models import OrphanReason, PathStatus, PathType, ScannedPath
 from popctl.filesystem.operator import FilesystemActionResult
 from typer.testing import CliRunner
@@ -52,13 +51,13 @@ def _make_owned(path: str) -> ScannedPath:
 
 
 def _make_manifest(
-    remove_paths: dict[str, FilesystemEntry] | None = None,
-    keep_paths: dict[str, FilesystemEntry] | None = None,
+    remove_paths: dict[str, DomainEntry] | None = None,
+    keep_paths: dict[str, DomainEntry] | None = None,
 ) -> MagicMock:
     """Create a mock Manifest with optional filesystem section."""
     manifest = MagicMock()
     if remove_paths is not None or keep_paths is not None:
-        fs_config = FilesystemConfig(
+        fs_config = DomainConfig(
             keep=keep_paths or {},
             remove=remove_paths or {},
         )
@@ -231,7 +230,7 @@ class TestFsClean:
         """Clean with --dry-run shows plan without deleting."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": FilesystemEntry(reason="VLC uninstalled"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC uninstalled"),
             }
         )
         dry_results = [
@@ -260,7 +259,7 @@ class TestFsClean:
         """Clean with -y skips confirmation."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": FilesystemEntry(reason="VLC uninstalled"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC uninstalled"),
             }
         )
         success_results = [
@@ -299,8 +298,8 @@ class TestFsClean:
         """Clean records successful deletions to history."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": FilesystemEntry(reason="VLC removed"),
-                "/home/user/.cache/mozilla": FilesystemEntry(reason="Cache stale"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC removed"),
+                "/home/user/.cache/mozilla": DomainEntry(reason="Cache stale"),
             }
         )
         success_results = [
@@ -333,8 +332,8 @@ class TestFsClean:
         """Clean skips /etc paths without --include-etc flag."""
         manifest = _make_manifest(
             remove_paths={
-                "/etc/vlc": FilesystemEntry(reason="Obsolete config"),
-                "/home/user/.config/vlc": FilesystemEntry(reason="VLC removed"),
+                "/etc/vlc": DomainEntry(reason="Obsolete config"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC removed"),
             }
         )
         success_results = [
@@ -365,7 +364,7 @@ class TestFsClean:
         """Clean exits with code 1 if any deletion fails."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": FilesystemEntry(reason="VLC removed"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC removed"),
             }
         )
         fail_results = [

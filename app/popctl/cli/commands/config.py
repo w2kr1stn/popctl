@@ -11,18 +11,20 @@ from typing import Annotated
 import typer
 from rich.table import Table
 
+from popctl.cli.display import export_orphan_results, print_deletion_plan
+from popctl.cli.manifest import require_manifest
 from popctl.cli.types import OutputFormat
-from popctl.configs.history import record_config_deletions
-from popctl.configs.manifest import ConfigEntry
+from popctl.configs import (
+    ConfigActionResult,
+    ConfigOperator,
+    ConfigScanner,
+    is_protected_config,
+)
 from popctl.configs.models import ConfigStatus, ScannedConfig
-from popctl.configs.operator import ConfigActionResult, ConfigOperator
-from popctl.configs.protected import is_protected_config
-from popctl.configs.scanner import ConfigScanner
-from popctl.core.manifest import require_manifest
+from popctl.domain.history import record_domain_deletions
 from popctl.utils.formatting import (
     console,
     format_size,
-    print_error,
     print_info,
     print_success,
     print_warning,
@@ -84,7 +86,19 @@ def scan(
 
     # Handle export
     if export_path is not None:
-        _export_results(orphans, export_path)  # Export ALL, not limited
+        data = [
+            {
+                "path": c.path,
+                "config_type": c.config_type.value,
+                "status": c.status.value,
+                "size_bytes": c.size_bytes,
+                "mtime": c.mtime,
+                "orphan_reason": c.orphan_reason.value if c.orphan_reason else None,
+                "confidence": c.confidence,
+            }
+            for c in orphans
+        ]
+        export_orphan_results(data, export_path)  # Export ALL, not limited
 
     # JSON output
     if output_format == OutputFormat.JSON:
@@ -136,7 +150,7 @@ def clean(
         return
 
     # Display planned deletions
-    _print_deletion_plan(paths_to_delete, remove_paths, dry_run)
+    print_deletion_plan(paths_to_delete, remove_paths, dry_run)
 
     # Confirm unless --yes or --dry-run
     if not dry_run and not yes:
@@ -160,7 +174,7 @@ def clean(
         successful_paths = [r.path for r in results if r.success]
         if successful_paths:
             try:
-                record_config_deletions(successful_paths, command="popctl config clean")
+                record_domain_deletions("configs", successful_paths, command="popctl config clean")
                 print_info("Deletions recorded to history.")
             except (OSError, RuntimeError) as e:
                 print_warning(f"Could not record to history: {e}")
@@ -206,55 +220,6 @@ def _print_json(orphans: list[ScannedConfig]) -> None:
         for c in orphans
     ]
     console.print_json(json.dumps(data))
-
-
-def _export_results(orphans: list[ScannedConfig], export_path: Path) -> None:
-    """Export orphan results to a JSON file."""
-    export_path = export_path.resolve()
-    if export_path.is_dir():
-        print_error(f"Export path is a directory: {export_path}")
-        raise typer.Exit(code=1)
-
-    data = [
-        {
-            "path": c.path,
-            "config_type": c.config_type.value,
-            "status": c.status.value,
-            "size_bytes": c.size_bytes,
-            "mtime": c.mtime,
-            "orphan_reason": c.orphan_reason.value if c.orphan_reason else None,
-            "confidence": c.confidence,
-        }
-        for c in orphans
-    ]
-    try:
-        export_path.parent.mkdir(parents=True, exist_ok=True)
-        export_path.write_text(json.dumps(data, indent=2))
-        print_info(f"Results exported to {export_path}")
-    except OSError as e:
-        print_error(f"Failed to export: {e}")
-        raise typer.Exit(code=1) from e
-
-
-def _print_deletion_plan(
-    paths: list[str],
-    entries: dict[str, ConfigEntry],
-    dry_run: bool,
-) -> None:
-    """Display planned deletions."""
-    label = "Planned Deletions (dry-run)" if dry_run else "Planned Deletions"
-    table = Table(title=label, show_lines=False)
-    table.add_column("Path", style="bold")
-    table.add_column("Reason", style="dim")
-
-    for path_str in paths:
-        entry = entries.get(path_str)
-        reason = "-"
-        if isinstance(entry, ConfigEntry) and entry.reason:
-            reason = entry.reason
-        table.add_row(path_str, reason)
-
-    console.print(table)
 
 
 def _print_deletion_results(results: list[ConfigActionResult]) -> None:

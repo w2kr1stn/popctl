@@ -15,8 +15,7 @@ from popctl.core.manifest import (
     manifest_exists,
     save_manifest,
 )
-from popctl.domain.manifest import DomainConfig as FilesystemConfig
-from popctl.domain.manifest import DomainEntry as FilesystemEntry
+from popctl.domain.manifest import DomainConfig, DomainEntry
 from popctl.models.manifest import (
     Manifest,
     ManifestMeta,
@@ -212,16 +211,14 @@ class TestManifestFilesystemIO:
                 keep={"firefox": PackageEntry(source="apt")},
                 remove={},
             ),
-            filesystem=FilesystemConfig(
+            filesystem=DomainConfig(
                 keep={
-                    "~/.config/nvim": FilesystemEntry(reason="User config", category="config"),
-                    "~/.config/git": FilesystemEntry(reason="Version control"),
+                    "~/.config/nvim": DomainEntry(reason="User config", category="config"),
+                    "~/.config/git": DomainEntry(reason="Version control"),
                 },
                 remove={
-                    "~/.config/old-app": FilesystemEntry(
-                        reason="App uninstalled", category="stale"
-                    ),
-                    "~/.cache/stale": FilesystemEntry(),
+                    "~/.config/old-app": DomainEntry(reason="App uninstalled", category="stale"),
+                    "~/.cache/stale": DomainEntry(),
                 },
             ),
         )
@@ -328,7 +325,7 @@ name = "test-machine"
         assert old_app.category == "stale"
 
     def test_fs_entry_serialization(self, tmp_path: Path, manifest_with_fs: Manifest) -> None:
-        """FilesystemEntry reason and category are serialized correctly."""
+        """DomainEntry reason and category are serialized correctly."""
         import tomllib
 
         manifest_path = tmp_path / "manifest.toml"
@@ -346,7 +343,7 @@ name = "test-machine"
         assert old_app_data["category"] == "stale"
 
     def test_fs_entry_empty_serialization(self, tmp_path: Path) -> None:
-        """FilesystemEntry with no reason/category produces empty dict."""
+        """DomainEntry with no reason/category produces empty dict."""
         import tomllib
 
         now = datetime.now(UTC)
@@ -354,9 +351,9 @@ name = "test-machine"
             meta=ManifestMeta(version="1.0", created=now, updated=now),
             system=SystemConfig(name="test"),
             packages=PackageConfig(keep={}, remove={}),
-            filesystem=FilesystemConfig(
+            filesystem=DomainConfig(
                 keep={},
-                remove={"~/.cache/stale": FilesystemEntry()},
+                remove={"~/.cache/stale": DomainEntry()},
             ),
         )
 
@@ -390,9 +387,6 @@ class TestManifestConfigsIO:
     @pytest.fixture
     def manifest_with_configs(self) -> Manifest:
         """Create a manifest with configs section."""
-        from popctl.domain.manifest import DomainConfig as ConfigsConfig
-        from popctl.domain.manifest import DomainEntry as ConfigEntry
-
         now = datetime.now(UTC)
         return Manifest(
             meta=ManifestMeta(version="1.0", created=now, updated=now),
@@ -401,14 +395,14 @@ class TestManifestConfigsIO:
                 keep={"firefox": PackageEntry(source="apt")},
                 remove={},
             ),
-            configs=ConfigsConfig(
+            configs=DomainConfig(
                 keep={
-                    "~/.config/Code": ConfigEntry(reason="VS Code settings", category="editor"),
-                    "~/.config/nvim": ConfigEntry(reason="User config"),
+                    "~/.config/Code": DomainEntry(reason="VS Code settings", category="editor"),
+                    "~/.config/nvim": DomainEntry(reason="User config"),
                 },
                 remove={
-                    "~/.config/vlc": ConfigEntry(reason="VLC not installed", category="obsolete"),
-                    "~/.config/sublime-text": ConfigEntry(reason="Switched editor"),
+                    "~/.config/vlc": DomainEntry(reason="VLC not installed", category="obsolete"),
+                    "~/.config/sublime-text": DomainEntry(reason="Switched editor"),
                 },
             ),
         )
@@ -517,7 +511,7 @@ name = "test-machine"
     def test_config_entry_serialization(
         self, tmp_path: Path, manifest_with_configs: Manifest
     ) -> None:
-        """ConfigEntry reason and category are serialized correctly."""
+        """DomainEntry reason and category are serialized correctly."""
         import tomllib
 
         manifest_path = tmp_path / "manifest.toml"
@@ -535,20 +529,17 @@ name = "test-machine"
         assert vlc_data["category"] == "obsolete"
 
     def test_config_entry_empty_serialization(self, tmp_path: Path) -> None:
-        """ConfigEntry with no reason/category produces empty dict."""
+        """DomainEntry with no reason/category produces empty dict."""
         import tomllib
-
-        from popctl.domain.manifest import DomainConfig as ConfigsConfig
-        from popctl.domain.manifest import DomainEntry as ConfigEntry
 
         now = datetime.now(UTC)
         manifest = Manifest(
             meta=ManifestMeta(version="1.0", created=now, updated=now),
             system=SystemConfig(name="test"),
             packages=PackageConfig(keep={}, remove={}),
-            configs=ConfigsConfig(
+            configs=DomainConfig(
                 keep={},
-                remove={"~/.config/stale": ConfigEntry()},
+                remove={"~/.config/stale": DomainEntry()},
             ),
         )
 

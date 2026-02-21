@@ -1,55 +1,54 @@
 """Tests for config manifest Pydantic models."""
 
 import pytest
-from popctl.domain.manifest import DomainConfig as ConfigsConfig
-from popctl.domain.manifest import DomainEntry as ConfigEntry
+from popctl.domain.manifest import DomainConfig, DomainEntry
 from pydantic import ValidationError
 
 
-class TestConfigEntry:
-    """Tests for ConfigEntry model."""
+class TestDomainEntry:
+    """Tests for DomainEntry model."""
 
     def test_config_entry_defaults(self) -> None:
         """Default entry has reason=None and category=None."""
-        entry = ConfigEntry()
+        entry = DomainEntry()
         assert entry.reason is None
         assert entry.category is None
 
     def test_config_entry_with_values(self) -> None:
         """Entry with explicit reason and category."""
-        entry = ConfigEntry(reason="VS Code settings", category="editor")
+        entry = DomainEntry(reason="VS Code settings", category="editor")
         assert entry.reason == "VS Code settings"
         assert entry.category == "editor"
 
     def test_config_entry_partial_values(self) -> None:
         """Entry with only reason set."""
-        entry = ConfigEntry(reason="Active desktop config")
+        entry = DomainEntry(reason="Active desktop config")
         assert entry.reason == "Active desktop config"
         assert entry.category is None
 
     def test_config_entry_forbids_extra(self) -> None:
         """Extra fields should raise ValidationError."""
         with pytest.raises(ValidationError):
-            ConfigEntry(reason="test", unknown_field="bad")  # type: ignore[call-arg]
+            DomainEntry(reason="test", unknown_field="bad")  # type: ignore[call-arg]
 
 
-class TestConfigsConfig:
-    """Tests for ConfigsConfig model."""
+class TestDomainConfig:
+    """Tests for DomainConfig model."""
 
     def test_configs_config_empty(self) -> None:
         """Default config has empty keep and remove dicts."""
-        config = ConfigsConfig()
+        config = DomainConfig()
         assert config.keep == {}
         assert config.remove == {}
 
     def test_configs_config_with_entries(self) -> None:
         """Config with keep and remove entries."""
-        config = ConfigsConfig(
+        config = DomainConfig(
             keep={
-                "~/.config/Code": ConfigEntry(reason="VS Code settings", category="editor"),
+                "~/.config/Code": DomainEntry(reason="VS Code settings", category="editor"),
             },
             remove={
-                "~/.config/vlc": ConfigEntry(reason="VLC not installed", category="obsolete"),
+                "~/.config/vlc": DomainEntry(reason="VLC not installed", category="obsolete"),
             },
         )
         assert "~/.config/Code" in config.keep
@@ -61,26 +60,26 @@ class TestConfigsConfig:
     def test_configs_config_no_duplicates_validator(self) -> None:
         """Same path in both keep and remove raises ValueError."""
         with pytest.raises(ValidationError, match="Paths cannot be in both keep and remove"):
-            ConfigsConfig(
-                keep={"~/.config/vlc": ConfigEntry(reason="keep it")},
-                remove={"~/.config/vlc": ConfigEntry(reason="remove it")},
+            DomainConfig(
+                keep={"~/.config/vlc": DomainEntry(reason="keep it")},
+                remove={"~/.config/vlc": DomainEntry(reason="remove it")},
             )
 
     def test_configs_config_forbids_extra(self) -> None:
         """Extra fields on config should raise ValidationError."""
         with pytest.raises(ValidationError):
-            ConfigsConfig(unknown="bad")  # type: ignore[call-arg]
+            DomainConfig(unknown="bad")  # type: ignore[call-arg]
 
     def test_configs_config_multiple_entries(self) -> None:
         """Config with multiple keep and remove entries."""
-        config = ConfigsConfig(
+        config = DomainConfig(
             keep={
-                "~/.config/Code": ConfigEntry(reason="Active"),
-                "~/.config/nvim": ConfigEntry(reason="User config"),
+                "~/.config/Code": DomainEntry(reason="Active"),
+                "~/.config/nvim": DomainEntry(reason="User config"),
             },
             remove={
-                "~/.config/vlc": ConfigEntry(reason="Uninstalled"),
-                "~/.config/sublime-text": ConfigEntry(reason="Switched editor"),
+                "~/.config/vlc": DomainEntry(reason="Uninstalled"),
+                "~/.config/sublime-text": DomainEntry(reason="Switched editor"),
             },
         )
         assert len(config.keep) == 2
@@ -88,9 +87,9 @@ class TestConfigsConfig:
 
     def test_configs_config_disjoint_keys_pass(self) -> None:
         """Different keys in keep and remove should pass validation."""
-        config = ConfigsConfig(
-            keep={"~/.config/a": ConfigEntry()},
-            remove={"~/.config/b": ConfigEntry()},
+        config = DomainConfig(
+            keep={"~/.config/a": DomainEntry()},
+            remove={"~/.config/b": DomainEntry()},
         )
         assert len(config.keep) == 1
         assert len(config.remove) == 1

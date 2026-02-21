@@ -6,10 +6,7 @@ Tests for the Pydantic models representing manifest.toml structure.
 from datetime import UTC, datetime
 
 import pytest
-from popctl.domain.manifest import DomainConfig as ConfigsConfig
-from popctl.domain.manifest import DomainConfig as FilesystemConfig
-from popctl.domain.manifest import DomainEntry as ConfigEntry
-from popctl.domain.manifest import DomainEntry as FilesystemEntry
+from popctl.domain.manifest import DomainConfig, DomainEntry
 from popctl.models.manifest import (
     Manifest,
     ManifestMeta,
@@ -200,21 +197,21 @@ class TestManifestFilesystem:
     """Tests for filesystem integration in Manifest model."""
 
     @pytest.fixture
-    def fs_config(self) -> FilesystemConfig:
-        """Create a sample FilesystemConfig for testing."""
-        return FilesystemConfig(
+    def fs_config(self) -> DomainConfig:
+        """Create a sample DomainConfig for testing."""
+        return DomainConfig(
             keep={
-                "~/.config/nvim": FilesystemEntry(reason="User config", category="config"),
-                "~/.config/git": FilesystemEntry(reason="Version control"),
+                "~/.config/nvim": DomainEntry(reason="User config", category="config"),
+                "~/.config/git": DomainEntry(reason="Version control"),
             },
             remove={
-                "~/.config/old-app": FilesystemEntry(reason="App uninstalled", category="stale"),
-                "~/.cache/stale": FilesystemEntry(),
+                "~/.config/old-app": DomainEntry(reason="App uninstalled", category="stale"),
+                "~/.cache/stale": DomainEntry(),
             },
         )
 
     @pytest.fixture
-    def manifest_with_fs(self, fs_config: FilesystemConfig) -> Manifest:
+    def manifest_with_fs(self, fs_config: DomainConfig) -> Manifest:
         """Create a manifest with filesystem section."""
         now = datetime.now(UTC)
         return Manifest(
@@ -282,21 +279,21 @@ class TestManifestConfigs:
     """Tests for configs integration in Manifest model."""
 
     @pytest.fixture
-    def configs_config(self) -> ConfigsConfig:
-        """Create a sample ConfigsConfig for testing."""
-        return ConfigsConfig(
+    def configs_config(self) -> DomainConfig:
+        """Create a sample DomainConfig for testing."""
+        return DomainConfig(
             keep={
-                "~/.config/Code": ConfigEntry(reason="VS Code settings", category="editor"),
-                "~/.config/nvim": ConfigEntry(reason="User config"),
+                "~/.config/Code": DomainEntry(reason="VS Code settings", category="editor"),
+                "~/.config/nvim": DomainEntry(reason="User config"),
             },
             remove={
-                "~/.config/vlc": ConfigEntry(reason="VLC not installed", category="obsolete"),
-                "~/.config/sublime-text": ConfigEntry(reason="Switched editor"),
+                "~/.config/vlc": DomainEntry(reason="VLC not installed", category="obsolete"),
+                "~/.config/sublime-text": DomainEntry(reason="Switched editor"),
             },
         )
 
     @pytest.fixture
-    def manifest_with_configs(self, configs_config: ConfigsConfig) -> Manifest:
+    def manifest_with_configs(self, configs_config: DomainConfig) -> Manifest:
         """Create a manifest with configs section."""
         now = datetime.now(UTC)
         return Manifest(

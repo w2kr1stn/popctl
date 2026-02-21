@@ -9,8 +9,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from popctl.configs.manifest import ConfigEntry, ConfigsConfig
-from popctl.filesystem.manifest import FilesystemConfig, FilesystemEntry
+from popctl.domain.manifest import DomainConfig, DomainEntry
 
 
 class ManifestMeta(BaseModel):
@@ -130,11 +129,11 @@ class Manifest(BaseModel):
     system: Annotated[SystemConfig, Field(description="System configuration")]
     packages: Annotated[PackageConfig, Field(description="Package configuration")]
     filesystem: Annotated[
-        FilesystemConfig | None,
+        DomainConfig | None,
         Field(description="Filesystem cleanup configuration"),
     ] = None
     configs: Annotated[
-        ConfigsConfig | None,
+        DomainConfig | None,
         Field(description="Config cleanup configuration"),
     ] = None
 
@@ -168,22 +167,22 @@ class Manifest(BaseModel):
             name: entry for name, entry in self.packages.remove.items() if entry.source == source
         }
 
-    def get_fs_remove_paths(self) -> dict[str, FilesystemEntry]:
+    def get_fs_remove_paths(self) -> dict[str, DomainEntry]:
         """Get filesystem paths marked for removal.
 
         Returns:
-            Dictionary of path strings to FilesystemEntry for paths to delete.
+            Dictionary of path strings to DomainEntry for paths to delete.
             Returns empty dict if no filesystem section is configured.
         """
         if self.filesystem is None:
             return {}
         return self.filesystem.remove
 
-    def get_config_remove_paths(self) -> dict[str, ConfigEntry]:
+    def get_config_remove_paths(self) -> dict[str, DomainEntry]:
         """Get config paths marked for removal.
 
         Returns:
-            Dictionary of path strings to ConfigEntry for configs to delete.
+            Dictionary of path strings to DomainEntry for configs to delete.
             Returns empty dict if no configs section is configured.
         """
         if self.configs is None:
