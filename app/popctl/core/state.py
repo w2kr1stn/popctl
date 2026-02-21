@@ -178,27 +178,7 @@ class StateManager:
 
         return reversed_ids
 
-    def _get_entry_by_id(self, entry_id: str) -> HistoryEntry | None:
-        """Find entry by ID.
-
-        Searches the history file for an entry with the given ID.
-
-        Args:
-            entry_id: The entry ID to find.
-
-        Returns:
-            HistoryEntry if found, None otherwise.
-        """
-        # Get all history
-        history = self.get_history()
-
-        for entry in history:
-            if entry.id == entry_id:
-                return entry
-
-        return None
-
-    def mark_entry_reversed(self, entry_id: str) -> bool:
+    def mark_entry_reversed(self, entry: HistoryEntry) -> None:
         """Mark an entry as reversed (not reversible anymore).
 
         This is done by appending a new "reversal" entry that references
@@ -206,31 +186,22 @@ class StateManager:
         maintains the append-only nature of the history file.
 
         Args:
-            entry_id: The ID of the entry to mark as reversed.
-
-        Returns:
-            True if entry was found and marked, False otherwise.
+            entry: The history entry to mark as reversed.
         """
-        # Find the original entry
-        original = self._get_entry_by_id(entry_id)
-        if original is None:
-            return False
-
         # Create a reversal marker entry
         # We use the same items but mark it as a reversal
         reversal_entry = create_history_entry(
-            action_type=self._get_inverse_action_type(original.action_type),
-            items=list(original.items),
+            action_type=self._get_inverse_action_type(entry.action_type),
+            items=list(entry.items),
             reversible=False,  # Reversal entries are not reversible
             metadata={
-                "reversed_entry_id": entry_id,
-                "reversal_of": original.action_type.value,
+                "reversed_entry_id": entry.id,
+                "reversal_of": entry.action_type.value,
             },
         )
 
         # Record the reversal
         self.record_action(reversal_entry)
-        return True
 
     def _get_inverse_action_type(self, action_type: HistoryActionType) -> HistoryActionType:
         """Get the inverse action type for undo operations.

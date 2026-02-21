@@ -375,77 +375,12 @@ class TestGetLastReversible:
         manager.record_action(entry2)
 
         # Mark entry2 as reversed
-        manager.mark_entry_reversed(entry2.id)
+        manager.mark_entry_reversed(entry2)
 
         result = manager.get_last_reversible()
 
         assert result is not None
         assert result.id == entry1.id
-
-
-class TestGetEntryById:
-    """Tests for StateManager._get_entry_by_id method."""
-
-    @pytest.fixture
-    def manager(self, tmp_path: Path) -> StateManager:
-        """Create a StateManager with temporary directory."""
-        return StateManager(state_dir=tmp_path)
-
-    def test__get_entry_by_id_empty_history(self, manager: StateManager) -> None:
-        """_get_entry_by_id returns None when history is empty."""
-        result = manager._get_entry_by_id("nonexistent")
-        assert result is None
-
-    def test__get_entry_by_id_finds_entry(self, manager: StateManager) -> None:
-        """_get_entry_by_id returns entry when found."""
-        entry = create_history_entry(
-            action_type=HistoryActionType.INSTALL,
-            items=[HistoryItem(name="vim", source=PackageSource.APT)],
-        )
-        manager.record_action(entry)
-
-        result = manager._get_entry_by_id(entry.id)
-
-        assert result is not None
-        assert result.id == entry.id
-        assert result.items[0].name == "vim"
-
-    def test__get_entry_by_id_not_found(self, manager: StateManager) -> None:
-        """_get_entry_by_id returns None when ID not found."""
-        entry = create_history_entry(
-            action_type=HistoryActionType.INSTALL,
-            items=[HistoryItem(name="vim", source=PackageSource.APT)],
-        )
-        manager.record_action(entry)
-
-        result = manager._get_entry_by_id("nonexistent_id")
-
-        assert result is None
-
-    def test__get_entry_by_id_multiple_entries(self, manager: StateManager) -> None:
-        """_get_entry_by_id finds correct entry among multiple."""
-        entry1 = create_history_entry(
-            action_type=HistoryActionType.INSTALL,
-            items=[HistoryItem(name="vim", source=PackageSource.APT)],
-        )
-        entry2 = create_history_entry(
-            action_type=HistoryActionType.REMOVE,
-            items=[HistoryItem(name="nano", source=PackageSource.APT)],
-        )
-        entry3 = create_history_entry(
-            action_type=HistoryActionType.INSTALL,
-            items=[HistoryItem(name="htop", source=PackageSource.APT)],
-        )
-
-        manager.record_action(entry1)
-        manager.record_action(entry2)
-        manager.record_action(entry3)
-
-        result = manager._get_entry_by_id(entry2.id)
-
-        assert result is not None
-        assert result.id == entry2.id
-        assert result.items[0].name == "nano"
 
 
 class TestMarkEntryReversed:
@@ -456,22 +391,17 @@ class TestMarkEntryReversed:
         """Create a StateManager with temporary directory."""
         return StateManager(state_dir=tmp_path)
 
-    def test_mark_entry_reversed_returns_true_on_success(self, manager: StateManager) -> None:
-        """mark_entry_reversed returns True when entry is found."""
+    def test_mark_entry_reversed_returns_none(self, manager: StateManager) -> None:
+        """mark_entry_reversed returns None."""
         entry = create_history_entry(
             action_type=HistoryActionType.INSTALL,
             items=[HistoryItem(name="vim", source=PackageSource.APT)],
         )
         manager.record_action(entry)
 
-        result = manager.mark_entry_reversed(entry.id)
+        result = manager.mark_entry_reversed(entry)
 
-        assert result is True
-
-    def test_mark_entry_reversed_returns_false_when_not_found(self, manager: StateManager) -> None:
-        """mark_entry_reversed returns False when entry not found."""
-        result = manager.mark_entry_reversed("nonexistent_id")
-        assert result is False
+        assert result is None
 
     def test_mark_entry_reversed_creates_reversal_entry(self, manager: StateManager) -> None:
         """mark_entry_reversed creates a new reversal entry."""
@@ -481,7 +411,7 @@ class TestMarkEntryReversed:
         )
         manager.record_action(entry)
 
-        manager.mark_entry_reversed(entry.id)
+        manager.mark_entry_reversed(entry)
 
         history = manager.get_history()
         assert len(history) == 2
@@ -499,7 +429,7 @@ class TestMarkEntryReversed:
         )
         manager.record_action(entry)
 
-        manager.mark_entry_reversed(entry.id)
+        manager.mark_entry_reversed(entry)
 
         history = manager.get_history()
         reversal = history[0]
@@ -515,7 +445,7 @@ class TestMarkEntryReversed:
         )
         manager.record_action(entry)
 
-        manager.mark_entry_reversed(entry.id)
+        manager.mark_entry_reversed(entry)
 
         history = manager.get_history()
         reversal = history[0]
@@ -534,7 +464,7 @@ class TestMarkEntryReversed:
         )
         manager.record_action(entry)
 
-        manager.mark_entry_reversed(entry.id)
+        manager.mark_entry_reversed(entry)
 
         history = manager.get_history()
         reversal = history[0]

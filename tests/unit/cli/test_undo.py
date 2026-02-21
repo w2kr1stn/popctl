@@ -145,7 +145,7 @@ class TestUndoConfirmation:
             patch("popctl.cli.commands.undo.AptOperator") as mock_apt,
         ):
             mock_state.return_value.get_last_reversible.return_value = reversible_install_entry
-            mock_state.return_value.mark_entry_reversed.return_value = True
+            mock_state.return_value.mark_entry_reversed.return_value = None
 
             # Create mock action results
             mock_result = MagicMock(spec=ActionResult)
@@ -170,7 +170,7 @@ class TestUndoExecution:
             patch("popctl.cli.commands.undo.AptOperator") as mock_apt,
         ):
             mock_state.return_value.get_last_reversible.return_value = reversible_install_entry
-            mock_state.return_value.mark_entry_reversed.return_value = True
+            mock_state.return_value.mark_entry_reversed.return_value = None
 
             mock_result = MagicMock(spec=ActionResult)
             mock_result.success = True
@@ -194,7 +194,7 @@ class TestUndoExecution:
             patch("popctl.cli.commands.undo.AptOperator") as mock_apt,
         ):
             mock_state.return_value.get_last_reversible.return_value = reversible_remove_entry
-            mock_state.return_value.mark_entry_reversed.return_value = True
+            mock_state.return_value.mark_entry_reversed.return_value = None
 
             mock_result = MagicMock(spec=ActionResult)
             mock_result.success = True
@@ -220,7 +220,7 @@ class TestUndoExecution:
             patch("popctl.cli.commands.undo.AptOperator") as mock_apt,
         ):
             mock_state.return_value.get_last_reversible.return_value = reversible_install_entry
-            mock_state.return_value.mark_entry_reversed.return_value = True
+            mock_state.return_value.mark_entry_reversed.return_value = None
 
             mock_result = MagicMock(spec=ActionResult)
             mock_result.success = True
@@ -229,7 +229,9 @@ class TestUndoExecution:
             result = runner.invoke(app, ["undo", "--yes"])
 
         assert result.exit_code == 0
-        mock_state.return_value.mark_entry_reversed.assert_called_once_with("abc123456789")
+        mock_state.return_value.mark_entry_reversed.assert_called_once_with(
+            reversible_install_entry
+        )
 
 
 class TestUndoMixedSources:
@@ -243,7 +245,7 @@ class TestUndoMixedSources:
             patch("popctl.cli.commands.undo.FlatpakOperator") as mock_flatpak,
         ):
             mock_state.return_value.get_last_reversible.return_value = mixed_source_entry
-            mock_state.return_value.mark_entry_reversed.return_value = True
+            mock_state.return_value.mark_entry_reversed.return_value = None
 
             mock_result = MagicMock(spec=ActionResult)
             mock_result.success = True
@@ -402,7 +404,7 @@ class TestUndoPurge:
             patch("popctl.cli.commands.undo.AptOperator") as mock_apt,
         ):
             mock_state.return_value.get_last_reversible.return_value = purge_entry
-            mock_state.return_value.mark_entry_reversed.return_value = True
+            mock_state.return_value.mark_entry_reversed.return_value = None
 
             mock_result = MagicMock(spec=ActionResult)
             mock_result.success = True

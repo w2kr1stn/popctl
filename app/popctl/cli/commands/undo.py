@@ -84,7 +84,7 @@ def undo(
     success = _execute_undo(entry)
 
     if success:
-        state.mark_entry_reversed(entry.id)
+        state.mark_entry_reversed(entry)
         print_success("Action undone successfully.")
     else:
         print_error("Failed to undo action. Check the output above.")
