@@ -190,18 +190,16 @@ class TestRecordActionsToHistory:
     """Tests for the record_actions_to_history function."""
 
     def test_record_actions_to_history_success(self) -> None:
-        """Successful actions are recorded via StateManager."""
+        """Successful actions are recorded via record_action."""
         action = _make_action(package="vim", action_type=ActionType.INSTALL)
         result = _make_result(action, success=True)
 
-        with patch("popctl.core.executor.StateManager") as mock_sm:
+        with patch("popctl.core.executor.record_action") as mock_record:
             record_actions_to_history([result])
 
-        mock_sm.assert_called_once()
-        instance = mock_sm.return_value
-        instance.record_action.assert_called_once()
+        mock_record.assert_called_once()
 
-        entry = instance.record_action.call_args[0][0]
+        entry = mock_record.call_args[0][0]
         assert entry.action_type == HistoryActionType.INSTALL
         assert len(entry.items) == 1
         assert entry.items[0].name == "vim"
@@ -216,15 +214,12 @@ class TestRecordActionsToHistory:
             _make_result(remove, success=True),
         ]
 
-        with patch("popctl.core.executor.StateManager") as mock_sm:
+        with patch("popctl.core.executor.record_action") as mock_record:
             record_actions_to_history(results)
 
-        instance = mock_sm.return_value
-        assert instance.record_action.call_count == 2
+        assert mock_record.call_count == 2
 
-        recorded_types = {
-            call.args[0].action_type for call in instance.record_action.call_args_list
-        }
+        recorded_types = {call.args[0].action_type for call in mock_record.call_args_list}
         assert recorded_types == {HistoryActionType.INSTALL, HistoryActionType.REMOVE}
 
     def test_record_actions_to_history_custom_command(self) -> None:
@@ -232,10 +227,10 @@ class TestRecordActionsToHistory:
         action = _make_action()
         result = _make_result(action, success=True)
 
-        with patch("popctl.core.executor.StateManager") as mock_sm:
+        with patch("popctl.core.executor.record_action") as mock_record:
             record_actions_to_history([result], command="popctl sync")
 
-        entry = mock_sm.return_value.record_action.call_args[0][0]
+        entry = mock_record.call_args[0][0]
         assert entry.metadata["command"] == "popctl sync"
 
     def test_record_actions_to_history_handles_os_error(self) -> None:
@@ -245,7 +240,7 @@ class TestRecordActionsToHistory:
 
         with (
             patch(
-                "popctl.core.executor.StateManager",
+                "popctl.core.executor.record_action",
                 side_effect=OSError("disk full"),
             ),
             patch("popctl.core.executor.print_warning") as mock_warn,
@@ -266,13 +261,12 @@ class TestRecordActionsToHistory:
             _make_result(fail_action, success=False),
         ]
 
-        with patch("popctl.core.executor.StateManager") as mock_sm:
+        with patch("popctl.core.executor.record_action") as mock_record:
             record_actions_to_history(results)
 
-        instance = mock_sm.return_value
-        instance.record_action.assert_called_once()
+        mock_record.assert_called_once()
 
-        entry = instance.record_action.call_args[0][0]
+        entry = mock_record.call_args[0][0]
         names = [item.name for item in entry.items]
         assert "vim" in names
         assert "bad" not in names

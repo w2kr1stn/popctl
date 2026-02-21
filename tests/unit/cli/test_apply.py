@@ -486,7 +486,7 @@ class TestApplyHistory:
                 return_value=missing_only,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
-            patch("popctl.core.executor.StateManager") as mock_state_manager,
+            patch("popctl.core.executor.record_action") as mock_record_action,
         ):
             mock_run.return_value = __import__(
                 "popctl.utils.shell", fromlist=["CommandResult"]
@@ -495,10 +495,8 @@ class TestApplyHistory:
             result = runner.invoke(app, ["apply", "--yes"])
 
         assert result.exit_code == 0
-        # StateManager should have been instantiated and record_action called
-        mock_state_manager.assert_called()
-        instance = mock_state_manager.return_value
-        instance.record_action.assert_called()
+        # record_action should have been called directly
+        mock_record_action.assert_called()
         # Output should mention history recording
         assert "history" in result.stdout.lower()
 
@@ -514,13 +512,13 @@ class TestApplyHistory:
                 "popctl.cli.commands.apply.compute_diff",
                 return_value=diff_result_with_actions,
             ),
-            patch("popctl.core.executor.StateManager") as mock_state_manager,
+            patch("popctl.core.executor.record_action") as mock_record_action,
         ):
             result = runner.invoke(app, ["apply", "--dry-run"])
 
         assert result.exit_code == 0
-        # StateManager should NOT have been called in dry-run mode
-        mock_state_manager.assert_not_called()
+        # record_action should NOT have been called in dry-run mode
+        mock_record_action.assert_not_called()
         # Dry-run message should appear
         assert "dry" in result.stdout.lower()
 
