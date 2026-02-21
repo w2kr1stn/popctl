@@ -21,7 +21,7 @@ from popctl.cli.display import (
 )
 from popctl.cli.types import SourceChoice, get_available_scanners, get_scanners
 from popctl.core.actions import diff_to_actions
-from popctl.core.diff import DiffEngine, DiffResult
+from popctl.core.diff import DiffResult, compute_diff
 from popctl.core.executor import execute_actions, get_available_operators, record_actions_to_history
 from popctl.core.manifest import manifest_exists, save_manifest
 from popctl.scanners.base import Scanner
@@ -40,8 +40,6 @@ if TYPE_CHECKING:
         DomainDecisions,
         FilesystemOrphanEntry,
     )
-    from popctl.configs.models import ScannedConfig
-    from popctl.filesystem.models import ScannedPath
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +107,7 @@ def _compute_diff(source: SourceChoice) -> DiffResult:
     Raises:
         typer.Exit: If diff computation fails.
     """
-    from popctl.core.manifest import require_manifest
+    from popctl.cli.manifest import require_manifest
 
     manifest = require_manifest()
 
@@ -127,10 +125,8 @@ def _compute_diff(source: SourceChoice) -> DiffResult:
         raise typer.Exit(code=1)
 
     source_filter = source.value if source != SourceChoice.ALL else None
-    engine = DiffEngine(manifest)
-
     try:
-        return engine.compute_diff(available_scanners, source_filter)
+        return compute_diff(manifest, available_scanners, source_filter)
     except RuntimeError as e:
         print_error(f"Scan failed: {e}")
         raise typer.Exit(code=1) from e
@@ -159,13 +155,10 @@ def _invoke_advisor(
         Parsed DecisionsResult or None on any failure (non-fatal).
     """
     from popctl.advisor import AgentRunner, import_decisions
+    from popctl.advisor.paths import ensure_advisor_sessions_dir, get_advisor_memory_path
     from popctl.advisor.workspace import create_session_workspace
     from popctl.cli.commands.advisor import _load_or_create_config, _scan_system
-    from popctl.core.paths import (
-        ensure_advisor_sessions_dir,
-        get_advisor_memory_path,
-        get_manifest_path,
-    )
+    from popctl.core.paths import get_manifest_path
 
     try:
         config = _load_or_create_config()
@@ -557,7 +550,7 @@ def _run_orphan_phases(
 
     # Phase N: Scan
     console.print(f"\n[bold]Phase {phase_start}: {label} scan[/bold]")
-    orphans: list[Any] = _fs_scan() if is_fs else _config_scan()
+    orphans: list[Any] = _domain_scan(domain)
 
     if not orphans:
         print_info(f"No orphaned {display} entries found. Skipping {display} phases.")
@@ -574,15 +567,12 @@ def _run_orphan_phases(
     decisions: DomainDecisions | None = None
     if not no_advisor:
         console.print(f"\n[bold]Phase {phase_start + 1}: {label} advisor[/bold]")
-        decisions = _fs_run_advisor(orphans, auto) if is_fs else _config_run_advisor(orphans, auto)
+        decisions = _domain_run_advisor(domain, orphans, auto)
 
     # Phase N+2: Apply decisions
     if decisions:
         console.print(f"\n[bold]Phase {phase_start + 2}: Apply {display} decisions[/bold]")
-        if is_fs:
-            _fs_apply_decisions(decisions)
-        else:
-            _config_apply_decisions(decisions)
+        _domain_apply_decisions(domain, decisions)
 
     # Phase N+3: Cleanup
     console.print(f"\n[bold]Phase {phase_start + 3}: {label} cleanup[/bold]")
@@ -648,104 +638,135 @@ def _record_orphan_history(
         print_warning(f"Could not record {display} history: {e}")
 
 
-def _fs_scan() -> list[ScannedPath]:
-    """Phase 9: Scan filesystem for orphaned entries.
+def _domain_scan(domain: Literal["filesystem", "configs"]) -> list[Any]:
+    """Scan a domain for orphaned entries.
+
+    Args:
+        domain: Which domain to scan.
 
     Returns:
-        List of ScannedPath objects with ORPHAN status.
+        List of scanned objects with ORPHAN status.
         Empty list if the scan fails or finds nothing.
     """
-    from popctl.filesystem.models import PathStatus
-    from popctl.filesystem.scanner import FilesystemScanner
+    if domain == "filesystem":
+        from popctl.filesystem.models import PathStatus
+        from popctl.filesystem.scanner import FilesystemScanner
+
+        scanner_cls, orphan_status = FilesystemScanner, PathStatus.ORPHAN
+    else:
+        from popctl.configs.models import ConfigStatus
+        from popctl.configs.scanner import ConfigScanner
+
+        scanner_cls, orphan_status = ConfigScanner, ConfigStatus.ORPHAN  # type: ignore[assignment]
 
     try:
-        scanner = FilesystemScanner()
-        return [p for p in scanner.scan() if p.status == PathStatus.ORPHAN]
+        scanner = scanner_cls()
+        return [item for item in scanner.scan() if item.status == orphan_status]
     except (OSError, RuntimeError) as e:
-        print_warning(f"Filesystem scan failed: {e}")
+        print_warning(f"{domain.capitalize()} scan failed: {e}")
         return []
 
 
-def _fs_run_advisor(
-    orphans: list[ScannedPath],
+def _domain_run_advisor(
+    domain: Literal["filesystem", "configs"],
+    orphans: list[Any],
     auto: bool,
 ) -> DomainDecisions | None:
-    """Phase 10: Run advisor to classify filesystem orphans.
+    """Run advisor to classify domain orphans.
 
     Converts scanner results to exchange model entries, invokes the
-    shared advisor workflow, and extracts the filesystem decisions.
+    shared advisor workflow, and extracts the domain decisions.
 
     Args:
-        orphans: List of orphaned filesystem entries.
+        domain: Which domain to classify.
+        orphans: List of orphaned entries from the scanner.
         auto: If True, use headless advisor mode.
 
     Returns:
-        Filesystem decisions or None if advisor is unavailable/fails.
+        Domain decisions or None if advisor is unavailable/fails.
     """
-    from popctl.advisor.exchange import FilesystemOrphanEntry
+    if domain == "filesystem":
+        from popctl.advisor.exchange import FilesystemOrphanEntry
 
-    fs_entries = [
-        FilesystemOrphanEntry(
-            path=p.path,
-            path_type=p.path_type.value,
-            size_bytes=p.size_bytes,
-            mtime=p.mtime,
-            parent_target=p.parent_target,
-            orphan_reason=p.orphan_reason.value if p.orphan_reason else "unknown",
-            confidence=p.confidence,
-        )
-        for p in orphans
-    ]
+        entries = [
+            FilesystemOrphanEntry(
+                path=p.path,
+                path_type=p.path_type.value,
+                size_bytes=p.size_bytes,
+                mtime=p.mtime,
+                parent_target=p.parent_target,
+                orphan_reason=p.orphan_reason.value if p.orphan_reason else "unknown",
+                confidence=p.confidence,
+            )
+            for p in orphans
+        ]
+        advisor_kwargs: dict[str, Any] = {"filesystem_orphans": entries}
+    else:
+        from popctl.advisor.exchange import ConfigOrphanEntry
 
-    print_info(f"Classifying {len(fs_entries)} filesystem orphan(s) via advisor...")
+        entries = [
+            ConfigOrphanEntry(
+                path=c.path,
+                config_type=c.config_type.value,
+                size_bytes=c.size_bytes,
+                mtime=c.mtime,
+                orphan_reason=c.orphan_reason.value if c.orphan_reason else "unknown",
+                confidence=c.confidence,
+            )
+            for c in orphans
+        ]
+        advisor_kwargs = {"config_orphans": entries}
 
-    decisions = _invoke_advisor(auto=auto, domain="filesystem", filesystem_orphans=fs_entries)
-    if decisions is None or decisions.filesystem is None:
+    print_info(f"Classifying {len(entries)} {domain} orphan(s) via advisor...")
+
+    result = _invoke_advisor(auto=auto, domain=domain, **advisor_kwargs)
+    domain_decisions = getattr(result, domain, None) if result else None
+    if domain_decisions is None:
         return None
 
-    print_success("Filesystem advisor classification completed.")
-    return decisions.filesystem
+    print_success(f"{domain.capitalize()} advisor classification completed.")
+    return domain_decisions
 
 
-def _fs_apply_decisions(fs_decisions: DomainDecisions) -> None:
-    """Phase 11: Apply filesystem advisor decisions to manifest.
+def _domain_apply_decisions(
+    domain: Literal["filesystem", "configs"],
+    decisions: DomainDecisions,
+) -> None:
+    """Apply advisor decisions to the manifest for a domain.
 
     Merges the advisor's keep/remove classifications into the manifest's
-    filesystem section, preserving existing entries that are not
-    reclassified.
+    domain section, preserving existing entries that are not reclassified.
 
     Args:
-        fs_decisions: Filesystem decisions from the advisor.
+        domain: Which domain section to update ("filesystem" or "configs").
+        decisions: Domain decisions from the advisor.
     """
     from popctl.core.manifest import ManifestError, load_manifest
-    from popctl.filesystem.manifest import FilesystemConfig, FilesystemEntry
+    from popctl.domain.manifest import DomainConfig, DomainEntry
 
     try:
         manifest = load_manifest()
     except ManifestError as e:
-        print_warning(f"Could not load manifest for filesystem apply: {e}")
+        print_warning(f"Could not load manifest for {domain} apply: {e}")
         return
 
-    # Build filesystem config from decisions
-    keep_entries: dict[str, FilesystemEntry] = {}
-    remove_entries: dict[str, FilesystemEntry] = {}
+    keep_entries: dict[str, DomainEntry] = {}
+    remove_entries: dict[str, DomainEntry] = {}
 
-    for decision in fs_decisions.keep:
-        keep_entries[decision.path] = FilesystemEntry(
+    for decision in decisions.keep:
+        keep_entries[decision.path] = DomainEntry(
             reason=decision.reason,
             category=decision.category,
         )
 
-    for decision in fs_decisions.remove:
-        remove_entries[decision.path] = FilesystemEntry(
+    for decision in decisions.remove:
+        remove_entries[decision.path] = DomainEntry(
             reason=decision.reason,
             category=decision.category,
         )
 
-    # Merge with existing filesystem config
-    existing = manifest.filesystem
+    existing = getattr(manifest, domain)
     if existing:
-        # Preserve existing entries, add new ones
         for path, entry in existing.keep.items():
             if path not in keep_entries and path not in remove_entries:
                 keep_entries[path] = entry
@@ -753,25 +774,25 @@ def _fs_apply_decisions(fs_decisions: DomainDecisions) -> None:
             if path not in keep_entries and path not in remove_entries:
                 remove_entries[path] = entry
 
-    manifest.filesystem = FilesystemConfig(keep=keep_entries, remove=remove_entries)
+    setattr(manifest, domain, DomainConfig(keep=keep_entries, remove=remove_entries))
     manifest.meta.updated = datetime.now(UTC)
 
     try:
         save_manifest(manifest)
         print_success(
-            f"Filesystem decisions applied to manifest "
+            f"{domain.capitalize()} decisions applied to manifest "
             f"({len(keep_entries)} keep, {len(remove_entries)} remove)."
         )
     except (OSError, ManifestError) as e:
-        print_warning(f"Could not save manifest after filesystem apply: {e}")
+        print_warning(f"Could not save manifest after {domain} apply: {e}")
         return
 
-    if fs_decisions.ask:
+    if decisions.ask:
         print_warning(
-            f"{len(fs_decisions.ask)} filesystem path(s) require manual decision. "
+            f"{len(decisions.ask)} {domain} path(s) require manual decision. "
             "Run 'popctl advisor session' to classify them interactively."
         )
-        for decision in fs_decisions.ask:
+        for decision in decisions.ask:
             console.print(f"  [dim]-[/dim] {decision.path}: {decision.reason}")
 
 
@@ -830,137 +851,6 @@ def _fs_clean(*, yes: bool) -> list[str]:
             print_warning(f"Failed to delete {r.path}: {r.error}")
 
     return successful
-
-
-# =============================================================================
-# Config-specific functions (phases 14-18)
-# =============================================================================
-
-
-def _config_scan() -> list[ScannedConfig]:
-    """Phase 14: Scan configs for orphaned entries.
-
-    Returns:
-        List of ScannedConfig objects with ORPHAN status.
-        Empty list if the scan fails or finds nothing.
-    """
-    from popctl.configs.models import ConfigStatus
-    from popctl.configs.scanner import ConfigScanner
-
-    try:
-        scanner = ConfigScanner()
-        return [c for c in scanner.scan() if c.status == ConfigStatus.ORPHAN]
-    except (OSError, RuntimeError) as e:
-        print_warning(f"Config scan failed: {e}")
-        return []
-
-
-def _config_run_advisor(
-    orphans: list[ScannedConfig],
-    auto: bool,
-) -> DomainDecisions | None:
-    """Phase 15: Run advisor to classify config orphans.
-
-    Converts scanner results to exchange model entries, invokes the
-    shared advisor workflow, and extracts the config decisions.
-
-    Args:
-        orphans: List of orphaned config entries.
-        auto: If True, use headless advisor mode.
-
-    Returns:
-        Config decisions or None if advisor is unavailable/fails.
-    """
-    from popctl.advisor.exchange import ConfigOrphanEntry
-
-    config_entries = [
-        ConfigOrphanEntry(
-            path=c.path,
-            config_type=c.config_type.value,
-            size_bytes=c.size_bytes,
-            mtime=c.mtime,
-            orphan_reason=c.orphan_reason.value if c.orphan_reason else "unknown",
-            confidence=c.confidence,
-        )
-        for c in orphans
-    ]
-
-    print_info(f"Classifying {len(config_entries)} config orphan(s) via advisor...")
-
-    decisions = _invoke_advisor(auto=auto, domain="configs", config_orphans=config_entries)
-    if decisions is None or decisions.configs is None:
-        return None
-
-    print_success("Config advisor classification completed.")
-    return decisions.configs
-
-
-def _config_apply_decisions(config_decisions: DomainDecisions) -> None:
-    """Phase 16: Apply config advisor decisions to manifest.
-
-    Merges the advisor's keep/remove classifications into the manifest's
-    configs section, preserving existing entries that are not
-    reclassified.
-
-    Args:
-        config_decisions: Config decisions from the advisor.
-    """
-    from popctl.configs.manifest import ConfigEntry, ConfigsConfig
-    from popctl.core.manifest import ManifestError, load_manifest
-
-    try:
-        manifest = load_manifest()
-    except ManifestError as e:
-        print_warning(f"Could not load manifest for config apply: {e}")
-        return
-
-    # Build configs config from decisions
-    keep_entries: dict[str, ConfigEntry] = {}
-    remove_entries: dict[str, ConfigEntry] = {}
-
-    for decision in config_decisions.keep:
-        keep_entries[decision.path] = ConfigEntry(
-            reason=decision.reason,
-            category=decision.category,
-        )
-
-    for decision in config_decisions.remove:
-        remove_entries[decision.path] = ConfigEntry(
-            reason=decision.reason,
-            category=decision.category,
-        )
-
-    # Merge with existing configs config
-    existing = manifest.configs
-    if existing:
-        # Preserve existing entries, add new ones
-        for path, entry in existing.keep.items():
-            if path not in keep_entries and path not in remove_entries:
-                keep_entries[path] = entry
-        for path, entry in existing.remove.items():
-            if path not in keep_entries and path not in remove_entries:
-                remove_entries[path] = entry
-
-    manifest.configs = ConfigsConfig(keep=keep_entries, remove=remove_entries)
-    manifest.meta.updated = datetime.now(UTC)
-
-    try:
-        save_manifest(manifest)
-        print_success(
-            f"Config decisions applied to manifest "
-            f"({len(keep_entries)} keep, {len(remove_entries)} remove)."
-        )
-    except (OSError, ManifestError) as e:
-        print_warning(f"Could not save manifest after config apply: {e}")
-        return
-
-    if config_decisions.ask:
-        print_warning(
-            f"{len(config_decisions.ask)} config path(s) require manual decision. "
-            "Run 'popctl advisor session' to classify them interactively."
-        )
-        for decision in config_decisions.ask:
-            console.print(f"  [dim]-[/dim] {decision.path}: {decision.reason}")
 
 
 def _config_clean(*, yes: bool) -> list[str]:
