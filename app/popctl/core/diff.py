@@ -1,6 +1,6 @@
 """Diff engine for comparing manifest with system state.
 
-This module provides the DiffEngine class that compares the declared
+This module provides the compute_diff function that compares the declared
 manifest state with the actual installed packages on the system.
 """
 
@@ -11,9 +11,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from popctl.core.baseline import is_protected
-from popctl.models.package import PackageSource, PackageStatus
-
-_VALID_SOURCES: frozenset[str] = frozenset(s.value for s in PackageSource)
+from popctl.models.package import PackageStatus
 
 if TYPE_CHECKING:
     from popctl.models.manifest import Manifest
@@ -130,135 +128,107 @@ def _entry_to_dict(entry: DiffEntry) -> dict[str, str]:
     return result
 
 
-class DiffEngine:
-    """Engine for computing differences between manifest and system state.
+def compute_diff(
+    manifest: Manifest,
+    scanners: list[Scanner],
+    source_filter: str | None = None,
+) -> DiffResult:
+    """Compare manifest against current system state.
 
-    The DiffEngine compares what packages should be installed (according to
-    the manifest) with what is actually installed on the system.
+    Scans the system using provided scanners and computes differences
+    between the manifest and installed packages.
 
-    Example:
-        >>> from popctl.core.diff import DiffEngine
-        >>> from popctl.core.manifest import load_manifest
-        >>> manifest = load_manifest()
-        >>> engine = DiffEngine(manifest)
-        >>> result = engine.compute_diff([AptScanner(), FlatpakScanner()])
-        >>> if result.is_in_sync:
-        ...     print("System matches manifest!")
+    Only manually installed packages are considered (auto-installed
+    dependencies are ignored). Protected system packages are also
+    excluded from the diff.
+
+    Args:
+        manifest: The manifest describing desired system state.
+        scanners: List of Scanner instances to use for scanning.
+        source_filter: Optional filter for package source ("apt" or "flatpak").
+
+    Returns:
+        DiffResult containing all differences found.
     """
+    # Collect currently installed manual packages from system
+    installed: dict[str, tuple[str, str | None, str | None]] = {}
 
-    def __init__(self, manifest: Manifest) -> None:
-        """Initialize the DiffEngine with a manifest.
+    for scanner in scanners:
+        if not scanner.is_available():
+            continue
 
-        Args:
-            manifest: The manifest describing desired system state.
-        """
-        self.manifest = manifest
+        source_name = scanner.source.value
 
-    def compute_diff(
-        self,
-        scanners: list[Scanner],
-        source_filter: str | None = None,
-    ) -> DiffResult:
-        """Compare manifest against current system state.
+        # Skip if source filter is active and doesn't match
+        if source_filter and source_name != source_filter:
+            continue
 
-        Scans the system using provided scanners and computes differences
-        between the manifest and installed packages.
-
-        Only manually installed packages are considered (auto-installed
-        dependencies are ignored). Protected system packages are also
-        excluded from the diff.
-
-        Args:
-            scanners: List of Scanner instances to use for scanning.
-            source_filter: Optional filter for package source ("apt" or "flatpak").
-
-        Returns:
-            DiffResult containing all differences found.
-        """
-        # Collect currently installed manual packages from system
-        installed: dict[str, tuple[str, str | None, str | None]] = {}
-
-        for scanner in scanners:
-            if not scanner.is_available():
+        for pkg in scanner.scan():
+            # Only consider manually installed packages
+            if pkg.status != PackageStatus.MANUAL:
                 continue
 
-            source_name = scanner.source.value
-
-            # Skip if source filter is active and doesn't match
-            if source_filter and source_name != source_filter:
+            # Skip protected packages
+            if is_protected(pkg.name):
                 continue
 
-            for pkg in scanner.scan():
-                # Only consider manually installed packages
-                if pkg.status != PackageStatus.MANUAL:
-                    continue
+            installed[pkg.name] = (source_name, pkg.version, pkg.description)
 
-                # Skip protected packages
-                if is_protected(pkg.name):
-                    continue
+    # Get packages from manifest
+    keep_packages = manifest.get_keep_packages(source_filter)  # type: ignore[arg-type]
+    remove_packages = manifest.get_remove_packages(source_filter)  # type: ignore[arg-type]
 
-                installed[pkg.name] = (source_name, pkg.version, pkg.description)
-
-        # Validate source_filter
-        if source_filter is not None and source_filter not in _VALID_SOURCES:
-            msg = f"Invalid source filter: {source_filter}"
-            raise ValueError(msg)
-
-        # Get packages from manifest
-        keep_packages = self.manifest.get_keep_packages(source_filter)  # type: ignore[arg-type]
-        remove_packages = self.manifest.get_remove_packages(source_filter)  # type: ignore[arg-type]
-
-        # Compute NEW: installed but not in manifest
-        new_entries: list[DiffEntry] = []
-        for name, (source, version, desc) in installed.items():
-            if name not in keep_packages and name not in remove_packages:
-                new_entries.append(
-                    DiffEntry(
-                        name=name,
-                        source=source,
-                        diff_type=DiffType.NEW,
-                        version=version,
-                        description=desc,
-                    )
+    # Compute NEW: installed but not in manifest
+    new_entries: list[DiffEntry] = []
+    for name, (source, version, desc) in installed.items():
+        if name not in keep_packages and name not in remove_packages:
+            new_entries.append(
+                DiffEntry(
+                    name=name,
+                    source=source,
+                    diff_type=DiffType.NEW,
+                    version=version,
+                    description=desc,
                 )
+            )
 
-        # Compute MISSING: in manifest.keep but not installed
-        missing_entries: list[DiffEntry] = []
-        for name, entry in keep_packages.items():
-            if name not in installed:
-                # Skip protected packages from missing check too
-                if is_protected(name):
-                    continue
-                missing_entries.append(
-                    DiffEntry(
-                        name=name,
-                        source=entry.source,
-                        diff_type=DiffType.MISSING,
-                    )
+    # Compute MISSING: in manifest.keep but not installed
+    missing_entries: list[DiffEntry] = []
+    for name, entry in keep_packages.items():
+        if name not in installed:
+            # Skip protected packages from missing check too
+            if is_protected(name):
+                continue
+            missing_entries.append(
+                DiffEntry(
+                    name=name,
+                    source=entry.source,
+                    diff_type=DiffType.MISSING,
                 )
+            )
 
-        # Compute EXTRA: in manifest.remove but still installed
-        extra_entries: list[DiffEntry] = []
-        for name, _entry in remove_packages.items():
-            if name in installed:
-                source, version, desc = installed[name]
-                extra_entries.append(
-                    DiffEntry(
-                        name=name,
-                        source=source,
-                        diff_type=DiffType.EXTRA,
-                        version=version,
-                        description=desc,
-                    )
+    # Compute EXTRA: in manifest.remove but still installed
+    extra_entries: list[DiffEntry] = []
+    for name, _entry in remove_packages.items():
+        if name in installed:
+            source, version, desc = installed[name]
+            extra_entries.append(
+                DiffEntry(
+                    name=name,
+                    source=source,
+                    diff_type=DiffType.EXTRA,
+                    version=version,
+                    description=desc,
                 )
+            )
 
-        # Sort all entries by source and name for consistent output
-        new_entries.sort(key=lambda e: (e.source, e.name))
-        missing_entries.sort(key=lambda e: (e.source, e.name))
-        extra_entries.sort(key=lambda e: (e.source, e.name))
+    # Sort all entries by source and name for consistent output
+    new_entries.sort(key=lambda e: (e.source, e.name))
+    missing_entries.sort(key=lambda e: (e.source, e.name))
+    extra_entries.sort(key=lambda e: (e.source, e.name))
 
-        return DiffResult(
-            new=tuple(new_entries),
-            missing=tuple(missing_entries),
-            extra=tuple(extra_entries),
-        )
+    return DiffResult(
+        new=tuple(new_entries),
+        missing=tuple(missing_entries),
+        extra=tuple(extra_entries),
+    )

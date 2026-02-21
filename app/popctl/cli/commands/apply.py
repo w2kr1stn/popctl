@@ -16,7 +16,7 @@ from popctl.cli.display import (
 )
 from popctl.cli.types import SourceChoice, get_scanners
 from popctl.core.actions import diff_to_actions
-from popctl.core.diff import DiffEngine
+from popctl.core.diff import compute_diff
 from popctl.core.executor import execute_actions, get_available_operators, record_actions_to_history
 from popctl.scanners.base import Scanner
 from popctl.utils.formatting import (
@@ -31,21 +31,6 @@ app = typer.Typer(
     help="Apply manifest to system.",
     invoke_without_command=True,
 )
-
-
-def _confirm_actions(action_count: int) -> bool:
-    """Prompt user to confirm action execution.
-
-    Args:
-        action_count: Number of actions to be executed.
-
-    Returns:
-        True if user confirms, False otherwise.
-    """
-    return typer.confirm(
-        f"\nProceed with {action_count} action(s)?",
-        default=False,
-    )
 
 
 @app.callback(invoke_without_command=True)
@@ -110,7 +95,7 @@ def apply_manifest(
         return
 
     # Load manifest (exits with helpful message if not found)
-    from popctl.core.manifest import require_manifest
+    from popctl.cli.manifest import require_manifest
 
     manifest = require_manifest()
 
@@ -130,10 +115,8 @@ def apply_manifest(
 
     # Compute diff
     source_filter = source.value if source != SourceChoice.ALL else None
-    engine = DiffEngine(manifest)
-
     try:
-        diff_result = engine.compute_diff(available_scanners, source_filter)
+        diff_result = compute_diff(manifest, available_scanners, source_filter)
     except RuntimeError as e:
         print_error(f"Scan failed: {e}")
         raise typer.Exit(code=1) from e
@@ -157,7 +140,7 @@ def apply_manifest(
         return
 
     # Confirm unless --yes was provided
-    if not yes and not _confirm_actions(len(actions)):
+    if not yes and not typer.confirm(f"\nProceed with {len(actions)} action(s)?", default=False):
         print_info("Aborted.")
         raise typer.Exit(code=0)
 
