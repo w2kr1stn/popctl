@@ -519,12 +519,12 @@ class TestSyncFilesystem:
                 "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
-            patch("popctl.cli.commands.sync._fs_scan") as mock_fs_scan,
+            patch("popctl.cli.commands.sync._domain_scan", return_value=[]) as mock_domain_scan,
         ):
-            result = runner.invoke(app, ["sync", "--no-filesystem"])
+            result = runner.invoke(app, ["sync", "--no-filesystem", "--no-configs"])
 
         assert result.exit_code == 0
-        mock_fs_scan.assert_not_called()
+        mock_domain_scan.assert_not_called()
 
     def test_sync_filesystem_no_orphans_skips(
         self, sample_manifest: Manifest, in_sync_result: DiffResult
@@ -539,13 +539,13 @@ class TestSyncFilesystem:
                 "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
-            patch("popctl.cli.commands.sync._fs_scan", return_value=[]) as mock_fs_scan,
+            patch("popctl.cli.commands.sync._domain_scan", return_value=[]) as mock_domain_scan,
             patch("popctl.cli.commands.sync._fs_clean") as mock_fs_clean,
         ):
-            result = runner.invoke(app, ["sync"])
+            result = runner.invoke(app, ["sync", "--no-configs"])
 
         assert result.exit_code == 0
-        mock_fs_scan.assert_called_once()
+        mock_domain_scan.assert_called_once_with("filesystem")
         mock_fs_clean.assert_not_called()
         assert "No orphaned filesystem entries found" in result.stdout
 
@@ -562,10 +562,10 @@ class TestSyncFilesystem:
                 "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
-            # _fs_scan catches exceptions internally and returns []
+            # _domain_scan catches exceptions internally and returns []
             # but we can test via the FilesystemScanner raising
             patch(
-                "popctl.cli.commands.sync._fs_scan",
+                "popctl.cli.commands.sync._domain_scan",
                 return_value=[],
             ),
         ):
@@ -577,7 +577,7 @@ class TestSyncFilesystem:
     def test_sync_filesystem_scan_exception_non_fatal(
         self, sample_manifest: Manifest, in_sync_result: DiffResult
     ) -> None:
-        """When _fs_scan returns empty (due to exception), sync still succeeds."""
+        """When _domain_scan returns empty (due to exception), sync still succeeds."""
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
@@ -587,8 +587,8 @@ class TestSyncFilesystem:
                 "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
-            # Simulate _fs_scan returning empty (as it does on exception)
-            patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
+            # Simulate _domain_scan returning empty (as it does on exception)
+            patch("popctl.cli.commands.sync._domain_scan", return_value=[]),
             patch("popctl.cli.commands.sync._fs_clean") as mock_fs_clean,
         ):
             result = runner.invoke(app, ["sync"])
@@ -600,8 +600,8 @@ class TestSyncFilesystem:
         mock_fs_clean.assert_not_called()
 
     def test_fs_scan_catches_runtime_error(self) -> None:
-        """_fs_scan catches RuntimeError and returns empty list."""
-        from popctl.cli.commands.sync import _fs_scan
+        """_domain_scan catches RuntimeError and returns empty list."""
+        from popctl.cli.commands.sync import _domain_scan
 
         mock_scanner = MagicMock()
         mock_scanner.scan.side_effect = RuntimeError("scanner broken")
@@ -610,13 +610,13 @@ class TestSyncFilesystem:
             "popctl.filesystem.scanner.FilesystemScanner",
             return_value=mock_scanner,
         ):
-            result = _fs_scan()
+            result = _domain_scan("filesystem")
 
         assert result == []
 
     def test_fs_scan_catches_os_error(self) -> None:
-        """_fs_scan catches OSError and returns empty list."""
-        from popctl.cli.commands.sync import _fs_scan
+        """_domain_scan catches OSError and returns empty list."""
+        from popctl.cli.commands.sync import _domain_scan
 
         mock_scanner = MagicMock()
         mock_scanner.scan.side_effect = OSError("disk error")
@@ -625,7 +625,7 @@ class TestSyncFilesystem:
             "popctl.filesystem.scanner.FilesystemScanner",
             return_value=mock_scanner,
         ):
-            result = _fs_scan()
+            result = _domain_scan("filesystem")
 
         assert result == []
 
@@ -662,10 +662,10 @@ class TestSyncFilesystem:
                 "popctl.cli.commands.sync.compute_diff",
                 return_value=diff_result_no_new,
             ),
-            patch("popctl.cli.commands.sync._fs_scan", return_value=mock_orphans),
+            patch("popctl.cli.commands.sync._domain_scan", return_value=mock_orphans),
             patch("popctl.cli.commands.sync._fs_clean") as mock_fs_clean,
         ):
-            result = runner.invoke(app, ["sync", "--dry-run"])
+            result = runner.invoke(app, ["sync", "--dry-run", "--no-configs"])
 
         assert result.exit_code == 0
         mock_fs_clean.assert_not_called()
@@ -736,10 +736,10 @@ class TestSyncFilesystem:
                 "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
-            patch("popctl.cli.commands.sync._fs_scan", return_value=mock_orphans),
+            patch("popctl.cli.commands.sync._domain_scan", return_value=mock_orphans),
             patch("popctl.cli.commands.sync._fs_clean", return_value=[]),
         ):
-            result = runner.invoke(app, ["sync"])
+            result = runner.invoke(app, ["sync", "--no-configs"])
 
         assert result.exit_code == 0
         assert "1 orphaned filesystem" in result.stdout
@@ -826,16 +826,15 @@ class TestSyncConfigs:
                 "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
-            patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
             patch(
-                "popctl.cli.commands.sync._config_scan", return_value=mock_orphans
-            ) as mock_cfg_scan,
+                "popctl.cli.commands.sync._domain_scan", return_value=mock_orphans
+            ) as mock_domain_scan,
             patch("popctl.cli.commands.sync._config_clean", return_value=[]),
         ):
-            result = runner.invoke(app, ["sync"])
+            result = runner.invoke(app, ["sync", "--no-filesystem"])
 
         assert result.exit_code == 0
-        mock_cfg_scan.assert_called_once()
+        mock_domain_scan.assert_called_once_with("configs")
         assert "1 orphaned config" in result.stdout
 
     def test_sync_no_configs_flag_skips_configs(
@@ -851,13 +850,12 @@ class TestSyncConfigs:
                 "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
-            patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
-            patch("popctl.cli.commands.sync._config_scan") as mock_cfg_scan,
+            patch("popctl.cli.commands.sync._domain_scan", return_value=[]) as mock_domain_scan,
         ):
-            result = runner.invoke(app, ["sync", "--no-configs"])
+            result = runner.invoke(app, ["sync", "--no-configs", "--no-filesystem"])
 
         assert result.exit_code == 0
-        mock_cfg_scan.assert_not_called()
+        mock_domain_scan.assert_not_called()
 
     def test_sync_configs_no_orphans_skips(
         self, sample_manifest: Manifest, in_sync_result: DiffResult
@@ -872,14 +870,13 @@ class TestSyncConfigs:
                 "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
-            patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
-            patch("popctl.cli.commands.sync._config_scan", return_value=[]) as mock_cfg_scan,
+            patch("popctl.cli.commands.sync._domain_scan", return_value=[]) as mock_domain_scan,
             patch("popctl.cli.commands.sync._config_clean") as mock_cfg_clean,
         ):
-            result = runner.invoke(app, ["sync"])
+            result = runner.invoke(app, ["sync", "--no-filesystem"])
 
         assert result.exit_code == 0
-        mock_cfg_scan.assert_called_once()
+        mock_domain_scan.assert_called_once_with("configs")
         mock_cfg_clean.assert_not_called()
         assert "No orphaned config entries found" in result.stdout
 
@@ -915,11 +912,10 @@ class TestSyncConfigs:
                 "popctl.cli.commands.sync.compute_diff",
                 return_value=diff_result_no_new,
             ),
-            patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
-            patch("popctl.cli.commands.sync._config_scan", return_value=mock_orphans),
+            patch("popctl.cli.commands.sync._domain_scan", return_value=mock_orphans),
             patch("popctl.cli.commands.sync._config_clean") as mock_cfg_clean,
         ):
-            result = runner.invoke(app, ["sync", "--dry-run"])
+            result = runner.invoke(app, ["sync", "--dry-run", "--no-filesystem"])
 
         assert result.exit_code == 0
         mock_cfg_clean.assert_not_called()
@@ -960,15 +956,14 @@ class TestSyncConfigs:
         ]
 
         # Build a manifest with configs.remove section
-        from popctl.domain.manifest import DomainConfig as ConfigsConfig
-        from popctl.domain.manifest import DomainEntry as ConfigEntry
+        from popctl.domain.manifest import DomainConfig, DomainEntry
 
         manifest_with_configs = sample_manifest.model_copy(
             update={
-                "configs": ConfigsConfig(
+                "configs": DomainConfig(
                     keep={},
                     remove={
-                        "/home/test/.config/old-app": ConfigEntry(
+                        "/home/test/.config/old-app": DomainEntry(
                             reason="App not installed",
                             category="obsolete",
                         ),
@@ -986,23 +981,22 @@ class TestSyncConfigs:
                 "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
-            patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
-            patch("popctl.cli.commands.sync._config_scan", return_value=mock_orphans),
+            patch("popctl.cli.commands.sync._domain_scan", return_value=mock_orphans),
             patch(
                 "popctl.configs.operator.ConfigOperator.delete",
                 return_value=mock_action_results,
             ),
             patch("popctl.domain.history.record_domain_deletions"),
         ):
-            result = runner.invoke(app, ["sync", "--yes"])
+            result = runner.invoke(app, ["sync", "--yes", "--no-filesystem"])
 
         assert result.exit_code == 0
         assert "config-backups" in result.stdout
         assert "Deleted 1 config path" in result.stdout
 
     def test_config_scan_catches_runtime_error(self) -> None:
-        """_config_scan catches RuntimeError and returns empty list."""
-        from popctl.cli.commands.sync import _config_scan
+        """_domain_scan catches RuntimeError and returns empty list."""
+        from popctl.cli.commands.sync import _domain_scan
 
         mock_scanner = MagicMock()
         mock_scanner.scan.side_effect = RuntimeError("scanner broken")
@@ -1011,13 +1005,13 @@ class TestSyncConfigs:
             "popctl.configs.scanner.ConfigScanner",
             return_value=mock_scanner,
         ):
-            result = _config_scan()
+            result = _domain_scan("configs")
 
         assert result == []
 
     def test_config_scan_catches_os_error(self) -> None:
-        """_config_scan catches OSError and returns empty list."""
-        from popctl.cli.commands.sync import _config_scan
+        """_domain_scan catches OSError and returns empty list."""
+        from popctl.cli.commands.sync import _domain_scan
 
         mock_scanner = MagicMock()
         mock_scanner.scan.side_effect = OSError("disk error")
@@ -1026,7 +1020,7 @@ class TestSyncConfigs:
             "popctl.configs.scanner.ConfigScanner",
             return_value=mock_scanner,
         ):
-            result = _config_scan()
+            result = _domain_scan("configs")
 
         assert result == []
 
@@ -1266,7 +1260,7 @@ class TestInvokeAdvisor:
 
 
 # =============================================================================
-# Tests for _fs_run_advisor
+# Tests for _domain_run_advisor (filesystem)
 # =============================================================================
 
 
@@ -1292,7 +1286,7 @@ class TestFsRunAdvisor:
             DomainDecisions,
             PathDecision,
         )
-        from popctl.cli.commands.sync import _fs_run_advisor
+        from popctl.cli.commands.sync import _domain_run_advisor
 
         fs_decisions = DomainDecisions(
             keep=[
@@ -1310,39 +1304,39 @@ class TestFsRunAdvisor:
         )
 
         with patch("popctl.cli.commands.sync._invoke_advisor", return_value=mock_decisions):
-            result = _fs_run_advisor([self._make_orphan()], auto=True)
+            result = _domain_run_advisor("filesystem", [self._make_orphan()], auto=True)
 
         assert result is fs_decisions
 
     def test_fs_run_advisor_no_decisions_returns_none(self) -> None:
         """When _invoke_advisor returns None, FS advisor returns None."""
-        from popctl.cli.commands.sync import _fs_run_advisor
+        from popctl.cli.commands.sync import _domain_run_advisor
 
         with patch("popctl.cli.commands.sync._invoke_advisor", return_value=None):
-            result = _fs_run_advisor([self._make_orphan()], auto=True)
+            result = _domain_run_advisor("filesystem", [self._make_orphan()], auto=True)
 
         assert result is None
 
     def test_fs_run_advisor_no_fs_section_returns_none(self) -> None:
         """When decisions have no filesystem section, returns None."""
         from popctl.advisor.exchange import DecisionsResult
-        from popctl.cli.commands.sync import _fs_run_advisor
+        from popctl.cli.commands.sync import _domain_run_advisor
 
         mock_decisions = DecisionsResult(packages={}, filesystem=None)
 
         with patch("popctl.cli.commands.sync._invoke_advisor", return_value=mock_decisions):
-            result = _fs_run_advisor([self._make_orphan()], auto=True)
+            result = _domain_run_advisor("filesystem", [self._make_orphan()], auto=True)
 
         assert result is None
 
     def test_fs_run_advisor_passes_orphan_entries(self) -> None:
         """FS advisor converts ScannedPath to FilesystemOrphanEntry."""
-        from popctl.cli.commands.sync import _fs_run_advisor
+        from popctl.cli.commands.sync import _domain_run_advisor
 
         orphan = self._make_orphan("/home/test/.config/vlc")
 
         with patch("popctl.cli.commands.sync._invoke_advisor", return_value=None) as mock_invoke:
-            _fs_run_advisor([orphan], auto=True)
+            _domain_run_advisor("filesystem", [orphan], auto=True)
 
         # Verify _invoke_advisor was called with fs orphan entries
         call_kwargs = mock_invoke.call_args[1]
@@ -1353,7 +1347,7 @@ class TestFsRunAdvisor:
 
 
 # =============================================================================
-# Tests for _config_run_advisor
+# Tests for _domain_run_advisor (configs)
 # =============================================================================
 
 
@@ -1378,7 +1372,7 @@ class TestConfigRunAdvisor:
             DomainDecisions,
             PathDecision,
         )
-        from popctl.cli.commands.sync import _config_run_advisor
+        from popctl.cli.commands.sync import _domain_run_advisor
 
         cfg_decisions = DomainDecisions(
             remove=[
@@ -1396,39 +1390,39 @@ class TestConfigRunAdvisor:
         )
 
         with patch("popctl.cli.commands.sync._invoke_advisor", return_value=mock_decisions):
-            result = _config_run_advisor([self._make_config_orphan()], auto=True)
+            result = _domain_run_advisor("configs", [self._make_config_orphan()], auto=True)
 
         assert result is cfg_decisions
 
     def test_config_run_advisor_no_decisions_returns_none(self) -> None:
         """When _invoke_advisor returns None, config advisor returns None."""
-        from popctl.cli.commands.sync import _config_run_advisor
+        from popctl.cli.commands.sync import _domain_run_advisor
 
         with patch("popctl.cli.commands.sync._invoke_advisor", return_value=None):
-            result = _config_run_advisor([self._make_config_orphan()], auto=True)
+            result = _domain_run_advisor("configs", [self._make_config_orphan()], auto=True)
 
         assert result is None
 
     def test_config_run_advisor_no_configs_section_returns_none(self) -> None:
         """When decisions have no configs section, returns None."""
         from popctl.advisor.exchange import DecisionsResult
-        from popctl.cli.commands.sync import _config_run_advisor
+        from popctl.cli.commands.sync import _domain_run_advisor
 
         mock_decisions = DecisionsResult(packages={}, configs=None)
 
         with patch("popctl.cli.commands.sync._invoke_advisor", return_value=mock_decisions):
-            result = _config_run_advisor([self._make_config_orphan()], auto=True)
+            result = _domain_run_advisor("configs", [self._make_config_orphan()], auto=True)
 
         assert result is None
 
     def test_config_run_advisor_passes_orphan_entries(self) -> None:
         """Config advisor converts ScannedConfig to ConfigOrphanEntry."""
-        from popctl.cli.commands.sync import _config_run_advisor
+        from popctl.cli.commands.sync import _domain_run_advisor
 
         orphan = self._make_config_orphan("/home/test/.config/nvim")
 
         with patch("popctl.cli.commands.sync._invoke_advisor", return_value=None) as mock_invoke:
-            _config_run_advisor([orphan], auto=True)
+            _domain_run_advisor("configs", [orphan], auto=True)
 
         # Verify _invoke_advisor was called with config orphan entries
         call_kwargs = mock_invoke.call_args[1]
