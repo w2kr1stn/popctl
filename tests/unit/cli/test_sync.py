@@ -125,9 +125,8 @@ class TestSyncNoManifest:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
         ):
@@ -149,9 +148,8 @@ class TestSyncInSync:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
         ):
@@ -173,9 +171,8 @@ class TestSyncDryRun:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=diff_result_no_new,
             ),
         ):
@@ -194,9 +191,8 @@ class TestSyncDryRun:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=diff_result_with_new,
             ),
             patch("popctl.cli.commands.sync._run_advisor") as mock_advisor,
@@ -220,9 +216,8 @@ class TestSyncNoAdvisor:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=diff_result_with_new,
             ),
             patch("popctl.cli.commands.sync._run_advisor") as mock_advisor,
@@ -250,9 +245,8 @@ class TestSyncAdvisor:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=diff_result_no_new,
             ),
             patch("popctl.cli.commands.sync._run_advisor") as mock_advisor,
@@ -276,9 +270,8 @@ class TestSyncAdvisor:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=diff_result_with_new,
             ),
             # Advisor internal: fail at config loading stage
@@ -312,9 +305,8 @@ class TestSyncExecution:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=diff_result_no_new,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
@@ -338,9 +330,8 @@ class TestSyncExecution:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=diff_result_no_new,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
@@ -368,9 +359,8 @@ class TestSyncHistory:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=diff_result_no_new,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
@@ -408,9 +398,8 @@ class TestSyncFailures:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=missing_only,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
@@ -457,9 +446,8 @@ class TestSyncReDiff:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 side_effect=compute_diff_side_effect,
             ),
             # Mock _run_advisor to be a no-op (we test re-diff, not advisor itself)
@@ -493,9 +481,8 @@ class TestSyncPurge:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=extra_only,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
@@ -528,9 +515,8 @@ class TestSyncFilesystem:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
             patch("popctl.cli.commands.sync._fs_scan") as mock_fs_scan,
@@ -549,9 +535,8 @@ class TestSyncFilesystem:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
             patch("popctl.cli.commands.sync._fs_scan", return_value=[]) as mock_fs_scan,
@@ -573,9 +558,8 @@ class TestSyncFilesystem:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
             # _fs_scan catches exceptions internally and returns []
@@ -599,9 +583,8 @@ class TestSyncFilesystem:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
             # Simulate _fs_scan returning empty (as it does on exception)
@@ -675,9 +658,8 @@ class TestSyncFilesystem:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=diff_result_no_new,
             ),
             patch("popctl.cli.commands.sync._fs_scan", return_value=mock_orphans),
@@ -701,9 +683,8 @@ class TestSyncFilesystem:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=diff_result_no_new,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
@@ -751,9 +732,8 @@ class TestSyncFilesystem:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
             patch("popctl.cli.commands.sync._fs_scan", return_value=mock_orphans),
@@ -778,9 +758,8 @@ class TestSyncFilesystem:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=missing_only,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
@@ -843,9 +822,8 @@ class TestSyncConfigs:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
             patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
@@ -869,9 +847,8 @@ class TestSyncConfigs:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
             patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
@@ -891,9 +868,8 @@ class TestSyncConfigs:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
             patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
@@ -935,9 +911,8 @@ class TestSyncConfigs:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=diff_result_no_new,
             ),
             patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
@@ -1007,9 +982,8 @@ class TestSyncConfigs:
             patch("popctl.core.manifest.load_manifest", return_value=manifest_with_configs),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=in_sync_result,
             ),
             patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
@@ -1077,9 +1051,8 @@ class TestSyncConfigs:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.sync.compute_diff",
                 return_value=diff_result_no_new,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,

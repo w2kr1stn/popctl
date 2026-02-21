@@ -96,7 +96,7 @@ The complete popctl workflow consists of six stages:
 
 1. Loads `manifest.toml` via `require_manifest()` (error if not found)
 2. Loads scanners and scans current system
-3. `DiffEngine.compute_diff()` calculates three categories:
+3. `compute_diff()` calculates three categories:
 
 | DiffType | Symbol | Meaning | Action on `apply` |
 |----------|--------|---------|-------------------|
@@ -443,7 +443,7 @@ app/popctl/
 │   ├── paths.py         # XDG-compliant path helpers
 │   ├── baseline.py      # Pop!_OS protected packages
 │   ├── manifest.py      # Manifest TOML I/O
-│   ├── diff.py          # DiffEngine for manifest comparison
+│   ├── diff.py          # compute_diff for manifest comparison
 │   └── state.py         # StateManager for history persistence
 ├── data/
 │   ├── theme.toml       # Default color theme

@@ -7,29 +7,8 @@ for reuse by both the apply and sync commands.
 
 from popctl.core.baseline import is_protected
 from popctl.core.diff import DiffResult
-from popctl.models.action import Action, create_install_action, create_remove_action
+from popctl.models.action import Action, ActionType
 from popctl.models.package import PackageSource
-
-SOURCE_MAP: dict[str, PackageSource] = {
-    "apt": PackageSource.APT,
-    "flatpak": PackageSource.FLATPAK,
-    "snap": PackageSource.SNAP,
-}
-
-
-def source_to_package_source(source_str: str) -> PackageSource:
-    """Convert source string to PackageSource enum.
-
-    Args:
-        source_str: Source string ("apt" or "flatpak").
-
-    Returns:
-        Corresponding PackageSource enum value.
-
-    Raises:
-        KeyError: If source_str is not a valid source.
-    """
-    return SOURCE_MAP[source_str]
 
 
 def diff_to_actions(diff_result: DiffResult, purge: bool = False) -> list[Action]:
@@ -45,7 +24,7 @@ def diff_to_actions(diff_result: DiffResult, purge: bool = False) -> list[Action
     Protected packages are excluded from removal actions.
 
     Args:
-        diff_result: Result from DiffEngine.compute_diff().
+        diff_result: Result from compute_diff().
         purge: If True, use PURGE instead of REMOVE for APT packages.
 
     Returns:
@@ -55,8 +34,9 @@ def diff_to_actions(diff_result: DiffResult, purge: bool = False) -> list[Action
 
     # MISSING -> INSTALL
     for entry in diff_result.missing:
-        pkg_source = source_to_package_source(entry.source)
-        action = create_install_action(
+        pkg_source = PackageSource(entry.source)
+        action = Action(
+            action_type=ActionType.INSTALL,
             package=entry.name,
             source=pkg_source,
             reason="Package in manifest but not installed",
@@ -65,21 +45,21 @@ def diff_to_actions(diff_result: DiffResult, purge: bool = False) -> list[Action
 
     # EXTRA -> REMOVE/PURGE
     for entry in diff_result.extra:
-        # Skip protected packages (should not happen as DiffEngine filters them,
+        # Skip protected packages (should not happen as compute_diff filters them,
         # but defense in depth)
         if is_protected(entry.name):
             continue
 
-        pkg_source = source_to_package_source(entry.source)
+        pkg_source = PackageSource(entry.source)
 
         # Purge applies to APT and Snap packages
         use_purge = purge and pkg_source in (PackageSource.APT, PackageSource.SNAP)
 
-        action = create_remove_action(
+        action = Action(
+            action_type=ActionType.PURGE if use_purge else ActionType.REMOVE,
             package=entry.name,
             source=pkg_source,
             reason="Package marked for removal in manifest",
-            purge=use_purge,
         )
         actions.append(action)
 

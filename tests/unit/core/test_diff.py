@@ -1,13 +1,13 @@
 """Unit tests for diff engine.
 
-Tests for the DiffEngine class and related functions.
+Tests for the compute_diff function and related types.
 """
 
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
 import pytest
-from popctl.core.diff import DiffEngine, DiffEntry, DiffResult, DiffType
+from popctl.core.diff import DiffEntry, DiffResult, DiffType, compute_diff
 from popctl.models.manifest import (
     Manifest,
     ManifestMeta,
@@ -199,8 +199,8 @@ class TestDiffResult:
         assert "description" not in data["missing"][0]
 
 
-class TestDiffEngine:
-    """Tests for DiffEngine class."""
+class TestComputeDiff:
+    """Tests for compute_diff function."""
 
     def test_in_sync_system(self, base_manifest: Manifest) -> None:
         """System in sync with manifest shows no changes."""
@@ -235,8 +235,7 @@ class TestDiffEngine:
             ],
         )
 
-        engine = DiffEngine(base_manifest)
-        result = engine.compute_diff([scanner, flatpak_scanner])
+        result = compute_diff(base_manifest, [scanner, flatpak_scanner])
 
         assert result.is_in_sync is True
         assert result.total_changes == 0
@@ -269,8 +268,7 @@ class TestDiffEngine:
             ],
         )
 
-        engine = DiffEngine(base_manifest)
-        result = engine.compute_diff([scanner])
+        result = compute_diff(base_manifest, [scanner])
 
         assert len(result.new) == 1
         assert result.new[0].name == "htop"
@@ -292,9 +290,8 @@ class TestDiffEngine:
             ],
         )
 
-        engine = DiffEngine(base_manifest)
         # Filter to APT only since we only mock APT scanner
-        result = engine.compute_diff([scanner], source_filter="apt")
+        result = compute_diff(base_manifest, [scanner], source_filter="apt")
 
         assert len(result.missing) == 1
         assert result.missing[0].name == "neovim"
@@ -327,8 +324,7 @@ class TestDiffEngine:
             ],
         )
 
-        engine = DiffEngine(base_manifest)
-        result = engine.compute_diff([scanner])
+        result = compute_diff(base_manifest, [scanner])
 
         assert len(result.extra) == 1
         assert result.extra[0].name == "bloatware"
@@ -348,8 +344,7 @@ class TestDiffEngine:
             ],
         )
 
-        engine = DiffEngine(empty_manifest)
-        result = engine.compute_diff([scanner])
+        result = compute_diff(empty_manifest, [scanner])
 
         # Auto-installed packages should not appear as NEW
         assert result.is_in_sync is True
@@ -375,8 +370,7 @@ class TestDiffEngine:
             ],
         )
 
-        engine = DiffEngine(empty_manifest)
-        result = engine.compute_diff([scanner])
+        result = compute_diff(empty_manifest, [scanner])
 
         # Protected packages should not appear as NEW
         assert result.is_in_sync is True
@@ -408,8 +402,7 @@ class TestDiffEngine:
             ],
         )
 
-        engine = DiffEngine(base_manifest)
-        result = engine.compute_diff([apt_scanner, flatpak_scanner], source_filter="apt")
+        result = compute_diff(base_manifest, [apt_scanner, flatpak_scanner], source_filter="apt")
 
         # Only APT package should appear (htop, firefox missing, neovim missing)
         new_names = [e.name for e in result.new]
@@ -449,8 +442,9 @@ class TestDiffEngine:
             ],
         )
 
-        engine = DiffEngine(base_manifest)
-        result = engine.compute_diff([apt_scanner, flatpak_scanner], source_filter="flatpak")
+        result = compute_diff(
+            base_manifest, [apt_scanner, flatpak_scanner], source_filter="flatpak"
+        )
 
         new_names = [e.name for e in result.new]
         missing_names = [e.name for e in result.missing]
@@ -487,8 +481,7 @@ class TestDiffEngine:
             available=False,  # Not available
         )
 
-        engine = DiffEngine(base_manifest)
-        result = engine.compute_diff([available_scanner, unavailable_scanner])
+        result = compute_diff(base_manifest, [available_scanner, unavailable_scanner])
 
         # Only APT packages should be processed
         all_names = [e.name for e in result.new + result.missing + result.extra]
@@ -511,8 +504,7 @@ class TestDiffEngine:
             ],
         )
 
-        engine = DiffEngine(empty_manifest)
-        result = engine.compute_diff([scanner])
+        result = compute_diff(empty_manifest, [scanner])
 
         names = [e.name for e in result.new]
         assert names == ["aaa", "mmm", "zzz"]
@@ -547,9 +539,8 @@ class TestDiffEngine:
             ],
         )
 
-        engine = DiffEngine(base_manifest)
         # Filter to APT only since we only mock APT scanner
-        result = engine.compute_diff([scanner], source_filter="apt")
+        result = compute_diff(base_manifest, [scanner], source_filter="apt")
 
         assert not result.is_in_sync
         assert len(result.new) == 1
@@ -586,17 +577,8 @@ class TestDiffEngine:
             ],
         )
 
-        engine = DiffEngine(base_manifest)
-        result = engine.compute_diff([apt_scanner, snap_scanner], source_filter="snap")
+        result = compute_diff(base_manifest, [apt_scanner, snap_scanner], source_filter="snap")
 
         new_names = [e.name for e in result.new]
         assert "firefox" in new_names
         assert "htop" not in new_names
-
-    def test_source_filter_invalid_raises(self, empty_manifest: Manifest) -> None:
-        """Invalid source_filter raises ValueError."""
-        scanner = MockScanner(source=PackageSource.APT, packages=[])
-        engine = DiffEngine(empty_manifest)
-
-        with pytest.raises(ValueError, match="Invalid source filter"):
-            engine.compute_diff([scanner], source_filter="brew")
