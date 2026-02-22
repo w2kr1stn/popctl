@@ -7,7 +7,6 @@ Public API:
 - AdvisorConfig: Configuration model for advisor settings
 - load_advisor_config: Load advisor configuration from TOML file
 - save_advisor_config: Save advisor configuration to TOML file
-- is_running_in_container: Check if popctl is running inside a container
 - AgentResult: Result from agent execution
 - AgentRunner: Runs AI agents for package classification
 - build_session_claude_md: Build CLAUDE.md for interactive workspace
@@ -19,20 +18,19 @@ Public API:
 from popctl.advisor.config import (
     AdvisorConfig,
     AdvisorProvider,
-    is_running_in_container,
     load_advisor_config,
     save_advisor_config,
 )
 from popctl.advisor.exchange import (
-    ConfigOrphanEntry,
     DecisionsResult,
     DomainDecisions,
-    FilesystemOrphanEntry,
+    OrphanEntry,
     PackageDecision,
     PackageScanEntry,
     PathDecision,
     ScanExport,
     SourceDecisions,
+    apply_decisions_to_manifest,
     import_decisions,
 )
 from popctl.advisor.prompts import (
@@ -43,7 +41,6 @@ from popctl.advisor.runner import AgentResult, AgentRunner
 from popctl.advisor.workspace import (
     create_session_workspace,
     find_latest_decisions,
-    list_sessions,
 )
 
 __all__ = [
@@ -52,10 +49,10 @@ __all__ = [
     "AgentResult",
     "AgentRunner",
     "CATEGORIES",
-    "ConfigOrphanEntry",
+    "apply_decisions_to_manifest",
     "DecisionsResult",
     "DomainDecisions",
-    "FilesystemOrphanEntry",
+    "OrphanEntry",
     "PackageDecision",
     "PackageScanEntry",
     "PathDecision",
@@ -65,8 +62,6 @@ __all__ = [
     "create_session_workspace",
     "find_latest_decisions",
     "import_decisions",
-    "is_running_in_container",
-    "list_sessions",
     "load_advisor_config",
     "save_advisor_config",
 ]

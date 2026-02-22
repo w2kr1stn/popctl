@@ -24,7 +24,11 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from popctl.advisor.prompts import CATEGORIES
-from popctl.models.manifest import PackageSourceType
+from popctl.models.manifest import Manifest, PackageEntry, PackageSourceType
+from popctl.models.package import PACKAGE_SOURCE_KEYS
+
+# Exchange directory for file-based communication with AI advisors
+EXCHANGE_DIR = Path("/tmp/popctl-exchange")  # noqa: S108
 
 # =============================================================================
 # Export Models
@@ -56,18 +60,18 @@ class PackageScanEntry(BaseModel):
     size_bytes: int | None = None
 
 
-class FilesystemOrphanEntry(BaseModel):
-    """Single filesystem orphan entry in scan export.
+class OrphanEntry(BaseModel):
+    """Single orphan entry in scan export (filesystem or config).
 
-    Represents an orphaned filesystem path in the scan.json export format,
+    Represents an orphaned path in the scan.json export format,
     containing the information needed for AI classification.
 
     Attributes:
-        path: Filesystem path (tilde-prefixed, e.g., "~/.config/vlc").
+        path: Path (tilde-prefixed, e.g., "~/.config/vlc").
         path_type: Type of path ("directory", "file", "symlink", "dead_symlink").
         size_bytes: Size in bytes (None if unavailable).
         mtime: Last modification time in ISO 8601 format (None if unavailable).
-        parent_target: Scan target root directory (e.g., "~/.config").
+        parent_target: Scan target root directory (filesystem only, None for configs).
         orphan_reason: Reason for orphan classification.
         confidence: Orphan confidence score (0.0 to 1.0).
     """
@@ -75,36 +79,11 @@ class FilesystemOrphanEntry(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     path: str
-    path_type: str  # "directory", "file", "symlink", "dead_symlink"
+    path_type: str
     size_bytes: int | None = None
     mtime: str | None = None
-    parent_target: str
+    parent_target: str | None = None
     orphan_reason: str
-    confidence: float
-
-
-class ConfigOrphanEntry(BaseModel):
-    """Single config orphan entry in scan export.
-
-    Represents an orphaned configuration path in the scan.json export format,
-    containing the information needed for AI classification.
-
-    Attributes:
-        path: Config path (tilde-prefixed, e.g., "~/.config/vlc").
-        config_type: Type of config ("directory" or "file").
-        size_bytes: Size in bytes (None if unavailable).
-        mtime: Last modification time in ISO 8601 format (None if unavailable).
-        orphan_reason: Reason for orphan classification.
-        confidence: Orphan confidence score (0.0 to 1.0).
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    path: str
-    config_type: str  # ConfigType value: "directory" or "file"
-    size_bytes: int | None = None
-    mtime: str | None = None
-    orphan_reason: str  # ConfigOrphanReason value
     confidence: float
 
 
@@ -128,9 +107,9 @@ class ScanExport(BaseModel):
     scan_date: str  # ISO format
     system: dict[str, str]  # hostname, os, manifest_path
     summary: dict[str, int]  # total_packages, manual_apt, etc.
-    packages: dict[str, list[PackageScanEntry]]  # "unknown", "new_since_manifest"
-    filesystem_orphans: list[FilesystemOrphanEntry] = Field(default_factory=lambda: [])
-    config_orphans: list[ConfigOrphanEntry] = Field(default_factory=lambda: [])
+    packages: dict[str, list[PackageScanEntry]]  # "unknown"
+    filesystem_orphans: list[OrphanEntry] = Field(default_factory=lambda: [])
+    config_orphans: list[OrphanEntry] = Field(default_factory=lambda: [])
 
 
 # =============================================================================
@@ -264,8 +243,8 @@ def import_decisions(exchange_dir: Path) -> DecisionsResult:
         ValueError: If TOML is invalid or doesn't match schema.
 
     Example:
-        >>> from popctl.core.paths import get_exchange_dir
-        >>> decisions = import_decisions(get_exchange_dir())
+        >>> from popctl.advisor.exchange import EXCHANGE_DIR
+        >>> decisions = import_decisions(EXCHANGE_DIR)
         >>> for pkg in decisions.packages["apt"].keep:
         ...     print(f"Keep: {pkg.name} ({pkg.reason})")
     """
@@ -304,3 +283,57 @@ def import_decisions(exchange_dir: Path) -> DecisionsResult:
     except ValidationError as e:
         msg = f"Invalid decisions.toml schema: {e}"
         raise ValueError(msg) from e
+
+
+def apply_decisions_to_manifest(
+    manifest: Manifest,
+    decisions: DecisionsResult,
+) -> tuple[dict[str, dict[str, int]], list[tuple[str, str, str, float]]]:
+    """Apply advisor package decisions to a manifest.
+
+    Mutates the manifest's ``packages.keep`` and ``packages.remove``
+    dicts by inserting entries derived from the advisor decisions.
+
+    Args:
+        manifest: Manifest to update in place.
+        decisions: Validated advisor decisions.
+
+    Returns:
+        Tuple of ``(stats_by_source, ask_packages)`` where:
+        - ``stats_by_source`` maps each source to
+          ``{"keep": N, "remove": N, "ask": N}`` counts.
+        - ``ask_packages`` is a list of
+          ``(name, source, reason, confidence)`` tuples for decisions
+          that require manual user input.
+    """
+    stats: dict[str, dict[str, int]] = {}
+    ask_packages: list[tuple[str, str, str, float]] = []
+
+    for source in PACKAGE_SOURCE_KEYS:
+        source_decisions = decisions.packages.get(source)  # type: ignore[arg-type]
+        if source_decisions is None:
+            continue
+
+        stats[source] = {"keep": 0, "remove": 0, "ask": 0}
+
+        for decision in source_decisions.keep:
+            manifest.packages.keep[decision.name] = PackageEntry(
+                source=source,  # type: ignore[arg-type]
+                status="keep",
+                reason=decision.reason,
+            )
+            stats[source]["keep"] += 1
+
+        for decision in source_decisions.remove:
+            manifest.packages.remove[decision.name] = PackageEntry(
+                source=source,  # type: ignore[arg-type]
+                status="remove",
+                reason=decision.reason,
+            )
+            stats[source]["remove"] += 1
+
+        for decision in source_decisions.ask:
+            ask_packages.append((decision.name, source, decision.reason, decision.confidence))
+            stats[source]["ask"] += 1
+
+    return stats, ask_packages

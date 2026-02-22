@@ -10,10 +10,9 @@ from pathlib import Path
 
 import pytest
 from popctl.advisor.exchange import (
-    ConfigOrphanEntry,
     DecisionsResult,
     DomainDecisions,
-    FilesystemOrphanEntry,
+    OrphanEntry,
     PackageDecision,
     PackageScanEntry,
     PathDecision,
@@ -21,6 +20,7 @@ from popctl.advisor.exchange import (
     SourceDecisions,
     import_decisions,
 )
+from popctl.models.manifest import Manifest
 
 # =============================================================================
 # Test Fixtures
@@ -499,19 +499,18 @@ class TestModuleExports:
         assert hasattr(exchange, "DecisionsResult")
         assert hasattr(exchange, "PathDecision")
         assert hasattr(exchange, "DomainDecisions")
-        assert hasattr(exchange, "FilesystemOrphanEntry")
-        assert hasattr(exchange, "ConfigOrphanEntry")
+        assert hasattr(exchange, "OrphanEntry")
 
         # Functions
         assert hasattr(exchange, "import_decisions")
+        assert hasattr(exchange, "apply_decisions_to_manifest")
 
     def test_advisor_init_exports_exchange(self) -> None:
         """advisor __init__ exports exchange symbols."""
         from popctl.advisor import (
-            ConfigOrphanEntry,
             DecisionsResult,
             DomainDecisions,
-            FilesystemOrphanEntry,
+            OrphanEntry,
             PackageDecision,
             PackageScanEntry,
             PathDecision,
@@ -529,23 +528,20 @@ class TestModuleExports:
         assert DecisionsResult is not None
         assert PathDecision is not None
         assert DomainDecisions is not None
-        assert FilesystemOrphanEntry is not None
-        assert ConfigOrphanEntry is not None
+        assert OrphanEntry is not None
 
 
 # =============================================================================
-# Test FilesystemOrphanEntry Model
+# Test OrphanEntry Model
 # =============================================================================
 
 
-class TestFilesystemOrphanEntry:
-    """Tests for FilesystemOrphanEntry Pydantic model."""
+class TestOrphanEntry:
+    """Tests for OrphanEntry Pydantic model."""
 
-    def test_filesystem_orphan_entry_creation(self) -> None:
-        """FilesystemOrphanEntry accepts all fields."""
-        from popctl.advisor.exchange import FilesystemOrphanEntry
-
-        entry = FilesystemOrphanEntry(
+    def test_orphan_entry_creation_with_parent_target(self) -> None:
+        """OrphanEntry accepts all fields including parent_target."""
+        entry = OrphanEntry(
             path="~/.config/vlc",
             path_type="directory",
             size_bytes=4096,
@@ -563,27 +559,38 @@ class TestFilesystemOrphanEntry:
         assert entry.orphan_reason == "no_package_match"
         assert entry.confidence == 0.70
 
-    def test_filesystem_orphan_entry_optional_fields(self) -> None:
-        """FilesystemOrphanEntry defaults optional fields to None."""
-        from popctl.advisor.exchange import FilesystemOrphanEntry
-
-        entry = FilesystemOrphanEntry(
+    def test_orphan_entry_creation_without_parent_target(self) -> None:
+        """OrphanEntry works without parent_target (config use case)."""
+        entry = OrphanEntry(
             path="~/.config/vlc",
             path_type="directory",
-            parent_target="~/.config",
+            size_bytes=4096,
+            mtime="2024-01-15T10:00:00Z",
+            orphan_reason="no_package_match",
+            confidence=0.70,
+        )
+
+        assert entry.path == "~/.config/vlc"
+        assert entry.parent_target is None
+
+    def test_orphan_entry_optional_fields(self) -> None:
+        """OrphanEntry defaults optional fields to None."""
+        entry = OrphanEntry(
+            path="~/.config/vlc",
+            path_type="directory",
             orphan_reason="no_package_match",
             confidence=0.70,
         )
 
         assert entry.size_bytes is None
         assert entry.mtime is None
+        assert entry.parent_target is None
 
-    def test_filesystem_orphan_entry_frozen(self) -> None:
-        """FilesystemOrphanEntry is immutable."""
-        from popctl.advisor.exchange import FilesystemOrphanEntry
+    def test_orphan_entry_frozen(self) -> None:
+        """OrphanEntry is immutable."""
         from pydantic import ValidationError
 
-        entry = FilesystemOrphanEntry(
+        entry = OrphanEntry(
             path="~/.config/vlc",
             path_type="directory",
             parent_target="~/.config",
@@ -616,7 +623,7 @@ class TestScanExportFilesystemOrphans:
 
     def test_scan_export_filesystem_orphans_with_entries(self) -> None:
         """ScanExport accepts filesystem orphan entries."""
-        orphan = FilesystemOrphanEntry(
+        orphan = OrphanEntry(
             path="~/.config/vlc",
             path_type="directory",
             parent_target="~/.config",
@@ -646,7 +653,7 @@ class TestScanExportWithFilesystem:
 
     def test_scan_export_with_filesystem_orphans(self) -> None:
         """ScanExport includes filesystem_orphans when provided."""
-        orphan = FilesystemOrphanEntry(
+        orphan = OrphanEntry(
             path="~/.config/vlc",
             path_type="directory",
             parent_target="~/.config",
@@ -973,67 +980,16 @@ ask = []
 
 
 # =============================================================================
-# Test ConfigOrphanEntry Model
+# Test OrphanEntry Serialization
 # =============================================================================
 
 
-class TestConfigOrphanEntry:
-    """Tests for ConfigOrphanEntry Pydantic model."""
+class TestOrphanEntrySerialization:
+    """Tests for OrphanEntry serialization."""
 
-    def test_config_orphan_entry_creation(self) -> None:
-        """ConfigOrphanEntry accepts all fields."""
-        from popctl.advisor.exchange import ConfigOrphanEntry
-
-        entry = ConfigOrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            size_bytes=4096,
-            mtime="2024-01-15T10:00:00Z",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        assert entry.path == "~/.config/vlc"
-        assert entry.path_type == "directory"
-        assert entry.size_bytes == 4096
-        assert entry.mtime == "2024-01-15T10:00:00Z"
-        assert entry.orphan_reason == "no_package_match"
-        assert entry.confidence == 0.70
-
-    def test_config_orphan_entry_optional_fields(self) -> None:
-        """ConfigOrphanEntry defaults optional fields to None."""
-        from popctl.advisor.exchange import ConfigOrphanEntry
-
-        entry = ConfigOrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        assert entry.size_bytes is None
-        assert entry.mtime is None
-
-    def test_config_orphan_entry_frozen(self) -> None:
-        """ConfigOrphanEntry is immutable."""
-        from popctl.advisor.exchange import ConfigOrphanEntry
-        from pydantic import ValidationError
-
-        entry = ConfigOrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        with pytest.raises(ValidationError):
-            entry.path = "changed"  # type: ignore[misc]
-
-    def test_config_orphan_entry_serialization(self) -> None:
-        """ConfigOrphanEntry serializes correctly via model_dump."""
-        from popctl.advisor.exchange import ConfigOrphanEntry
-
-        entry = ConfigOrphanEntry(
+    def test_orphan_entry_serialization(self) -> None:
+        """OrphanEntry serializes correctly via model_dump."""
+        entry = OrphanEntry(
             path="~/.config/vlc",
             path_type="directory",
             size_bytes=4096,
@@ -1050,6 +1006,20 @@ class TestConfigOrphanEntry:
         assert data["mtime"] == "2024-01-15T10:00:00Z"
         assert data["orphan_reason"] == "app_not_installed"
         assert data["confidence"] == 0.70
+        assert data["parent_target"] is None
+
+    def test_orphan_entry_serialization_with_parent_target(self) -> None:
+        """OrphanEntry serializes parent_target when set."""
+        entry = OrphanEntry(
+            path="~/.config/vlc",
+            path_type="directory",
+            parent_target="~/.config",
+            orphan_reason="no_package_match",
+            confidence=0.70,
+        )
+
+        data = entry.model_dump()
+        assert data["parent_target"] == "~/.config"
 
 
 # =============================================================================
@@ -1073,7 +1043,7 @@ class TestScanExportConfigOrphans:
 
     def test_scan_export_config_orphans_with_entries(self) -> None:
         """ScanExport accepts config orphan entries."""
-        orphan = ConfigOrphanEntry(
+        orphan = OrphanEntry(
             path="~/.config/vlc",
             path_type="directory",
             orphan_reason="no_package_match",
@@ -1102,7 +1072,7 @@ class TestScanExportWithConfigs:
 
     def test_scan_export_with_config_orphans(self) -> None:
         """ScanExport includes config_orphans when provided."""
-        orphan = ConfigOrphanEntry(
+        orphan = OrphanEntry(
             path="~/.config/vlc",
             path_type="directory",
             orphan_reason="app_not_installed",
@@ -1343,3 +1313,211 @@ ask = []
         assert len(result.configs.remove) == 1
         # category is optional; TOML entry without category yields None
         assert result.configs.remove[0].category is None
+
+
+# =============================================================================
+# Test apply_decisions_to_manifest
+# =============================================================================
+
+
+class TestApplyDecisionsToManifest:
+    """Tests for the apply_decisions_to_manifest shared function."""
+
+    @pytest.fixture
+    def empty_manifest(self) -> Manifest:
+        """Create an empty manifest for testing."""
+        from datetime import UTC, datetime
+
+        from popctl.models.manifest import ManifestMeta, PackageConfig, SystemConfig
+
+        return Manifest(
+            meta=ManifestMeta(
+                created=datetime.now(UTC),
+                updated=datetime.now(UTC),
+            ),
+            system=SystemConfig(name="test", base="pop-os-24.04"),
+            packages=PackageConfig(keep={}, remove={}),
+        )
+
+    def test_applies_keep_decisions(self, empty_manifest: Manifest) -> None:
+        """Keep decisions are added to manifest.packages.keep."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
+
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    keep=[
+                        PackageDecision(
+                            name="firefox",
+                            reason="Web browser",
+                            confidence=0.95,
+                            category="desktop",
+                        ),
+                    ],
+                ),
+                "flatpak": SourceDecisions(),
+                "snap": SourceDecisions(),
+            }
+        )
+
+        stats, ask_packages = apply_decisions_to_manifest(empty_manifest, decisions)
+
+        assert "firefox" in empty_manifest.packages.keep
+        assert empty_manifest.packages.keep["firefox"].source == "apt"
+        assert empty_manifest.packages.keep["firefox"].status == "keep"
+        assert empty_manifest.packages.keep["firefox"].reason == "Web browser"
+        assert stats["apt"]["keep"] == 1
+        assert ask_packages == []
+
+    def test_applies_remove_decisions(self, empty_manifest: Manifest) -> None:
+        """Remove decisions are added to manifest.packages.remove."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
+
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    remove=[
+                        PackageDecision(
+                            name="bloatware",
+                            reason="Unused telemetry",
+                            confidence=0.92,
+                            category="telemetry",
+                        ),
+                    ],
+                ),
+                "flatpak": SourceDecisions(),
+                "snap": SourceDecisions(),
+            }
+        )
+
+        stats, ask_packages = apply_decisions_to_manifest(empty_manifest, decisions)
+
+        assert "bloatware" in empty_manifest.packages.remove
+        assert empty_manifest.packages.remove["bloatware"].source == "apt"
+        assert empty_manifest.packages.remove["bloatware"].status == "remove"
+        assert stats["apt"]["remove"] == 1
+        assert ask_packages == []
+
+    def test_collects_ask_decisions(self, empty_manifest: Manifest) -> None:
+        """Ask decisions are collected but NOT added to manifest."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
+
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    ask=[
+                        PackageDecision(
+                            name="gcc",
+                            reason="Dev tools",
+                            confidence=0.65,
+                            category="development",
+                        ),
+                    ],
+                ),
+                "flatpak": SourceDecisions(),
+                "snap": SourceDecisions(),
+            }
+        )
+
+        stats, ask_packages = apply_decisions_to_manifest(empty_manifest, decisions)
+
+        assert "gcc" not in empty_manifest.packages.keep
+        assert "gcc" not in empty_manifest.packages.remove
+        assert stats["apt"]["ask"] == 1
+        assert len(ask_packages) == 1
+        assert ask_packages[0] == ("gcc", "apt", "Dev tools", 0.65)
+
+    def test_handles_multiple_sources(self, empty_manifest: Manifest) -> None:
+        """Decisions from multiple sources are all applied."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
+
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    keep=[
+                        PackageDecision(
+                            name="firefox",
+                            reason="Browser",
+                            confidence=0.95,
+                            category="desktop",
+                        ),
+                    ],
+                ),
+                "flatpak": SourceDecisions(
+                    keep=[
+                        PackageDecision(
+                            name="com.spotify.Client",
+                            reason="Music",
+                            confidence=0.90,
+                            category="media",
+                        ),
+                    ],
+                ),
+                "snap": SourceDecisions(
+                    remove=[
+                        PackageDecision(
+                            name="telegram-desktop",
+                            reason="Use flatpak",
+                            confidence=0.88,
+                            category="desktop",
+                        ),
+                    ],
+                ),
+            }
+        )
+
+        stats, _ask = apply_decisions_to_manifest(empty_manifest, decisions)
+
+        assert "firefox" in empty_manifest.packages.keep
+        assert "com.spotify.Client" in empty_manifest.packages.keep
+        assert "telegram-desktop" in empty_manifest.packages.remove
+        assert stats["apt"]["keep"] == 1
+        assert stats["flatpak"]["keep"] == 1
+        assert stats["snap"]["remove"] == 1
+
+    def test_skips_missing_sources(self, empty_manifest: Manifest) -> None:
+        """Sources not present in decisions are skipped."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
+
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    keep=[
+                        PackageDecision(
+                            name="vim",
+                            reason="Editor",
+                            confidence=0.99,
+                            category="development",
+                        ),
+                    ],
+                ),
+            }
+        )
+
+        stats, ask_packages = apply_decisions_to_manifest(empty_manifest, decisions)
+
+        assert "vim" in empty_manifest.packages.keep
+        assert "apt" in stats
+        assert "flatpak" not in stats
+        assert "snap" not in stats
+        assert ask_packages == []
+
+    def test_empty_decisions_returns_empty_stats(self, empty_manifest: Manifest) -> None:
+        """Empty decisions produce empty stats and no ask packages."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
+
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(),
+                "flatpak": SourceDecisions(),
+                "snap": SourceDecisions(),
+            }
+        )
+
+        stats, ask_packages = apply_decisions_to_manifest(empty_manifest, decisions)
+
+        for source_stats in stats.values():
+            assert source_stats["keep"] == 0
+            assert source_stats["remove"] == 0
+            assert source_stats["ask"] == 0
+        assert ask_packages == []
