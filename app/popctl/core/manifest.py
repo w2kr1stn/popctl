@@ -1,18 +1,31 @@
 """Manifest file I/O operations.
 
-This module provides functions for loading and saving manifest files
+This module provides functions for loading, saving, and creating manifest files
 in TOML format with proper validation using Pydantic models.
 """
 
+import os
+import socket
 import tomllib
+from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 import tomli_w
 from pydantic import ValidationError
 
+from popctl.core.baseline import is_protected
 from popctl.core.paths import get_manifest_path
-from popctl.models.manifest import Manifest
+from popctl.models.manifest import (
+    Manifest,
+    ManifestMeta,
+    PackageConfig,
+    PackageEntry,
+    SystemConfig,
+)
+from popctl.models.package import PackageStatus
+from popctl.scanners.base import Scanner
 
 
 class ManifestError(Exception):
@@ -81,9 +94,6 @@ def save_manifest(manifest: Manifest, path: Path | None = None) -> Path:
     Raises:
         ManifestError: If the file cannot be written.
     """
-    import os
-    from tempfile import NamedTemporaryFile
-
     manifest_path = path or get_manifest_path()
 
     # Ensure parent directory exists
@@ -140,14 +150,12 @@ def _manifest_to_dict(manifest: Manifest) -> dict[str, Any]:
     """
     result: dict[str, Any] = {
         "meta": {
-            "version": manifest.meta.version,
             "created": manifest.meta.created.isoformat(),
             "updated": manifest.meta.updated.isoformat(),
         },
         "system": {
             "name": manifest.system.name,
             "base": manifest.system.base,
-            **({"description": manifest.system.description} if manifest.system.description else {}),
         },
         "packages": {
             "keep": {
@@ -221,3 +229,72 @@ def _domain_entry_to_dict(entry: Any) -> dict[str, Any]:
     if entry.category:
         result["category"] = entry.category
     return result
+
+
+# ---------------------------------------------------------------------------
+# Manifest creation helpers
+# ---------------------------------------------------------------------------
+
+
+def collect_manual_packages(
+    scanners: list[Scanner],
+) -> tuple[dict[str, PackageEntry], list[str]]:
+    """Collect manually installed packages from all scanners.
+
+    Protected packages and auto-installed dependencies are filtered out.
+
+    Args:
+        scanners: List of Scanner instances to use.
+
+    Returns:
+        Tuple of (packages dict, list of skipped protected package names).
+    """
+    packages: dict[str, PackageEntry] = {}
+    skipped_protected: list[str] = []
+
+    for scanner in scanners:
+        source_name = scanner.source.value
+
+        for pkg in scanner.scan():
+            # Skip auto-installed packages (dependencies)
+            if pkg.status != PackageStatus.MANUAL:
+                continue
+
+            # Skip protected system packages (but track them)
+            if is_protected(pkg.name):
+                skipped_protected.append(pkg.name)
+                continue
+
+            packages[pkg.name] = PackageEntry(
+                source=source_name,  # type: ignore[arg-type]
+                status="keep",
+            )
+
+    return packages, skipped_protected
+
+
+def create_manifest(packages: dict[str, PackageEntry]) -> Manifest:
+    """Create a new manifest with the given packages.
+
+    Args:
+        packages: Dictionary of packages to include.
+
+    Returns:
+        New Manifest object.
+    """
+    now = datetime.now(UTC)
+
+    return Manifest(
+        meta=ManifestMeta(
+            created=now,
+            updated=now,
+        ),
+        system=SystemConfig(
+            name=socket.gethostname(),
+            base="pop-os-24.04",
+        ),
+        packages=PackageConfig(
+            keep=packages,
+            remove={},
+        ),
+    )

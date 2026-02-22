@@ -13,6 +13,7 @@ Public API:
 - create_session_workspace: Create ephemeral workspace for session
 - find_latest_decisions: Find decisions from most recent session
 - import_decisions: Import and validate decisions.toml
+- record_advisor_apply_to_history: Record advisor apply decisions to history
 """
 
 from popctl.advisor.config import (
@@ -33,6 +34,7 @@ from popctl.advisor.exchange import (
     apply_decisions_to_manifest,
     import_decisions,
 )
+from popctl.advisor.history import record_advisor_apply_to_history
 from popctl.advisor.prompts import (
     CATEGORIES,
     build_session_claude_md,
@@ -63,5 +65,6 @@ __all__ = [
     "find_latest_decisions",
     "import_decisions",
     "load_advisor_config",
+    "record_advisor_apply_to_history",
     "save_advisor_config",
 ]
