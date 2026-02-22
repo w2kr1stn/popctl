@@ -11,6 +11,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from popctl.core.baseline import is_protected
+from popctl.models.manifest import PackageSourceType
 from popctl.models.package import PackageStatus
 
 if TYPE_CHECKING:
@@ -131,7 +132,7 @@ def _entry_to_dict(entry: DiffEntry) -> dict[str, str]:
 def compute_diff(
     manifest: Manifest,
     scanners: list[Scanner],
-    source_filter: str | None = None,
+    source_filter: PackageSourceType | None = None,
 ) -> DiffResult:
     """Compare manifest against current system state.
 
@@ -175,8 +176,8 @@ def compute_diff(
             installed[pkg.name] = (source_name, pkg.version, pkg.description)
 
     # Get packages from manifest
-    keep_packages = manifest.get_keep_packages(source_filter)  # type: ignore[arg-type]
-    remove_packages = manifest.get_remove_packages(source_filter)  # type: ignore[arg-type]
+    keep_packages = manifest.get_keep_packages(source_filter)
+    remove_packages = manifest.get_remove_packages(source_filter)
 
     # Compute NEW: installed but not in manifest
     new_entries: list[DiffEntry] = []

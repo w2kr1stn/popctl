@@ -9,15 +9,12 @@ from typing import Annotated
 import typer
 from rich.table import Table
 
-from popctl.cli.manifest import require_manifest
-from popctl.cli.types import SourceChoice, get_scanners
+from popctl.cli.types import SourceChoice, get_checked_scanners, require_manifest
 from popctl.core.diff import DiffResult, DiffType, compute_diff
-from popctl.scanners.base import Scanner
 from popctl.utils.formatting import (
     console,
     print_error,
     print_success,
-    print_warning,
 )
 
 app = typer.Typer(
@@ -35,7 +32,6 @@ _DIFF_DISPLAY: dict[DiffType, tuple[str, str, str]] = {
 
 @app.callback(invoke_without_command=True)
 def diff_packages(
-    ctx: typer.Context,
     source: Annotated[
         SourceChoice,
         typer.Option(
@@ -78,29 +74,14 @@ def diff_packages(
         popctl diff --source apt       # Filter to APT packages
         popctl diff --json             # JSON output for scripting
     """
-    # Skip if a subcommand is being invoked
-    if ctx.invoked_subcommand is not None:
-        return
-
     # Load manifest (exits with helpful message if not found)
     manifest = require_manifest()
 
     # Get scanners
-    scanners = get_scanners(source)
-    available_scanners: list[Scanner] = []
-
-    for scanner in scanners:
-        if scanner.is_available():
-            available_scanners.append(scanner)
-        elif not json_output:
-            print_warning(f"{scanner.source.value.upper()} package manager is not available.")
-
-    if not available_scanners:
-        print_error("No package managers are available on this system.")
-        raise typer.Exit(code=1)
+    available_scanners = get_checked_scanners(source, silent=json_output)
 
     # Compute diff
-    source_filter = source.value if source != SourceChoice.ALL else None
+    source_filter = source.to_source_filter()
     try:
         result = compute_diff(manifest, available_scanners, source_filter)
     except RuntimeError as e:

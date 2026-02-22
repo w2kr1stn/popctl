@@ -4,6 +4,8 @@ This module provides the AgentRunner class for executing AI agents
 (Claude Code or Gemini CLI) in headless or interactive session mode.
 """
 
+import logging
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -11,6 +13,10 @@ from pathlib import Path
 
 from popctl.advisor.config import AdvisorConfig
 from popctl.advisor.prompts import INITIAL_PROMPT
+from popctl.core.paths import ensure_dir, get_state_dir
+from popctl.utils.shell import run_command, run_interactive
+
+MANUAL_MODE_SENTINEL: str = "manual_mode"
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,8 +64,6 @@ class AgentRunner:
         Returns:
             AgentResult with path to decisions.toml if successful.
         """
-        from popctl.utils.shell import run_command
-
         command = self._build_headless_command(workspace_dir)
 
         try:
@@ -140,21 +144,12 @@ class AgentRunner:
 
         Returns None if the CLI tool is not available.
         """
-        import shutil
-
-        from popctl.utils.shell import run_interactive
-
         provider = self.config.provider
-        initial_prompt = INITIAL_PROMPT
 
         if provider == "claude" and shutil.which("claude") is not None:
-            cmd = ["claude", initial_prompt]
-            if self.config.model:
-                cmd.extend(["--model", self.config.effective_model])
+            cmd = ["claude", INITIAL_PROMPT, *self._model_flags()]
         elif provider == "gemini" and shutil.which("gemini") is not None:
-            cmd = ["gemini", "--prompt", initial_prompt]
-            if self.config.model:
-                cmd.extend(["--model", self.config.effective_model])
+            cmd = ["gemini", "--prompt", INITIAL_PROMPT, *self._model_flags()]
         else:
             return None
 
@@ -176,7 +171,6 @@ class AgentRunner:
 
     def _manual_instructions(self, workspace_dir: Path) -> AgentResult:
         """Return manual instructions when no automated launch is possible."""
-        initial_prompt = INITIAL_PROMPT
         provider = self.config.provider
 
         return AgentResult(
@@ -186,14 +180,20 @@ class AgentRunner:
                 f"\n"
                 f"To start manually:\n"
                 f"  cd {workspace_dir}\n"
-                f'  {provider} "{initial_prompt}"\n'
+                f'  {provider} "{INITIAL_PROMPT}"\n'
                 f"\n"
                 f"After classification:\n"
                 f"  popctl advisor apply\n"
             ),
-            error="manual_mode",
+            error=MANUAL_MODE_SENTINEL,
             workspace_path=workspace_dir,
         )
+
+    def _model_flags(self) -> list[str]:
+        """Return --model flags if a model is explicitly configured."""
+        if self.config.model:
+            return ["--model", self.config.effective_model]
+        return []
 
     def _persist_memory(self, workspace_memory: Path) -> None:
         """Copy memory.md from workspace to persistent XDG state location.
@@ -201,11 +201,6 @@ class AgentRunner:
         Args:
             workspace_memory: Path to memory.md in the session workspace.
         """
-        import logging
-        import shutil
-
-        from popctl.core.paths import ensure_dir, get_state_dir
-
         logger = logging.getLogger(__name__)
         try:
             advisor_dir = ensure_dir(get_state_dir() / "advisor", "advisor memory")
@@ -225,15 +220,15 @@ class AgentRunner:
             List of command arguments for subprocess execution.
         """
         provider = self.config.provider
-        initial_prompt = INITIAL_PROMPT
 
         if provider == "claude":
-            cmd = ["claude", "-p", initial_prompt, "--output-format", "json"]
-            if self.config.model:
-                cmd.extend(["--model", self.config.effective_model])
-            return cmd
+            return [
+                "claude",
+                "-p",
+                INITIAL_PROMPT,
+                "--output-format",
+                "json",
+                *self._model_flags(),
+            ]
         # gemini
-        cmd = ["gemini", "--prompt", initial_prompt]
-        if self.config.model:
-            cmd.extend(["--model", self.config.effective_model])
-        return cmd
+        return ["gemini", "--prompt", INITIAL_PROMPT, *self._model_flags()]

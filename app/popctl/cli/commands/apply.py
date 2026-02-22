@@ -14,17 +14,15 @@ from popctl.cli.display import (
     print_actions_summary,
     print_results_summary,
 )
-from popctl.cli.types import SourceChoice, get_scanners
+from popctl.cli.types import SourceChoice, get_checked_scanners, require_manifest
 from popctl.core.actions import diff_to_actions
 from popctl.core.diff import compute_diff
 from popctl.core.executor import execute_actions, get_available_operators, record_actions_to_history
-from popctl.scanners.base import Scanner
 from popctl.utils.formatting import (
     console,
     print_error,
     print_info,
     print_success,
-    print_warning,
 )
 
 app = typer.Typer(
@@ -35,7 +33,6 @@ app = typer.Typer(
 
 @app.callback(invoke_without_command=True)
 def apply_manifest(
-    ctx: typer.Context,
     yes: Annotated[
         bool,
         typer.Option(
@@ -90,31 +87,14 @@ def apply_manifest(
         popctl apply --source apt       # Only APT packages
         popctl apply --purge            # Remove APT packages with configs
     """
-    # Skip if a subcommand is being invoked
-    if ctx.invoked_subcommand is not None:
-        return
-
     # Load manifest (exits with helpful message if not found)
-    from popctl.cli.manifest import require_manifest
-
     manifest = require_manifest()
 
     # Get scanners and check availability
-    scanners = get_scanners(source)
-    available_scanners: list[Scanner] = []
-
-    for scanner in scanners:
-        if scanner.is_available():
-            available_scanners.append(scanner)
-        else:
-            print_warning(f"{scanner.source.value.upper()} package manager is not available.")
-
-    if not available_scanners:
-        print_error("No package managers are available on this system.")
-        raise typer.Exit(code=1)
+    available_scanners = get_checked_scanners(source)
 
     # Compute diff
-    source_filter = source.value if source != SourceChoice.ALL else None
+    source_filter = source.to_source_filter()
     try:
         diff_result = compute_diff(manifest, available_scanners, source_filter)
     except RuntimeError as e:
@@ -145,7 +125,7 @@ def apply_manifest(
         raise typer.Exit(code=0)
 
     # Get available operators (filters out unavailable package managers)
-    available_operators = get_available_operators(source)
+    available_operators = get_available_operators(source.to_package_source())
 
     # Execute actions
     console.print("\n[bold]Executing actions...[/bold]\n")

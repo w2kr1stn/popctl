@@ -132,7 +132,7 @@ def _compute_diff(source: SourceChoice) -> DiffResult:
 
     available_scanners = get_checked_scanners(source)
 
-    source_filter = source.value if source != SourceChoice.ALL else None
+    source_filter = source.to_source_filter()
     try:
         return compute_diff(manifest, available_scanners, source_filter)
     except RuntimeError as e:
