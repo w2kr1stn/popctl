@@ -986,7 +986,7 @@ class TestConfigOrphanEntry:
 
         entry = ConfigOrphanEntry(
             path="~/.config/vlc",
-            config_type="directory",
+            path_type="directory",
             size_bytes=4096,
             mtime="2024-01-15T10:00:00Z",
             orphan_reason="no_package_match",
@@ -994,7 +994,7 @@ class TestConfigOrphanEntry:
         )
 
         assert entry.path == "~/.config/vlc"
-        assert entry.config_type == "directory"
+        assert entry.path_type == "directory"
         assert entry.size_bytes == 4096
         assert entry.mtime == "2024-01-15T10:00:00Z"
         assert entry.orphan_reason == "no_package_match"
@@ -1006,7 +1006,7 @@ class TestConfigOrphanEntry:
 
         entry = ConfigOrphanEntry(
             path="~/.config/vlc",
-            config_type="directory",
+            path_type="directory",
             orphan_reason="no_package_match",
             confidence=0.70,
         )
@@ -1021,7 +1021,7 @@ class TestConfigOrphanEntry:
 
         entry = ConfigOrphanEntry(
             path="~/.config/vlc",
-            config_type="directory",
+            path_type="directory",
             orphan_reason="no_package_match",
             confidence=0.70,
         )
@@ -1035,7 +1035,7 @@ class TestConfigOrphanEntry:
 
         entry = ConfigOrphanEntry(
             path="~/.config/vlc",
-            config_type="directory",
+            path_type="directory",
             size_bytes=4096,
             mtime="2024-01-15T10:00:00Z",
             orphan_reason="app_not_installed",
@@ -1045,7 +1045,7 @@ class TestConfigOrphanEntry:
         data = entry.model_dump()
 
         assert data["path"] == "~/.config/vlc"
-        assert data["config_type"] == "directory"
+        assert data["path_type"] == "directory"
         assert data["size_bytes"] == 4096
         assert data["mtime"] == "2024-01-15T10:00:00Z"
         assert data["orphan_reason"] == "app_not_installed"
@@ -1075,7 +1075,7 @@ class TestScanExportConfigOrphans:
         """ScanExport accepts config orphan entries."""
         orphan = ConfigOrphanEntry(
             path="~/.config/vlc",
-            config_type="directory",
+            path_type="directory",
             orphan_reason="no_package_match",
             confidence=0.70,
         )
@@ -1104,7 +1104,7 @@ class TestScanExportWithConfigs:
         """ScanExport includes config_orphans when provided."""
         orphan = ConfigOrphanEntry(
             path="~/.config/vlc",
-            config_type="directory",
+            path_type="directory",
             orphan_reason="app_not_installed",
             confidence=0.70,
         )

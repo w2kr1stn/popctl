@@ -3,8 +3,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from popctl.configs.models import ConfigOrphanReason, ConfigStatus, ConfigType
 from popctl.configs.scanner import ConfigScanner
+from popctl.domain.models import OrphanReason, OrphanStatus, PathType
 from popctl.utils.shell import CommandResult
 
 
@@ -128,9 +128,9 @@ class TestScanFindsOrphans:
             results = list(scanner.scan())
 
         assert len(results) == 1
-        assert results[0].status == ConfigStatus.ORPHAN
+        assert results[0].status == OrphanStatus.ORPHAN
         assert results[0].path == str(orphan_dir)
-        assert results[0].config_type == ConfigType.DIRECTORY
+        assert results[0].path_type == PathType.DIRECTORY
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
     @patch("popctl.configs.scanner.is_protected", return_value=False)
@@ -153,7 +153,7 @@ class TestScanFindsOrphans:
 
         assert len(results) == 1
         result = results[0]
-        assert result.orphan_reason == ConfigOrphanReason.NO_PACKAGE_MATCH
+        assert result.orphan_reason == OrphanReason.NO_PACKAGE_MATCH
         assert result.confidence > 0.0
         assert result.mtime is not None
         assert result.size_bytes is not None
@@ -244,7 +244,7 @@ class TestScanConfidence:
 
         assert len(results) == 1
         assert results[0].confidence == 0.70
-        assert results[0].config_type == ConfigType.DIRECTORY
+        assert results[0].path_type == PathType.DIRECTORY
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
     @patch("popctl.configs.scanner.is_protected", return_value=False)
@@ -267,7 +267,7 @@ class TestScanConfidence:
         dotfile_results = [r for r in results if r.path == str(dotfile)]
         assert len(dotfile_results) == 1
         assert dotfile_results[0].confidence == 0.60
-        assert dotfile_results[0].config_type == ConfigType.FILE
+        assert dotfile_results[0].path_type == PathType.FILE
 
 
 class TestScanDotfiles:
@@ -431,9 +431,9 @@ class TestDeadSymlinkDetection:
             results = list(scanner.scan())
 
         assert len(results) == 1
-        assert results[0].config_type == ConfigType.FILE
-        assert results[0].orphan_reason == ConfigOrphanReason.DEAD_LINK
-        assert results[0].status == ConfigStatus.ORPHAN
+        assert results[0].path_type == PathType.FILE
+        assert results[0].orphan_reason == OrphanReason.DEAD_LINK
+        assert results[0].status == OrphanStatus.ORPHAN
 
     @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
     @patch("popctl.configs.scanner.is_protected", return_value=False)
@@ -453,7 +453,7 @@ class TestDeadSymlinkDetection:
 
         dotfile_results = [r for r in results if r.path == str(dead_link)]
         assert len(dotfile_results) == 1
-        assert dotfile_results[0].orphan_reason == ConfigOrphanReason.DEAD_LINK
+        assert dotfile_results[0].orphan_reason == OrphanReason.DEAD_LINK
 
 
 class TestCachesResetPerScan:
@@ -498,31 +498,31 @@ class TestCachesResetPerScan:
         assert first_count > 0
 
 
-class TestGetConfigType:
-    """Tests for config type detection."""
+class TestGetPathType:
+    """Tests for path type detection."""
 
-    def test_get_config_type_directory(self, tmp_path: Path) -> None:
+    def test_get_path_type_directory(self, tmp_path: Path) -> None:
         """Regular directories are classified as DIRECTORY."""
         d = tmp_path / "mydir"
         d.mkdir()
         scanner = ConfigScanner()
-        assert scanner._get_config_type(d) == ConfigType.DIRECTORY
+        assert scanner._get_path_type(d) == PathType.DIRECTORY
 
-    def test_get_config_type_file(self, tmp_path: Path) -> None:
+    def test_get_path_type_file(self, tmp_path: Path) -> None:
         """Regular files are classified as FILE."""
         f = tmp_path / "myfile.conf"
         f.write_text("content")
         scanner = ConfigScanner()
-        assert scanner._get_config_type(f) == ConfigType.FILE
+        assert scanner._get_path_type(f) == PathType.FILE
 
-    def test_get_config_type_symlink_is_file(self, tmp_path: Path) -> None:
+    def test_get_path_type_symlink_is_file(self, tmp_path: Path) -> None:
         """Symlinks (even to directories) are classified as FILE."""
         target = tmp_path / "target"
         target.mkdir()
         link = tmp_path / "link"
         link.symlink_to(target)
         scanner = ConfigScanner()
-        assert scanner._get_config_type(link) == ConfigType.FILE
+        assert scanner._get_path_type(link) == PathType.FILE
 
 
 class TestScanIntegration:

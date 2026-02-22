@@ -9,9 +9,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from popctl.cli.main import app
-from popctl.configs.models import ConfigOrphanReason, ConfigStatus, ConfigType, ScannedConfig
+from popctl.configs.models import ScannedConfig
 from popctl.configs.operator import ConfigActionResult
 from popctl.domain.manifest import DomainConfig, DomainEntry
+from popctl.domain.models import OrphanReason, OrphanStatus, PathType
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -19,18 +20,18 @@ runner = CliRunner()
 
 def _make_orphan(
     path: str,
-    config_type: ConfigType = ConfigType.DIRECTORY,
+    path_type: PathType = PathType.DIRECTORY,
     confidence: float = 0.70,
     size: int = 4096,
 ) -> ScannedConfig:
     """Create a test ScannedConfig with ORPHAN status."""
     return ScannedConfig(
         path=path,
-        config_type=config_type,
-        status=ConfigStatus.ORPHAN,
+        path_type=path_type,
+        status=OrphanStatus.ORPHAN,
         size_bytes=size,
         mtime="2024-01-15T10:00:00Z",
-        orphan_reason=ConfigOrphanReason.NO_PACKAGE_MATCH,
+        orphan_reason=OrphanReason.NO_PACKAGE_MATCH,
         confidence=confidence,
     )
 
@@ -39,8 +40,8 @@ def _make_owned(path: str) -> ScannedConfig:
     """Create a test ScannedConfig with OWNED status."""
     return ScannedConfig(
         path=path,
-        config_type=ConfigType.DIRECTORY,
-        status=ConfigStatus.OWNED,
+        path_type=PathType.DIRECTORY,
+        status=OrphanStatus.OWNED,
         size_bytes=1024,
         mtime="2024-01-15T10:00:00Z",
         orphan_reason=None,

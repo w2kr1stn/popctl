@@ -28,7 +28,7 @@ def sample_manifest() -> Manifest:
     """Create a sample manifest for testing."""
     now = datetime.now(UTC)
     return Manifest(
-        meta=ManifestMeta(version="1.0", created=now, updated=now),
+        meta=ManifestMeta(created=now, updated=now),
         system=SystemConfig(name="test-machine"),
         packages=PackageConfig(
             keep={
@@ -113,10 +113,10 @@ class TestSyncNoManifest:
             patch("popctl.cli.commands.sync.manifest_exists", return_value=False),
             patch("popctl.cli.commands.sync.get_available_scanners", return_value=[mock_scanner]),
             patch(
-                "popctl.cli.commands.init._collect_manual_packages",
+                "popctl.cli.commands.init.collect_manual_packages",
                 return_value=({"firefox": PackageEntry(source="apt")}, []),
             ),
-            patch("popctl.cli.commands.init._create_manifest", return_value=sample_manifest),
+            patch("popctl.cli.commands.init.create_manifest", return_value=sample_manifest),
             patch("popctl.core.paths.ensure_config_dir"),
             patch(
                 "popctl.cli.commands.sync.save_manifest", return_value=Path("/tmp/manifest.toml")
@@ -276,7 +276,7 @@ class TestSyncAdvisor:
             ),
             # Advisor internal: fail at config loading stage
             patch(
-                "popctl.cli.commands.advisor._load_or_create_config",
+                "popctl.cli.commands.advisor.load_or_create_config",
                 side_effect=RuntimeError("config error"),
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
@@ -633,9 +633,9 @@ class TestSyncFilesystem:
         self, sample_manifest: Manifest, diff_result_no_new: DiffResult
     ) -> None:
         """In dry-run mode, filesystem orphans are displayed but not deleted."""
+        from popctl.domain.models import OrphanStatus
         from popctl.filesystem.models import (
             OrphanReason,
-            PathStatus,
             PathType,
             ScannedPath,
         )
@@ -644,7 +644,7 @@ class TestSyncFilesystem:
             ScannedPath(
                 path="/home/test/.config/old-app",
                 path_type=PathType.DIRECTORY,
-                status=PathStatus.ORPHAN,
+                status=OrphanStatus.ORPHAN,
                 size_bytes=4096,
                 mtime=None,
                 parent_target="~/.config",
@@ -707,9 +707,9 @@ class TestSyncFilesystem:
         self, sample_manifest: Manifest, in_sync_result: DiffResult
     ) -> None:
         """Filesystem phases still run even when packages are in sync."""
+        from popctl.domain.models import OrphanStatus
         from popctl.filesystem.models import (
             OrphanReason,
-            PathStatus,
             PathType,
             ScannedPath,
         )
@@ -718,7 +718,7 @@ class TestSyncFilesystem:
             ScannedPath(
                 path="/home/test/.cache/stale-app",
                 path_type=PathType.DIRECTORY,
-                status=PathStatus.ORPHAN,
+                status=OrphanStatus.ORPHAN,
                 size_bytes=1024,
                 mtime=None,
                 parent_target="~/.cache",
@@ -798,21 +798,17 @@ class TestSyncConfigs:
         self, sample_manifest: Manifest, in_sync_result: DiffResult
     ) -> None:
         """Config phases run by default when no --no-configs flag is passed."""
-        from popctl.configs.models import (
-            ConfigOrphanReason,
-            ConfigStatus,
-            ConfigType,
-            ScannedConfig,
-        )
+        from popctl.configs.models import ScannedConfig
+        from popctl.domain.models import OrphanReason, OrphanStatus, PathType
 
         mock_orphans = [
             ScannedConfig(
                 path="/home/test/.config/old-editor",
-                config_type=ConfigType.DIRECTORY,
-                status=ConfigStatus.ORPHAN,
+                path_type=PathType.DIRECTORY,
+                status=OrphanStatus.ORPHAN,
                 size_bytes=2048,
                 mtime=None,
-                orphan_reason=ConfigOrphanReason.NO_PACKAGE_MATCH,
+                orphan_reason=OrphanReason.NO_PACKAGE_MATCH,
                 confidence=0.70,
             ),
         ]
@@ -884,21 +880,17 @@ class TestSyncConfigs:
         self, sample_manifest: Manifest, diff_result_no_new: DiffResult
     ) -> None:
         """--dry-run applies to config phases: shows orphans but does not delete."""
-        from popctl.configs.models import (
-            ConfigOrphanReason,
-            ConfigStatus,
-            ConfigType,
-            ScannedConfig,
-        )
+        from popctl.configs.models import ScannedConfig
+        from popctl.domain.models import OrphanReason, OrphanStatus, PathType
 
         mock_orphans = [
             ScannedConfig(
                 path="/home/test/.config/removed-app",
-                config_type=ConfigType.DIRECTORY,
-                status=ConfigStatus.ORPHAN,
+                path_type=PathType.DIRECTORY,
+                status=OrphanStatus.ORPHAN,
                 size_bytes=4096,
                 mtime=None,
-                orphan_reason=ConfigOrphanReason.NO_PACKAGE_MATCH,
+                orphan_reason=OrphanReason.NO_PACKAGE_MATCH,
                 confidence=0.70,
             ),
         ]
@@ -927,22 +919,18 @@ class TestSyncConfigs:
         self, sample_manifest: Manifest, in_sync_result: DiffResult
     ) -> None:
         """Config clean shows backup paths in output."""
-        from popctl.configs.models import (
-            ConfigOrphanReason,
-            ConfigStatus,
-            ConfigType,
-            ScannedConfig,
-        )
+        from popctl.configs.models import ScannedConfig
         from popctl.configs.operator import ConfigActionResult
+        from popctl.domain.models import OrphanReason, OrphanStatus, PathType
 
         mock_orphans = [
             ScannedConfig(
                 path="/home/test/.config/old-app",
-                config_type=ConfigType.DIRECTORY,
-                status=ConfigStatus.ORPHAN,
+                path_type=PathType.DIRECTORY,
+                status=OrphanStatus.ORPHAN,
                 size_bytes=4096,
                 mtime=None,
-                orphan_reason=ConfigOrphanReason.NO_PACKAGE_MATCH,
+                orphan_reason=OrphanReason.NO_PACKAGE_MATCH,
                 confidence=0.70,
             ),
         ]
@@ -1082,7 +1070,7 @@ class TestInvokeAdvisor:
         from popctl.cli.commands.sync import _invoke_advisor
 
         with patch(
-            "popctl.cli.commands.advisor._load_or_create_config",
+            "popctl.cli.commands.advisor.load_or_create_config",
             side_effect=RuntimeError("config error"),
         ):
             result = _invoke_advisor(auto=True, domain="packages")
@@ -1094,8 +1082,8 @@ class TestInvokeAdvisor:
         from popctl.cli.commands.sync import _invoke_advisor
 
         with (
-            patch("popctl.cli.commands.advisor._load_or_create_config", return_value=MagicMock()),
-            patch("popctl.cli.commands.advisor._scan_system", side_effect=SystemExit(1)),
+            patch("popctl.cli.commands.advisor.load_or_create_config", return_value=MagicMock()),
+            patch("popctl.cli.commands.advisor.scan_system", side_effect=SystemExit(1)),
         ):
             result = _invoke_advisor(auto=True, domain="packages")
 
@@ -1106,8 +1094,8 @@ class TestInvokeAdvisor:
         from popctl.cli.commands.sync import _invoke_advisor
 
         with (
-            patch("popctl.cli.commands.advisor._load_or_create_config", return_value=MagicMock()),
-            patch("popctl.cli.commands.advisor._scan_system", return_value=MagicMock()),
+            patch("popctl.cli.commands.advisor.load_or_create_config", return_value=MagicMock()),
+            patch("popctl.cli.commands.advisor.scan_system", return_value=MagicMock()),
             patch(
                 "popctl.advisor.paths.ensure_advisor_sessions_dir", side_effect=OSError("no space")
             ),
@@ -1124,8 +1112,8 @@ class TestInvokeAdvisor:
         mock_scan = MagicMock()
 
         with (
-            patch("popctl.cli.commands.advisor._load_or_create_config", return_value=mock_config),
-            patch("popctl.cli.commands.advisor._scan_system", return_value=mock_scan),
+            patch("popctl.cli.commands.advisor.load_or_create_config", return_value=mock_config),
+            patch("popctl.cli.commands.advisor.scan_system", return_value=mock_scan),
             patch(
                 "popctl.advisor.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")
             ),
@@ -1157,8 +1145,8 @@ class TestInvokeAdvisor:
         )
 
         with (
-            patch("popctl.cli.commands.advisor._load_or_create_config", return_value=MagicMock()),
-            patch("popctl.cli.commands.advisor._scan_system", return_value=MagicMock()),
+            patch("popctl.cli.commands.advisor.load_or_create_config", return_value=MagicMock()),
+            patch("popctl.cli.commands.advisor.scan_system", return_value=MagicMock()),
             patch(
                 "popctl.advisor.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")
             ),
@@ -1195,8 +1183,8 @@ class TestInvokeAdvisor:
         )
 
         with (
-            patch("popctl.cli.commands.advisor._load_or_create_config", return_value=MagicMock()),
-            patch("popctl.cli.commands.advisor._scan_system", return_value=MagicMock()),
+            patch("popctl.cli.commands.advisor.load_or_create_config", return_value=MagicMock()),
+            patch("popctl.cli.commands.advisor.scan_system", return_value=MagicMock()),
             patch(
                 "popctl.advisor.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")
             ),
@@ -1232,8 +1220,8 @@ class TestInvokeAdvisor:
         )
 
         with (
-            patch("popctl.cli.commands.advisor._load_or_create_config", return_value=MagicMock()),
-            patch("popctl.cli.commands.advisor._scan_system", return_value=MagicMock()),
+            patch("popctl.cli.commands.advisor.load_or_create_config", return_value=MagicMock()),
+            patch("popctl.cli.commands.advisor.scan_system", return_value=MagicMock()),
             patch(
                 "popctl.advisor.paths.ensure_advisor_sessions_dir", return_value=Path("/tmp/sess")
             ),
@@ -1358,7 +1346,7 @@ class TestConfigRunAdvisor:
         """Create a mock ScannedConfig."""
         orphan = MagicMock()
         orphan.path = path
-        orphan.config_type.value = "directory"
+        orphan.path_type.value = "directory"
         orphan.size_bytes = 4096
         orphan.mtime = None
         orphan.orphan_reason.value = "no_package_match"
