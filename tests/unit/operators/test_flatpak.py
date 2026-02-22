@@ -43,7 +43,7 @@ class TestFlatpakOperator:
         """install() returns success results on flatpak success."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
@@ -66,7 +66,7 @@ class TestFlatpakOperator:
         """install() installs packages one at a time."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
@@ -81,7 +81,7 @@ class TestFlatpakOperator:
         """install() returns failure results on flatpak failure."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(
                 stdout="", stderr="error: com.invalid.App not found", returncode=1
@@ -97,7 +97,7 @@ class TestFlatpakOperator:
         """install() in dry-run mode does not execute commands."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             results = dry_run_operator.install(["com.spotify.Client"])
 
@@ -119,7 +119,7 @@ class TestFlatpakOperator:
         """remove() returns success results on flatpak success."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
@@ -137,7 +137,7 @@ class TestFlatpakOperator:
         """remove() ignores purge flag (Flatpak has no purge)."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
@@ -153,7 +153,7 @@ class TestFlatpakOperator:
         """remove() returns failure results on flatpak failure."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(
                 stdout="", stderr="error: com.spotify.Client not installed", returncode=1
@@ -168,7 +168,7 @@ class TestFlatpakOperator:
         """remove() in dry-run mode does not execute commands."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             results = dry_run_operator.remove(["com.spotify.Client"])
 

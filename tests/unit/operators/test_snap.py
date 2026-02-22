@@ -43,7 +43,7 @@ class TestSnapOperator:
         """install() returns success results on snap success."""
         with (
             patch("popctl.operators.snap.command_exists", return_value=True),
-            patch("popctl.operators.snap.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
@@ -66,7 +66,7 @@ class TestSnapOperator:
         """install() returns failure results on snap failure."""
         with (
             patch("popctl.operators.snap.command_exists", return_value=True),
-            patch("popctl.operators.snap.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(
                 stdout="", stderr='error: snap "nonexistent" not found', returncode=1
@@ -82,7 +82,7 @@ class TestSnapOperator:
         """install() in dry-run mode does not execute commands."""
         with (
             patch("popctl.operators.snap.command_exists", return_value=True),
-            patch("popctl.operators.snap.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             results = dry_run_operator.install(["firefox"])
 
@@ -104,7 +104,7 @@ class TestSnapOperator:
         """remove() returns success results on snap success."""
         with (
             patch("popctl.operators.snap.command_exists", return_value=True),
-            patch("popctl.operators.snap.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
@@ -126,7 +126,7 @@ class TestSnapOperator:
         """remove() with purge=True uses --purge flag and ActionType.PURGE."""
         with (
             patch("popctl.operators.snap.command_exists", return_value=True),
-            patch("popctl.operators.snap.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
@@ -148,7 +148,7 @@ class TestSnapOperator:
         """remove() returns failure results on snap failure."""
         with (
             patch("popctl.operators.snap.command_exists", return_value=True),
-            patch("popctl.operators.snap.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(
                 stdout="", stderr='error: snap "firefox" is not installed', returncode=1
@@ -163,7 +163,7 @@ class TestSnapOperator:
         """remove() in dry-run mode does not execute commands."""
         with (
             patch("popctl.operators.snap.command_exists", return_value=True),
-            patch("popctl.operators.snap.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             results = dry_run_operator.remove(["firefox"])
 

@@ -607,7 +607,7 @@ class TestSyncFilesystem:
         mock_scanner.scan.side_effect = RuntimeError("scanner broken")
 
         with patch(
-            "popctl.filesystem.scanner.FilesystemScanner",
+            "popctl.cli.commands.sync.FilesystemScanner",
             return_value=mock_scanner,
         ):
             result = _domain_scan("filesystem")
@@ -622,7 +622,7 @@ class TestSyncFilesystem:
         mock_scanner.scan.side_effect = OSError("disk error")
 
         with patch(
-            "popctl.filesystem.scanner.FilesystemScanner",
+            "popctl.cli.commands.sync.FilesystemScanner",
             return_value=mock_scanner,
         ):
             result = _domain_scan("filesystem")
@@ -642,7 +642,7 @@ class TestSyncFilesystem:
 
         mock_orphans = [
             ScannedPath(
-                path="/home/test/.config/old-app",
+                path="/tmp/old-app",
                 path_type=PathType.DIRECTORY,
                 status=OrphanStatus.ORPHAN,
                 size_bytes=4096,
@@ -885,7 +885,7 @@ class TestSyncConfigs:
 
         mock_orphans = [
             ScannedConfig(
-                path="/home/test/.config/removed-app",
+                path="/tmp/rm-app",
                 path_type=PathType.DIRECTORY,
                 status=OrphanStatus.ORPHAN,
                 size_bytes=4096,
@@ -912,7 +912,7 @@ class TestSyncConfigs:
         assert result.exit_code == 0
         mock_cfg_clean.assert_not_called()
         # Should see the orphan path in display
-        assert "removed-app" in result.stdout
+        assert "rm-app" in result.stdout
         assert "No config changes made" in result.stdout
 
     def test_sync_configs_with_backup(
@@ -963,6 +963,7 @@ class TestSyncConfigs:
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
             patch("popctl.core.manifest.load_manifest", return_value=manifest_with_configs),
+            patch("popctl.cli.commands.sync.load_manifest", return_value=manifest_with_configs),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
@@ -974,9 +975,9 @@ class TestSyncConfigs:
                 "popctl.configs.operator.ConfigOperator.delete",
                 return_value=mock_action_results,
             ),
-            patch("popctl.domain.history.record_domain_deletions"),
+            patch("popctl.cli.commands.sync.record_domain_deletions"),
         ):
-            result = runner.invoke(app, ["sync", "--yes", "--no-filesystem"])
+            result = runner.invoke(app, ["sync", "--yes", "--no-advisor", "--no-filesystem"])
 
         assert result.exit_code == 0
         assert "config-backups" in result.stdout
@@ -990,7 +991,7 @@ class TestSyncConfigs:
         mock_scanner.scan.side_effect = RuntimeError("scanner broken")
 
         with patch(
-            "popctl.configs.scanner.ConfigScanner",
+            "popctl.cli.commands.sync.ConfigScanner",
             return_value=mock_scanner,
         ):
             result = _domain_scan("configs")
@@ -1005,7 +1006,7 @@ class TestSyncConfigs:
         mock_scanner.scan.side_effect = OSError("disk error")
 
         with patch(
-            "popctl.configs.scanner.ConfigScanner",
+            "popctl.cli.commands.sync.ConfigScanner",
             return_value=mock_scanner,
         ):
             result = _domain_scan("configs")
@@ -1197,7 +1198,7 @@ class TestInvokeAdvisor:
                 "popctl.advisor.runner.AgentRunner.run_headless",
                 return_value=mock_agent_result,
             ),
-            patch("popctl.advisor.import_decisions", return_value=expected_decisions),
+            patch("popctl.cli.commands.sync.import_decisions", return_value=expected_decisions),
         ):
             mock_mp.return_value = MagicMock(exists=lambda: False)
             mock_mem.return_value = MagicMock(exists=lambda: False)
