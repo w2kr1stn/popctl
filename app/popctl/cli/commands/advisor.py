@@ -10,8 +10,6 @@ Commands:
 - apply: Apply classification decisions to manifest
 """
 
-import json
-import logging
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
@@ -23,7 +21,6 @@ from rich.table import Table
 from popctl.advisor import (
     AdvisorConfig,
     AgentRunner,
-    DecisionsResult,
     create_session_workspace,
     find_latest_decisions,
     import_decisions,
@@ -34,9 +31,10 @@ from popctl.advisor.config import (
     save_advisor_config,
 )
 from popctl.advisor.exchange import EXCHANGE_DIR, apply_decisions_to_manifest
+from popctl.advisor.history import record_advisor_apply_to_history
 from popctl.advisor.runner import MANUAL_MODE_SENTINEL
+from popctl.advisor.scanning import scan_system
 from popctl.advisor.workspace import ensure_advisor_sessions_dir
-from popctl.cli.types import get_available_scanners
 from popctl.core.manifest import (
     ManifestError,
     ManifestNotFoundError,
@@ -44,18 +42,6 @@ from popctl.core.manifest import (
     save_manifest,
 )
 from popctl.core.paths import get_manifest_path, get_state_dir
-from popctl.core.state import record_action
-from popctl.models.history import (
-    HistoryActionType,
-    HistoryItem,
-    create_history_entry,
-)
-from popctl.models.package import (
-    PACKAGE_SOURCE_KEYS,
-    PackageSource,
-    PackageStatus,
-    ScannedPackage,
-)
 from popctl.models.scan_result import ScanResult
 from popctl.utils.formatting import (
     console,
@@ -113,114 +99,6 @@ def load_or_create_config(
         config = config.model_copy(update=updates)
 
     return config
-
-
-def scan_system(input_file: Path | None = None) -> ScanResult:
-    """Scan system for packages or load from file.
-
-    Args:
-        input_file: Optional path to existing scan.json file.
-
-    Returns:
-        ScanResult with package data.
-
-    Raises:
-        typer.Exit: If scanning fails or input file is invalid.
-    """
-    if input_file is not None:
-        # Load from existing scan file
-        if not input_file.exists():
-            print_error(f"Input file not found: {input_file}")
-            raise typer.Exit(code=1)
-
-        try:
-            data = json.loads(input_file.read_text())
-            packages: list[ScannedPackage] = []
-            sources_set: set[str] = set()
-
-            for pkg_data in data.get("packages", []):
-                pkg = ScannedPackage(
-                    name=pkg_data["name"],
-                    source=PackageSource(pkg_data["source"]),
-                    version=pkg_data["version"],
-                    status=PackageStatus(pkg_data["status"]),
-                    description=pkg_data.get("description"),
-                    size_bytes=pkg_data.get("size_bytes"),
-                )
-                packages.append(pkg)
-                sources_set.add(pkg_data["source"])
-
-            return ScanResult.create(packages, list(sources_set))
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            print_error(f"Invalid scan file format: {e}")
-            raise typer.Exit(code=1) from e
-
-    # Perform live scan using all available scanners
-    scanners = get_available_scanners()
-    if not scanners:
-        print_error("No package managers are available on this system.")
-        raise typer.Exit(code=1)
-
-    packages: list[ScannedPackage] = []
-    sources: list[str] = []
-
-    for scanner in scanners:
-        sources.append(scanner.source.value)
-        try:
-            for pkg in scanner.scan():
-                packages.append(pkg)
-        except RuntimeError as e:
-            print_error(f"Scan failed: {e}")
-            raise typer.Exit(code=1) from e
-
-    print_info(f"Scanned {len(packages)} packages from {len(sources)} source(s).")
-    return ScanResult.create(packages, sources)
-
-
-def record_advisor_apply_to_history(
-    decisions: DecisionsResult,
-) -> None:
-    """Record advisor apply decisions to history.
-
-    Creates a single history entry for all classifications applied.
-    Errors during recording are logged but do not interrupt the flow.
-
-    Args:
-        decisions: The decisions result that was applied.
-    """
-    _logger = logging.getLogger(__name__)
-
-    try:
-        # Collect all items from decisions
-        items: list[HistoryItem] = []
-
-        for source_str in PACKAGE_SOURCE_KEYS:
-            source_decisions = decisions.packages.get(source_str)  # type: ignore[arg-type]
-            if source_decisions is None:
-                continue
-
-            pkg_source = PackageSource(source_str)
-
-            # Add keep decisions
-            for decision in source_decisions.keep:
-                items.append(HistoryItem(name=decision.name, source=pkg_source))
-
-            # Add remove decisions
-            for decision in source_decisions.remove:
-                items.append(HistoryItem(name=decision.name, source=pkg_source))
-
-        if items:
-            entry = create_history_entry(
-                action_type=HistoryActionType.ADVISOR_APPLY,
-                items=items,
-                metadata={"command": "popctl advisor apply"},
-            )
-            record_action(entry)
-            _logger.debug("Recorded %d advisor apply item(s) to history", len(items))
-
-    except (OSError, RuntimeError) as e:
-        _logger.warning("Failed to record advisor apply to history: %s", str(e))
-        print_warning(f"Could not record classifications to history: {e}")
 
 
 def _create_workspace(scan_result: ScanResult) -> Path:
@@ -287,7 +165,12 @@ def classify(
     config = load_or_create_config(provider, model)
     print_info(f"Using provider: {config.provider}, model: {config.effective_model}")
 
-    scan_result = scan_system(input_file)
+    try:
+        scan_result = scan_system(input_file)
+    except RuntimeError as e:
+        print_error(str(e))
+        raise typer.Exit(code=1) from None
+
     workspace_dir = _create_workspace(scan_result)
     print_info(f"Workspace: {workspace_dir}")
 
@@ -355,7 +238,12 @@ def session(
     config = load_or_create_config(provider, model)
     print_info(f"Using provider: {config.provider}, model: {config.effective_model}")
 
-    scan_result = scan_system(input_file)
+    try:
+        scan_result = scan_system(input_file)
+    except RuntimeError as e:
+        print_error(str(e))
+        raise typer.Exit(code=1) from None
+
     workspace_dir = _create_workspace(scan_result)
     print_info(f"Session workspace: {workspace_dir}")
 

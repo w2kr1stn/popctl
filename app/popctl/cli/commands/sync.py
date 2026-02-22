@@ -21,13 +21,10 @@ from popctl.advisor.exchange import (
     OrphanEntry,
     apply_decisions_to_manifest,
 )
+from popctl.advisor.history import record_advisor_apply_to_history
+from popctl.advisor.scanning import scan_system
 from popctl.advisor.workspace import create_session_workspace, ensure_advisor_sessions_dir
-from popctl.cli.commands.advisor import (
-    load_or_create_config,
-    record_advisor_apply_to_history,
-    scan_system,
-)
-from popctl.cli.commands.init import collect_manual_packages, create_manifest
+from popctl.cli.commands.advisor import load_or_create_config
 from popctl.cli.display import (
     create_actions_table,
     create_results_table,
@@ -46,7 +43,14 @@ from popctl.configs.scanner import ConfigScanner
 from popctl.core.actions import diff_to_actions
 from popctl.core.diff import DiffResult, compute_diff
 from popctl.core.executor import execute_actions, get_available_operators, record_actions_to_history
-from popctl.core.manifest import ManifestError, load_manifest, manifest_exists, save_manifest
+from popctl.core.manifest import (
+    ManifestError,
+    collect_manual_packages,
+    create_manifest,
+    load_manifest,
+    manifest_exists,
+    save_manifest,
+)
 from popctl.core.paths import ensure_config_dir, get_manifest_path, get_state_dir
 from popctl.domain.history import record_domain_deletions
 from popctl.domain.manifest import DomainConfig, DomainEntry
@@ -166,7 +170,7 @@ def _invoke_advisor(
 
     try:
         scan_result = scan_system()
-    except SystemExit:
+    except RuntimeError:
         print_warning(f"System scan for {domain} advisor failed. Continuing without advisor.")
         return None
 
