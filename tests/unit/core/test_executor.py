@@ -5,10 +5,7 @@ Tests operator factory, action execution dispatch, and history recording.
 
 from unittest.mock import MagicMock, patch
 
-from popctl.cli.types import SourceChoice
 from popctl.core.executor import (
-    ACTION_TO_HISTORY,
-    _get_operators,
     execute_actions,
     get_available_operators,
     record_actions_to_history,
@@ -48,49 +45,8 @@ def _make_result(
     return ActionResult(
         action=action,
         success=success,
-        message="ok" if success else None,
-        error=None if success else "failed",
+        detail="ok" if success else "failed",
     )
-
-
-# ---------------------------------------------------------------------------
-# _get_operators
-# ---------------------------------------------------------------------------
-
-
-class TestGetOperators:
-    """Tests for the _get_operators factory function."""
-
-    def test_get_operators_apt_only(self) -> None:
-        """SourceChoice.APT returns only AptOperator."""
-        ops = _get_operators(SourceChoice.APT)
-        assert len(ops) == 1
-        assert isinstance(ops[0], AptOperator)
-
-    def test_get_operators_flatpak_only(self) -> None:
-        """SourceChoice.FLATPAK returns only FlatpakOperator."""
-        ops = _get_operators(SourceChoice.FLATPAK)
-        assert len(ops) == 1
-        assert isinstance(ops[0], FlatpakOperator)
-
-    def test_get_operators_snap_only(self) -> None:
-        """SourceChoice.SNAP returns only SnapOperator."""
-        ops = _get_operators(SourceChoice.SNAP)
-        assert len(ops) == 1
-        assert isinstance(ops[0], SnapOperator)
-
-    def test_get_operators_all(self) -> None:
-        """SourceChoice.ALL returns AptOperator, FlatpakOperator, and SnapOperator."""
-        ops = _get_operators(SourceChoice.ALL)
-        assert len(ops) == 3
-        types = {type(op) for op in ops}
-        assert types == {AptOperator, FlatpakOperator, SnapOperator}
-
-    def test_get_operators_dry_run_flag(self) -> None:
-        """dry_run=True is forwarded to every operator."""
-        ops = _get_operators(SourceChoice.ALL, dry_run=True)
-        for op in ops:
-            assert op.dry_run is True
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +64,7 @@ class TestGetAvailableOperators:
             patch.object(FlatpakOperator, "is_available", return_value=False),
             patch.object(SnapOperator, "is_available", return_value=False),
         ):
-            ops = get_available_operators(SourceChoice.ALL)
+            ops = get_available_operators()
 
         assert len(ops) == 1
         assert isinstance(ops[0], AptOperator)
@@ -159,26 +115,6 @@ class TestExecuteActions:
 
         assert results == []
         op.execute.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# ACTION_TO_HISTORY constant
-# ---------------------------------------------------------------------------
-
-
-class TestActionToHistory:
-    """Tests for the ACTION_TO_HISTORY mapping constant."""
-
-    def test_mapping_completeness(self) -> None:
-        """All ActionType values are mapped."""
-        for at in ActionType:
-            assert at in ACTION_TO_HISTORY
-
-    def test_mapping_values(self) -> None:
-        """Mapping values are correct."""
-        assert ACTION_TO_HISTORY[ActionType.INSTALL] == HistoryActionType.INSTALL
-        assert ACTION_TO_HISTORY[ActionType.REMOVE] == HistoryActionType.REMOVE
-        assert ACTION_TO_HISTORY[ActionType.PURGE] == HistoryActionType.PURGE
 
 
 # ---------------------------------------------------------------------------

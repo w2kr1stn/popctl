@@ -55,7 +55,6 @@ def _load_from_file(input_file: Path) -> ScanResult:
     try:
         data = json.loads(input_file.read_text())
         packages: list[ScannedPackage] = []
-        sources_set: set[str] = set()
 
         for pkg_data in data.get("packages", []):
             pkg = ScannedPackage(
@@ -67,9 +66,8 @@ def _load_from_file(input_file: Path) -> ScanResult:
                 size_bytes=pkg_data.get("size_bytes"),
             )
             packages.append(pkg)
-            sources_set.add(pkg_data["source"])
 
-        return ScanResult.create(packages, list(sources_set))
+        return ScanResult(packages=tuple(packages))
     except (json.JSONDecodeError, KeyError, ValueError) as e:
         msg = f"Invalid scan file format: {e}"
         raise RuntimeError(msg) from e
@@ -102,4 +100,4 @@ def _scan_live() -> ScanResult:
             raise RuntimeError(msg) from e
 
     print_info(f"Scanned {len(packages)} packages from {len(sources)} source(s).")
-    return ScanResult.create(packages, sources)
+    return ScanResult(packages=tuple(packages))

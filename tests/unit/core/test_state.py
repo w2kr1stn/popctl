@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 from popctl.core.state import (
+    HISTORY_FILENAME,
     _get_inverse_action_type,
-    _history_path,
     get_history,
     get_last_reversible,
     mark_entry_reversed,
@@ -25,9 +25,14 @@ from popctl.models.history import (
 from popctl.models.package import PackageSource
 
 
-def test_history_path_with_custom_dir(tmp_path: Path) -> None:
-    """_history_path returns correct path."""
-    assert _history_path(tmp_path) == tmp_path / "history.jsonl"
+def _history_path(state_dir: Path) -> Path:
+    """Test helper: compute the history file path for a given state dir."""
+    return state_dir / HISTORY_FILENAME
+
+
+def test_history_filename_constant() -> None:
+    """HISTORY_FILENAME is the expected value."""
+    assert HISTORY_FILENAME == "history.jsonl"
 
 
 class TestRecordAction:
@@ -434,7 +439,7 @@ class TestMarkEntryReversed:
 
         assert len(reversal.items) == 2
         assert reversal.items[0].name == "vim"
-        assert reversal.items[0].version == "9.0"
+        assert reversal.items[0].source == PackageSource.APT
         assert reversal.items[1].name == "htop"
 
 
@@ -456,7 +461,15 @@ class TestInverseActionType:
         result = _get_inverse_action_type(HistoryActionType.PURGE)
         assert result == HistoryActionType.INSTALL
 
-    def test_advisor_apply_inverse_is_advisor_apply(self) -> None:
-        """ADVISOR_APPLY inverse is ADVISOR_APPLY."""
-        result = _get_inverse_action_type(HistoryActionType.ADVISOR_APPLY)
-        assert result == HistoryActionType.ADVISOR_APPLY
+    @pytest.mark.parametrize(
+        "action_type",
+        [
+            HistoryActionType.ADVISOR_APPLY,
+            HistoryActionType.FS_DELETE,
+            HistoryActionType.CONFIG_DELETE,
+        ],
+    )
+    def test_non_reversible_types_raise_value_error(self, action_type: HistoryActionType) -> None:
+        """Non-reversible action types raise ValueError."""
+        with pytest.raises(ValueError, match="Cannot invert non-reversible action type"):
+            _get_inverse_action_type(action_type)

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from popctl.advisor import AdvisorConfig, AgentResult
+from popctl.advisor import AdvisorConfig, AgentResult, AgentRunner
 from popctl.cli.main import app
 from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
 from popctl.models.scan_result import ScanResult
@@ -40,7 +40,7 @@ def sample_packages() -> list[ScannedPackage]:
 @pytest.fixture
 def sample_scan_result(sample_packages: list[ScannedPackage]) -> ScanResult:
     """Create a sample scan result for testing."""
-    return ScanResult.create(sample_packages, ["apt"])
+    return ScanResult(packages=tuple(sample_packages))
 
 
 @pytest.fixture
@@ -75,7 +75,6 @@ class TestAdvisorCommandHelp:
         """Advisor session subcommand shows help."""
         result = runner.invoke(app, ["advisor", "session", "--help"])
         assert result.exit_code == 0
-        assert "--host" in result.stdout
         assert "--provider" in result.stdout
 
 
@@ -100,7 +99,6 @@ class TestAdvisorClassify:
         )
 
         with (
-            patch("popctl.cli.commands.advisor.is_running_in_container", return_value=False),
             patch("popctl.cli.commands.advisor.load_advisor_config", return_value=mock_config),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
@@ -118,7 +116,7 @@ class TestAdvisorClassify:
                 return_value=workspace_dir,
             ),
             patch.object(
-                __import__("popctl.advisor.runner", fromlist=["AgentRunner"]).AgentRunner,
+                AgentRunner,
                 "run_headless",
                 return_value=successful_result,
             ),
@@ -145,7 +143,6 @@ class TestAdvisorClassify:
         )
 
         with (
-            patch("popctl.cli.commands.advisor.is_running_in_container", return_value=False),
             patch("popctl.cli.commands.advisor.load_advisor_config", return_value=mock_config),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
@@ -163,7 +160,7 @@ class TestAdvisorClassify:
                 return_value=workspace_dir,
             ),
             patch.object(
-                __import__("popctl.advisor.runner", fromlist=["AgentRunner"]).AgentRunner,
+                AgentRunner,
                 "run_headless",
                 return_value=failed_result,
             ),
@@ -173,50 +170,6 @@ class TestAdvisorClassify:
         assert result.exit_code == 1
         combined_output = result.stdout + (result.stderr or "")
         assert "failed" in combined_output.lower() or "error" in combined_output.lower()
-
-    def test_classify_shows_container_warning(
-        self,
-        sample_scan_result: ScanResult,
-        mock_config: AdvisorConfig,
-        tmp_path: Path,
-    ) -> None:
-        """Classify shows warning when running in container."""
-        workspace_dir = tmp_path / "workspace"
-
-        successful_result = AgentResult(
-            success=True,
-            output="",
-            decisions_path=workspace_dir / "output" / "decisions.toml",
-            workspace_path=workspace_dir,
-        )
-
-        with (
-            patch("popctl.cli.commands.advisor.is_running_in_container", return_value=True),
-            patch("popctl.cli.commands.advisor.load_advisor_config", return_value=mock_config),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch("popctl.cli.commands.advisor.scan_system", return_value=sample_scan_result),
-            patch(
-                "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
-                return_value=tmp_path / "sessions",
-            ),
-            patch(
-                "popctl.cli.commands.advisor.get_manifest_path",
-                return_value=tmp_path / "nonexistent" / "manifest.toml",
-            ),
-            patch(
-                "popctl.cli.commands.advisor.create_session_workspace",
-                return_value=workspace_dir,
-            ),
-            patch.object(
-                __import__("popctl.advisor.runner", fromlist=["AgentRunner"]).AgentRunner,
-                "run_headless",
-                return_value=successful_result,
-            ),
-        ):
-            result = runner.invoke(app, ["advisor", "classify"])
-
-        assert "container" in (result.stdout + (result.stderr or "")).lower()
 
 
 class TestAdvisorClassifyOptions:
@@ -238,7 +191,6 @@ class TestAdvisorClassifyOptions:
         )
 
         with (
-            patch("popctl.cli.commands.advisor.is_running_in_container", return_value=False),
             patch(
                 "popctl.cli.commands.advisor.load_advisor_config",
                 return_value=AdvisorConfig(provider="claude"),
@@ -259,7 +211,7 @@ class TestAdvisorClassifyOptions:
                 return_value=workspace_dir,
             ),
             patch.object(
-                __import__("popctl.advisor.runner", fromlist=["AgentRunner"]).AgentRunner,
+                AgentRunner,
                 "run_headless",
                 return_value=successful_result,
             ),
@@ -273,12 +225,9 @@ class TestAdvisorClassifyOptions:
         """Classify --input with nonexistent file shows error."""
         nonexistent = tmp_path / "nonexistent.json"
 
-        with (
-            patch("popctl.cli.commands.advisor.is_running_in_container", return_value=False),
-            patch(
-                "popctl.cli.commands.advisor.load_advisor_config",
-                return_value=AdvisorConfig(provider="claude"),
-            ),
+        with patch(
+            "popctl.cli.commands.advisor.load_advisor_config",
+            return_value=AdvisorConfig(provider="claude"),
         ):
             result = runner.invoke(app, ["advisor", "classify", "--input", str(nonexistent)])
 
@@ -308,7 +257,6 @@ class TestAdvisorSession:
         )
 
         with (
-            patch("popctl.cli.commands.advisor.is_running_in_container", return_value=False),
             patch("popctl.cli.commands.advisor.load_advisor_config", return_value=mock_config),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
@@ -326,7 +274,7 @@ class TestAdvisorSession:
                 return_value=workspace_dir,
             ),
             patch.object(
-                __import__("popctl.advisor.runner", fromlist=["AgentRunner"]).AgentRunner,
+                AgentRunner,
                 "launch_interactive",
                 return_value=manual_result,
             ),
@@ -353,7 +301,6 @@ class TestAdvisorSession:
         )
 
         with (
-            patch("popctl.cli.commands.advisor.is_running_in_container", return_value=False),
             patch("popctl.cli.commands.advisor.load_advisor_config", return_value=mock_config),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
@@ -371,7 +318,7 @@ class TestAdvisorSession:
                 return_value=workspace_dir,
             ),
             patch.object(
-                __import__("popctl.advisor.runner", fromlist=["AgentRunner"]).AgentRunner,
+                AgentRunner,
                 "launch_interactive",
                 return_value=successful_result,
             ),
@@ -393,12 +340,11 @@ class TestAdvisorSession:
         failed_result = AgentResult(
             success=False,
             output="",
-            error="Container crashed",
+            error="Agent crashed",
             workspace_path=workspace_dir,
         )
 
         with (
-            patch("popctl.cli.commands.advisor.is_running_in_container", return_value=False),
             patch("popctl.cli.commands.advisor.load_advisor_config", return_value=mock_config),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
@@ -416,7 +362,7 @@ class TestAdvisorSession:
                 return_value=workspace_dir,
             ),
             patch.object(
-                __import__("popctl.advisor.runner", fromlist=["AgentRunner"]).AgentRunner,
+                AgentRunner,
                 "launch_interactive",
                 return_value=failed_result,
             ),
@@ -437,7 +383,7 @@ class TestAdvisorConfigHandling:
         tmp_path: Path,
     ) -> None:
         """Classify creates default config if none exists."""
-        from popctl.advisor.config import AdvisorConfigNotFoundError
+        from popctl.advisor.config import AdvisorConfigError
 
         workspace_dir = tmp_path / "workspace"
 
@@ -449,18 +395,13 @@ class TestAdvisorConfigHandling:
         )
 
         with (
-            patch("popctl.cli.commands.advisor.is_running_in_container", return_value=False),
             patch(
                 "popctl.cli.commands.advisor.load_advisor_config",
-                side_effect=AdvisorConfigNotFoundError("Config not found"),
+                side_effect=AdvisorConfigError("Config not found"),
             ),
             patch(
                 "popctl.cli.commands.advisor.save_advisor_config",
                 return_value=tmp_path / "advisor.toml",
-            ),
-            patch(
-                "popctl.cli.commands.advisor.get_default_config",
-                return_value=AdvisorConfig(provider="claude"),
             ),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
@@ -478,7 +419,7 @@ class TestAdvisorConfigHandling:
                 return_value=workspace_dir,
             ),
             patch.object(
-                __import__("popctl.advisor.runner", fromlist=["AgentRunner"]).AgentRunner,
+                AgentRunner,
                 "run_headless",
                 return_value=successful_result,
             ),
@@ -495,7 +436,6 @@ class TestAdvisorScannerAvailability:
     def test_classify_no_scanners_available(self) -> None:
         """Classify fails when no scanners are available."""
         with (
-            patch("popctl.cli.commands.advisor.is_running_in_container", return_value=False),
             patch(
                 "popctl.cli.commands.advisor.load_advisor_config",
                 return_value=AdvisorConfig(provider="claude"),
@@ -625,22 +565,22 @@ class TestAdvisorApplyWithValidDecisions:
                 return_value=None,
             ),
             patch(
-                "popctl.advisor.import_decisions",
+                "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
             ),
             patch(
-                "popctl.advisor.exchange.EXCHANGE_DIR",
+                "popctl.cli.commands.advisor.EXCHANGE_DIR",
                 tmp_path,
             ),
             patch(
-                "popctl.core.manifest.load_manifest",
+                "popctl.cli.commands.advisor.load_manifest",
                 return_value=mock_manifest,
             ),
             patch(
-                "popctl.core.manifest.save_manifest",
+                "popctl.cli.commands.advisor.save_manifest",
             ) as mock_save,
             patch(
-                "popctl.core.paths.get_manifest_path",
+                "popctl.cli.commands.advisor.get_manifest_path",
                 return_value=sample_manifest,
             ),
         ):
@@ -708,22 +648,22 @@ class TestAdvisorApplyDryRun:
                 return_value=None,
             ),
             patch(
-                "popctl.advisor.import_decisions",
+                "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
             ),
             patch(
-                "popctl.advisor.exchange.EXCHANGE_DIR",
+                "popctl.cli.commands.advisor.EXCHANGE_DIR",
                 tmp_path,
             ),
             patch(
-                "popctl.core.manifest.load_manifest",
+                "popctl.cli.commands.advisor.load_manifest",
                 return_value=mock_manifest,
             ),
             patch(
-                "popctl.core.manifest.save_manifest",
+                "popctl.cli.commands.advisor.save_manifest",
             ) as mock_save,
             patch(
-                "popctl.core.paths.get_manifest_path",
+                "popctl.cli.commands.advisor.get_manifest_path",
                 return_value=sample_manifest,
             ),
         ):
@@ -749,11 +689,11 @@ class TestAdvisorApplyErrors:
                 return_value=None,
             ),
             patch(
-                "popctl.advisor.exchange.EXCHANGE_DIR",
+                "popctl.cli.commands.advisor.EXCHANGE_DIR",
                 tmp_path,
             ),
             patch(
-                "popctl.advisor.import_decisions",
+                "popctl.cli.commands.advisor.import_decisions",
                 side_effect=FileNotFoundError("decisions.toml not found"),
             ),
         ):
@@ -785,15 +725,15 @@ class TestAdvisorApplyErrors:
                 return_value=None,
             ),
             patch(
-                "popctl.advisor.exchange.EXCHANGE_DIR",
+                "popctl.cli.commands.advisor.EXCHANGE_DIR",
                 tmp_path,
             ),
             patch(
-                "popctl.advisor.import_decisions",
+                "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
             ),
             patch(
-                "popctl.core.manifest.load_manifest",
+                "popctl.cli.commands.advisor.load_manifest",
                 side_effect=ManifestNotFoundError("Manifest not found"),
             ),
         ):
@@ -817,11 +757,11 @@ class TestAdvisorApplyErrors:
                 return_value=None,
             ),
             patch(
-                "popctl.advisor.exchange.EXCHANGE_DIR",
+                "popctl.cli.commands.advisor.EXCHANGE_DIR",
                 tmp_path,
             ),
             patch(
-                "popctl.advisor.import_decisions",
+                "popctl.cli.commands.advisor.import_decisions",
                 side_effect=ValueError("Invalid TOML syntax"),
             ),
         ):
@@ -874,18 +814,18 @@ class TestAdvisorApplyWithInputFile:
 
         with (
             patch(
-                "popctl.advisor.import_decisions",
+                "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
             ),
             patch(
-                "popctl.core.manifest.load_manifest",
+                "popctl.cli.commands.advisor.load_manifest",
                 return_value=mock_manifest,
             ),
             patch(
-                "popctl.core.manifest.save_manifest",
+                "popctl.cli.commands.advisor.save_manifest",
             ),
             patch(
-                "popctl.core.paths.get_manifest_path",
+                "popctl.cli.commands.advisor.get_manifest_path",
                 return_value=sample_manifest,
             ),
         ):
@@ -955,16 +895,16 @@ class TestAdvisorApplyFromSession:
                 return_value=decisions_path,
             ),
             patch(
-                "popctl.advisor.import_decisions",
+                "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
             ),
             patch(
-                "popctl.core.manifest.load_manifest",
+                "popctl.cli.commands.advisor.load_manifest",
                 return_value=mock_manifest,
             ),
-            patch("popctl.core.manifest.save_manifest"),
+            patch("popctl.cli.commands.advisor.save_manifest"),
             patch(
-                "popctl.core.paths.get_manifest_path",
+                "popctl.cli.commands.advisor.get_manifest_path",
                 return_value=sample_manifest,
             ),
         ):
@@ -1036,22 +976,22 @@ class TestAdvisorApplyAskPackages:
                 return_value=None,
             ),
             patch(
-                "popctl.advisor.import_decisions",
+                "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
             ),
             patch(
-                "popctl.advisor.exchange.EXCHANGE_DIR",
+                "popctl.cli.commands.advisor.EXCHANGE_DIR",
                 tmp_path,
             ),
             patch(
-                "popctl.core.manifest.load_manifest",
+                "popctl.cli.commands.advisor.load_manifest",
                 return_value=mock_manifest,
             ),
             patch(
-                "popctl.core.manifest.save_manifest",
+                "popctl.cli.commands.advisor.save_manifest",
             ),
             patch(
-                "popctl.core.paths.get_manifest_path",
+                "popctl.cli.commands.advisor.get_manifest_path",
                 return_value=sample_manifest,
             ),
         ):
@@ -1125,22 +1065,22 @@ class TestAdvisorApplyHistory:
                 return_value=None,
             ),
             patch(
-                "popctl.advisor.import_decisions",
+                "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
             ),
             patch(
-                "popctl.advisor.exchange.EXCHANGE_DIR",
+                "popctl.cli.commands.advisor.EXCHANGE_DIR",
                 tmp_path,
             ),
             patch(
-                "popctl.core.manifest.load_manifest",
+                "popctl.cli.commands.advisor.load_manifest",
                 return_value=mock_manifest,
             ),
             patch(
-                "popctl.core.manifest.save_manifest",
+                "popctl.cli.commands.advisor.save_manifest",
             ),
             patch(
-                "popctl.core.paths.get_manifest_path",
+                "popctl.cli.commands.advisor.get_manifest_path",
                 return_value=sample_manifest,
             ),
             patch("popctl.cli.commands.advisor.record_advisor_apply_to_history") as mock_record,
@@ -1205,22 +1145,22 @@ class TestAdvisorApplyHistory:
                 return_value=None,
             ),
             patch(
-                "popctl.advisor.import_decisions",
+                "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
             ),
             patch(
-                "popctl.advisor.exchange.EXCHANGE_DIR",
+                "popctl.cli.commands.advisor.EXCHANGE_DIR",
                 tmp_path,
             ),
             patch(
-                "popctl.core.manifest.load_manifest",
+                "popctl.cli.commands.advisor.load_manifest",
                 return_value=mock_manifest,
             ),
             patch(
-                "popctl.core.manifest.save_manifest",
+                "popctl.cli.commands.advisor.save_manifest",
             ) as mock_save,
             patch(
-                "popctl.core.paths.get_manifest_path",
+                "popctl.cli.commands.advisor.get_manifest_path",
                 return_value=sample_manifest,
             ),
             patch("popctl.cli.commands.advisor.record_advisor_apply_to_history") as mock_record,

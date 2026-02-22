@@ -10,7 +10,6 @@ from unittest.mock import patch
 from popctl.core.paths import (
     APP_NAME,
     ensure_config_dir,
-    ensure_state_dir,
     get_config_dir,
     get_manifest_path,
     get_state_dir,
@@ -93,13 +92,3 @@ class TestEnsureDirs:
 
         assert result1 == result2
         assert result1.exists()
-
-    def test_ensure_state_dir_creates_directory(self, tmp_path: Path) -> None:
-        """ensure_state_dir creates the state directory."""
-        state_dir = tmp_path / "state" / APP_NAME
-
-        with patch.dict(os.environ, {"XDG_STATE_HOME": str(tmp_path / "state")}):
-            result = ensure_state_dir()
-
-        assert result == state_dir
-        assert state_dir.exists()

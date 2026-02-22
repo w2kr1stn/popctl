@@ -29,7 +29,7 @@ def _make_scan_result() -> ScanResult:
             status=PackageStatus.MANUAL,
         ),
     ]
-    return ScanResult.create(packages, ["apt"])
+    return ScanResult(packages=tuple(packages))
 
 
 class TestCreateSessionWorkspace:

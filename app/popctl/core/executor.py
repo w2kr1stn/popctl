@@ -8,16 +8,17 @@ are shared between the `apply` and `sync` CLI commands.
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from popctl.core.state import StateManager
+from popctl.core.state import record_action
 from popctl.models.action import ActionType
 from popctl.models.history import (
     HistoryActionType,
     HistoryItem,
     create_history_entry,
 )
-from popctl.models.types import SourceChoice
+from popctl.models.package import PackageSource
 from popctl.operators.apt import AptOperator
 from popctl.operators.base import Operator
 from popctl.operators.flatpak import FlatpakOperator
@@ -26,56 +27,31 @@ from popctl.utils.formatting import print_warning
 
 if TYPE_CHECKING:
     from popctl.models.action import Action, ActionResult
-    from popctl.models.package import PackageSource
 
 logger = logging.getLogger(__name__)
 
-# Mapping from action model types to history model types.
-ACTION_TO_HISTORY: dict[ActionType, HistoryActionType] = {
-    ActionType.INSTALL: HistoryActionType.INSTALL,
-    ActionType.REMOVE: HistoryActionType.REMOVE,
-    ActionType.PURGE: HistoryActionType.PURGE,
+_OPERATOR_CLASSES: dict[PackageSource, type[Operator]] = {
+    PackageSource.APT: AptOperator,
+    PackageSource.FLATPAK: FlatpakOperator,
+    PackageSource.SNAP: SnapOperator,
 }
 
 
-def _get_operators(source: SourceChoice, dry_run: bool = False) -> list[Operator]:
-    """Get operator instances based on source selection.
+def get_available_operators(
+    source: PackageSource | None = None, dry_run: bool = False
+) -> list[Operator]:
+    """Get operator instances that are available on this system.
 
     Args:
-        source: The source choice (apt, flatpak, snap, or all).
-        dry_run: Whether to run in dry-run mode.
-
-    Returns:
-        List of operator instances for the requested source(s).
-    """
-    operators: list[Operator] = []
-
-    if source in (SourceChoice.APT, SourceChoice.ALL):
-        operators.append(AptOperator(dry_run=dry_run))
-
-    if source in (SourceChoice.FLATPAK, SourceChoice.ALL):
-        operators.append(FlatpakOperator(dry_run=dry_run))
-
-    if source in (SourceChoice.SNAP, SourceChoice.ALL):
-        operators.append(SnapOperator(dry_run=dry_run))
-
-    return operators
-
-
-def get_available_operators(source: SourceChoice, dry_run: bool = False) -> list[Operator]:
-    """Get available operator instances based on source selection.
-
-    Wraps :func:`get_operators` and filters out operators whose
-    underlying package manager is not installed on the system.
-
-    Args:
-        source: The source choice (apt, flatpak, or all).
+        source: Specific package source, or None for all sources.
         dry_run: Whether to run in dry-run mode.
 
     Returns:
         List of available operator instances.
     """
-    return [op for op in _get_operators(source, dry_run) if op.is_available()]
+    classes = _OPERATOR_CLASSES if source is None else {source: _OPERATOR_CLASSES[source]}
+    operators = [cls(dry_run=dry_run) for cls in classes.values()]
+    return [op for op in operators if op.is_available()]
 
 
 def execute_actions(
@@ -98,10 +74,8 @@ def execute_actions(
     results: list[ActionResult] = []
 
     # Group actions by source
-    actions_by_source: dict[PackageSource, list[Action]] = {}
+    actions_by_source: dict[PackageSource, list[Action]] = defaultdict(list)
     for action in actions:
-        if action.source not in actions_by_source:
-            actions_by_source[action.source] = []
         actions_by_source[action.source].append(action)
 
     # Execute actions for each source
@@ -132,8 +106,6 @@ def record_actions_to_history(
             Defaults to ``"popctl apply"`` for backward compatibility.
     """
     try:
-        state = StateManager()
-
         for action_type in (ActionType.INSTALL, ActionType.REMOVE, ActionType.PURGE):
             successful_items = [
                 HistoryItem(
@@ -146,11 +118,11 @@ def record_actions_to_history(
 
             if successful_items:
                 entry = create_history_entry(
-                    action_type=ACTION_TO_HISTORY[action_type],
+                    action_type=HistoryActionType(action_type.value),
                     items=successful_items,
                     metadata={"command": command},
                 )
-                state.record_action(entry)
+                record_action(entry)
                 logger.debug(
                     "Recorded %d %s action(s) to history",
                     len(successful_items),

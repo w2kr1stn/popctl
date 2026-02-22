@@ -62,7 +62,7 @@ def get_manifest_path() -> Path:
     return get_config_dir() / "manifest.toml"
 
 
-def _ensure_dir(path: Path, name: str) -> Path:
+def ensure_dir(path: Path, name: str) -> Path:
     """Create directory if it doesn't exist.
 
     Args:
@@ -95,41 +95,14 @@ def ensure_config_dir() -> Path:
     Raises:
         RuntimeError: If the directory cannot be created.
     """
-    return _ensure_dir(get_config_dir(), "config")
-
-
-def ensure_state_dir() -> Path:
-    """Create the state directory if it doesn't exist.
-
-    Returns:
-        Path to the state directory.
-
-    Raises:
-        RuntimeError: If the directory cannot be created.
-    """
-    return _ensure_dir(get_state_dir(), "state")
-
-
-# =============================================================================
-# Config backup paths
-# =============================================================================
-
-
-def get_config_backup_dir() -> Path:
-    """Get the config backup directory path.
-
-    Config backups are stored under the state directory in a dedicated
-    subdirectory. Each backup operation creates a timestamped subdirectory
-    within this location.
-
-    Returns:
-        Path to ~/.local/state/popctl/config-backups/.
-    """
-    return get_state_dir() / "config-backups"
+    return ensure_dir(get_config_dir(), "config")
 
 
 def ensure_config_backup_dir() -> Path:
     """Create the config backup directory if it doesn't exist.
+
+    Config backups are stored under the state directory in a dedicated
+    subdirectory (``config-backups/``).
 
     Returns:
         Path to the config backup directory.
@@ -137,4 +110,4 @@ def ensure_config_backup_dir() -> Path:
     Raises:
         RuntimeError: If the directory cannot be created.
     """
-    return _ensure_dir(get_config_backup_dir(), "config backup")
+    return ensure_dir(get_state_dir() / "config-backups", "config backup")
