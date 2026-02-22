@@ -21,14 +21,12 @@ class HistoryActionType(str, Enum):
         INSTALL: Package installation operation.
         REMOVE: Package removal operation (keeps config).
         PURGE: Package purge operation (removes config).
-        APPLY: Batch operation from manifest apply.
         ADVISOR_APPLY: Classifications applied from AI advisor.
     """
 
     INSTALL = "install"
     REMOVE = "remove"
     PURGE = "purge"
-    APPLY = "apply"
     ADVISOR_APPLY = "advisor_apply"
     FS_DELETE = "fs_delete"
     CONFIG_DELETE = "config_delete"
@@ -38,17 +36,15 @@ class HistoryActionType(str, Enum):
 class HistoryItem:
     """Single item affected by an action.
 
-    Represents a package that was modified during an operation.
+    Represents a package or path that was modified during an operation.
 
     Attributes:
-        name: Package name (e.g., 'vim', 'com.spotify.Client').
-        source: Package manager that handles this package.
-        version: Optional version string of the package.
+        name: Package name or path (e.g., 'vim', '~/.config/old-app').
+        source: Package manager (None for domain deletions like fs/config clean).
     """
 
     name: str
-    source: PackageSource
-    version: str | None = None
+    source: PackageSource | None = None
 
     def __post_init__(self) -> None:
         """Validate item data after initialization."""
@@ -62,12 +58,9 @@ class HistoryItem:
         Returns:
             Dictionary representation of the history item.
         """
-        result: dict[str, Any] = {
-            "name": self.name,
-            "source": self.source.value,
-        }
-        if self.version is not None:
-            result["version"] = self.version
+        result: dict[str, Any] = {"name": self.name}
+        if self.source is not None:
+            result["source"] = self.source.value
         return result
 
     @classmethod
@@ -84,10 +77,10 @@ class HistoryItem:
             KeyError: If required fields are missing.
             ValueError: If source is invalid.
         """
+        raw_source = data.get("source")
         return cls(
             name=data["name"],
-            source=PackageSource(data["source"]),
-            version=data.get("version"),
+            source=PackageSource(raw_source) if raw_source is not None else None,
         )
 
 
@@ -104,7 +97,6 @@ class HistoryEntry:
         action_type: Type of action (install, remove, etc.).
         items: Tuple of packages affected by this action.
         reversible: Whether this action can be undone.
-        success: Whether the action completed successfully.
         metadata: Additional context (command, user, etc.).
     """
 
@@ -113,7 +105,6 @@ class HistoryEntry:
     action_type: HistoryActionType
     items: tuple[HistoryItem, ...]
     reversible: bool = True
-    success: bool = True
     metadata: dict[str, Any] = field(default_factory=lambda: {})
 
     def __post_init__(self) -> None:
@@ -140,7 +131,6 @@ class HistoryEntry:
             "action_type": self.action_type.value,
             "items": [item.to_dict() for item in self.items],
             "reversible": self.reversible,
-            "success": self.success,
             "metadata": self.metadata,
         }
 
@@ -165,7 +155,6 @@ class HistoryEntry:
             action_type=HistoryActionType(data["action_type"]),
             items=items,
             reversible=data.get("reversible", True),
-            success=data.get("success", True),
             metadata=data.get("metadata", {}),
         )
 
@@ -228,6 +217,5 @@ def create_history_entry(
         action_type=action_type,
         items=tuple(items),
         reversible=reversible,
-        success=True,
         metadata=metadata or {},
     )

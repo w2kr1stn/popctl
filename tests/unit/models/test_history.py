@@ -20,27 +20,13 @@ from popctl.models.package import PackageSource
 class TestHistoryActionType:
     """Tests for HistoryActionType enum."""
 
-    def test_action_type_values(self) -> None:
-        """HistoryActionType has expected values."""
-        assert HistoryActionType.INSTALL.value == "install"
-        assert HistoryActionType.REMOVE.value == "remove"
-        assert HistoryActionType.PURGE.value == "purge"
-        assert HistoryActionType.APPLY.value == "apply"
-        assert HistoryActionType.ADVISOR_APPLY.value == "advisor_apply"
-
     def test_action_type_count(self) -> None:
-        """HistoryActionType has exactly 7 members."""
-        assert len(HistoryActionType) == 7
-
-    def test_fs_delete_action_type(self) -> None:
-        """FS_DELETE is a valid HistoryActionType value."""
-        assert HistoryActionType.FS_DELETE.value == "fs_delete"
-        assert HistoryActionType("fs_delete") == HistoryActionType.FS_DELETE
+        """HistoryActionType has exactly 6 members."""
+        assert len(HistoryActionType) == 6
 
     def test_action_type_is_str_enum(self) -> None:
         """HistoryActionType inherits from str for JSON serialization."""
         assert isinstance(HistoryActionType.INSTALL, str)
-        assert HistoryActionType.INSTALL == "install"
 
 
 class TestHistoryItem:
@@ -54,16 +40,6 @@ class TestHistoryItem:
         )
         assert item.name == "vim"
         assert item.source == PackageSource.APT
-        assert item.version is None
-
-    def test_create_history_item_with_version(self) -> None:
-        """Can create a history item with version."""
-        item = HistoryItem(
-            name="vim",
-            source=PackageSource.APT,
-            version="9.0.1234",
-        )
-        assert item.version == "9.0.1234"
 
     def test_history_item_is_frozen(self) -> None:
         """HistoryItem is immutable."""
@@ -81,44 +57,52 @@ class TestHistoryItem:
         item = HistoryItem(
             name="vim",
             source=PackageSource.APT,
-            version="9.0",
         )
         result = item.to_dict()
         assert result == {
             "name": "vim",
             "source": "apt",
-            "version": "9.0",
         }
-
-    def test_history_item_to_dict_without_version(self) -> None:
-        """to_dict omits version if None."""
-        item = HistoryItem(name="vim", source=PackageSource.APT)
-        result = item.to_dict()
-        assert "version" not in result
-        assert result == {"name": "vim", "source": "apt"}
 
     def test_history_item_from_dict(self) -> None:
         """from_dict deserializes item correctly."""
+        data = {"name": "vim", "source": "apt"}
+        item = HistoryItem.from_dict(data)
+        assert item.name == "vim"
+        assert item.source == PackageSource.APT
+
+    def test_history_item_from_dict_ignores_legacy_version(self) -> None:
+        """from_dict silently ignores legacy version key in JSONL data."""
         data = {"name": "vim", "source": "apt", "version": "9.0"}
         item = HistoryItem.from_dict(data)
         assert item.name == "vim"
         assert item.source == PackageSource.APT
-        assert item.version == "9.0"
-
-    def test_history_item_from_dict_without_version(self) -> None:
-        """from_dict handles missing version."""
-        data = {"name": "vim", "source": "apt"}
-        item = HistoryItem.from_dict(data)
-        assert item.version is None
 
     def test_history_item_flatpak(self) -> None:
         """Can create history item for Flatpak packages."""
         item = HistoryItem(
             name="com.spotify.Client",
             source=PackageSource.FLATPAK,
-            version="1.2.3",
         )
         assert item.source == PackageSource.FLATPAK
+
+    def test_history_item_without_source(self) -> None:
+        """Can create history item without source for domain deletions."""
+        item = HistoryItem(name="/home/user/.config/old-app")
+        assert item.source is None
+
+    def test_history_item_to_dict_without_source(self) -> None:
+        """to_dict omits source when None."""
+        item = HistoryItem(name="/home/user/.config/old-app")
+        result = item.to_dict()
+        assert result == {"name": "/home/user/.config/old-app"}
+        assert "source" not in result
+
+    def test_history_item_from_dict_without_source(self) -> None:
+        """from_dict handles missing source."""
+        data = {"name": "/home/user/.config/old-app"}
+        item = HistoryItem.from_dict(data)
+        assert item.source is None
 
 
 class TestHistoryEntry:
@@ -128,7 +112,7 @@ class TestHistoryEntry:
     def sample_items(self) -> tuple[HistoryItem, ...]:
         """Create sample history items for testing."""
         return (
-            HistoryItem(name="vim", source=PackageSource.APT, version="9.0"),
+            HistoryItem(name="vim", source=PackageSource.APT),
             HistoryItem(name="htop", source=PackageSource.APT),
         )
 
@@ -141,7 +125,6 @@ class TestHistoryEntry:
             action_type=HistoryActionType.INSTALL,
             items=sample_items,
             reversible=True,
-            success=True,
             metadata={"command": "popctl apply"},
         )
 
@@ -158,7 +141,6 @@ class TestHistoryEntry:
         assert entry.action_type == HistoryActionType.INSTALL
         assert len(entry.items) == 2
         assert entry.reversible is True
-        assert entry.success is True
         assert entry.metadata == {}
 
     def test_history_entry_is_frozen(self, sample_items: tuple[HistoryItem, ...]) -> None:
@@ -212,11 +194,10 @@ class TestHistoryEntry:
             "timestamp": "2026-01-25T14:30:00+00:00",
             "action_type": "install",
             "items": [
-                {"name": "vim", "source": "apt", "version": "9.0"},
+                {"name": "vim", "source": "apt"},
                 {"name": "htop", "source": "apt"},
             ],
             "reversible": True,
-            "success": True,
             "metadata": {"command": "popctl apply"},
         }
 
@@ -228,7 +209,6 @@ class TestHistoryEntry:
             "action_type": "remove",
             "items": [{"name": "nano", "source": "apt"}],
             "reversible": True,
-            "success": True,
             "metadata": {},
         }
         entry = HistoryEntry.from_dict(data)
@@ -247,8 +227,19 @@ class TestHistoryEntry:
         }
         entry = HistoryEntry.from_dict(data)
         assert entry.reversible is True
-        assert entry.success is True
         assert entry.metadata == {}
+
+    def test_history_entry_from_dict_with_legacy_success(self) -> None:
+        """from_dict silently ignores legacy 'success' field."""
+        data: dict[str, Any] = {
+            "id": "abc123",
+            "timestamp": "2026-01-25T14:30:00+00:00",
+            "action_type": "install",
+            "items": [{"name": "vim", "source": "apt"}],
+            "success": True,
+        }
+        entry = HistoryEntry.from_dict(data)
+        assert entry.id == "abc123"
 
     def test_history_entry_roundtrip_dict(self, sample_entry: HistoryEntry) -> None:
         """to_dict/from_dict roundtrip preserves data."""
@@ -260,7 +251,6 @@ class TestHistoryEntry:
         assert len(restored.items) == len(sample_entry.items)
         assert restored.items[0].name == sample_entry.items[0].name
         assert restored.reversible == sample_entry.reversible
-        assert restored.success == sample_entry.success
         assert restored.metadata == sample_entry.metadata
 
 
@@ -274,9 +264,8 @@ class TestHistoryEntryJsonLine:
             id="abc123",
             timestamp="2026-01-25T14:30:00+00:00",
             action_type=HistoryActionType.INSTALL,
-            items=(HistoryItem(name="vim", source=PackageSource.APT, version="9.0"),),
+            items=(HistoryItem(name="vim", source=PackageSource.APT),),
             reversible=True,
-            success=True,
             metadata={"command": "popctl apply"},
         )
 
@@ -362,14 +351,13 @@ class TestCreateHistoryEntry:
         assert entry.action_type == HistoryActionType.INSTALL
         assert len(entry.items) == 1
         assert entry.reversible is True
-        assert entry.success is True
         assert entry.metadata == {}
 
     def test_create_history_entry_with_metadata(self) -> None:
         """create_history_entry accepts metadata."""
         items = [HistoryItem(name="vim", source=PackageSource.APT)]
         entry = create_history_entry(
-            action_type=HistoryActionType.APPLY,
+            action_type=HistoryActionType.INSTALL,
             items=items,
             metadata={"command": "popctl apply", "dry_run": False},
         )

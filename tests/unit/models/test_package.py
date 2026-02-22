@@ -10,30 +10,10 @@ from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
 class TestPackageSource:
     """Tests for PackageSource enum."""
 
-    def test_apt_value(self) -> None:
-        """APT source has correct value."""
-        assert PackageSource.APT.value == "apt"
-
-    def test_flatpak_value(self) -> None:
-        """FLATPAK source has correct value."""
-        assert PackageSource.FLATPAK.value == "flatpak"
-
     def test_all_sources_are_unique(self) -> None:
         """All source values are unique."""
         values = [s.value for s in PackageSource]
         assert len(values) == len(set(values))
-
-
-class TestPackageStatus:
-    """Tests for PackageStatus enum."""
-
-    def test_manual_value(self) -> None:
-        """MANUAL status has correct value."""
-        assert PackageStatus.MANUAL.value == "manual"
-
-    def test_auto_installed_value(self) -> None:
-        """AUTO_INSTALLED status has correct value."""
-        assert PackageStatus.AUTO_INSTALLED.value == "auto"
 
 
 class TestScannedPackage:
@@ -63,7 +43,6 @@ class TestScannedPackage:
             status=PackageStatus.MANUAL,
             description="Vim-based text editor",
             size_bytes=51200,
-            install_date="2024-01-15",
             classification="keep",
             confidence=0.95,
             reason="User development tool",

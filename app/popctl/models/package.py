@@ -50,7 +50,6 @@ class ScannedPackage:
         status: Whether manually or automatically installed
         description: Human-readable package description
         size_bytes: Installed size in bytes (if available)
-        install_date: ISO format installation date (if available)
         classification: AI classification result ('keep', 'remove', 'ask')
         confidence: Classification confidence score (0.0 - 1.0)
         reason: Explanation for the classification
@@ -63,7 +62,6 @@ class ScannedPackage:
     status: PackageStatus
     description: str | None = field(default=None)
     size_bytes: int | None = field(default=None)
-    install_date: str | None = field(default=None)
     # Classification fields (populated by Claude Advisor)
     classification: ClassificationType | None = field(default=None)
     confidence: float | None = field(default=None)
