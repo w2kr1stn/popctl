@@ -76,7 +76,7 @@ class TestSnapOperator:
 
         assert len(results) == 1
         assert results[0].success is False
-        assert "not found" in results[0].error.lower()
+        assert "not found" in results[0].detail.lower()
 
     def test_install_dry_run(self, dry_run_operator: SnapOperator) -> None:
         """install() in dry-run mode does not execute commands."""
@@ -88,7 +88,7 @@ class TestSnapOperator:
 
         assert len(results) == 1
         assert results[0].success is True
-        assert "Dry-run" in results[0].message
+        assert "Dry-run" in results[0].detail
 
         # No actual command should have been run
         mock_run.assert_not_called()
@@ -169,7 +169,7 @@ class TestSnapOperator:
 
         assert len(results) == 1
         assert results[0].success is True
-        assert "Dry-run" in results[0].message
+        assert "Dry-run" in results[0].detail
 
         # No actual command should have been run
         mock_run.assert_not_called()

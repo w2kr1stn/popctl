@@ -79,7 +79,7 @@ class TestAptOperator:
 
         assert len(results) == 1
         assert results[0].success is False
-        assert "not found" in results[0].error.lower()
+        assert "not found" in results[0].detail.lower()
 
     def test_install_dry_run(self, dry_run_operator: AptOperator) -> None:
         """install() in dry-run mode uses --dry-run flag."""
@@ -93,7 +93,7 @@ class TestAptOperator:
 
         assert len(results) == 1
         assert results[0].success is True
-        assert "Dry-run" in results[0].message
+        assert "Dry-run" in results[0].detail
 
         # Verify --dry-run was in command
         args = mock_run.call_args[0][0]
