@@ -2,17 +2,8 @@
 
 This module provides the AgentRunner class for executing AI agents
 (Claude Code or Gemini CLI) in headless or interactive session mode.
-
-Two execution modes:
-
-1. Host-Mode (container_mode is False):
-   Direct call to claude/gemini CLI on the host system.
-
-2. Container-Mode (container_mode is True):
-   Call via codeagent CLI for container execution.
 """
 
-import contextlib
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -45,11 +36,8 @@ class AgentResult:
 class AgentRunner:
     """Runs AI agents for package classification.
 
-    The AgentRunner executes AI agents (Claude Code or Gemini CLI) for
-    package classification. It supports two execution modes:
-
-    - Host-Mode: Direct invocation of CLI tools on the host system
-    - Container-Mode: Invocation via codeagent CLI for container execution
+    Executes AI agents (Claude Code or Gemini CLI) for package
+    classification on the host system.
 
     Attributes:
         config: AdvisorConfig with provider, model, and timeout settings.
@@ -127,13 +115,7 @@ class AgentRunner:
             )
 
     def launch_interactive(self, workspace_dir: Path) -> AgentResult:
-        """Launch real interactive Claude Code session with cascading fallback.
-
-        Priority chain:
-        1. Running container → docker cp workspace → docker exec claude
-        2. codeagent available → start container
-        3. Host claude/gemini → os.execvp (replaces process)
-        4. Print manual instructions (last resort)
+        """Launch interactive AI session with fallback to manual instructions.
 
         Args:
             workspace_dir: Session workspace directory.
@@ -144,180 +126,53 @@ class AgentRunner:
         if not sys.stdin.isatty():
             return self._manual_instructions(workspace_dir)
 
-        if self.config.container_mode:
-            # Step 1: Check for running container
-            container_result = self._try_container_exec(workspace_dir)
-            if container_result is not None:
-                return container_result
-
-            # Step 2: Try starting via codeagent
-            codeagent_result = self._try_codeagent_start(workspace_dir)
-            if codeagent_result is not None:
-                return codeagent_result
-
-        # Step 3: Try host CLI
         host_result = self._try_host_exec(workspace_dir)
         if host_result is not None:
             return host_result
 
-        # Step 4: Manual fallback
         return self._manual_instructions(workspace_dir)
-
-    def _try_container_exec(self, workspace_dir: Path) -> AgentResult | None:
-        """Try to exec into a running container.
-
-        Returns AgentResult if container was found, None to continue cascade.
-        """
-        from popctl.advisor.docker import docker_cp, find_running_container
-        from popctl.utils.shell import run_command, run_interactive
-
-        container_name = find_running_container("ai-dev")
-        if container_name is None:
-            return None
-
-        remote_dir = "/tmp/popctl-advisor"
-        initial_prompt = INITIAL_PROMPT
-        provider = self.config.provider
-
-        # Pre-clean to ensure idempotent docker cp behavior
-        run_command(["docker", "exec", container_name, "rm", "-rf", remote_dir], timeout=30.0)
-
-        # Copy workspace into container
-        cp_result = docker_cp(str(workspace_dir), f"{container_name}:{remote_dir}")
-        if not cp_result.success:
-            return None
-
-        # Build provider-specific command as shell string
-        # Use bash -lc so login profile is sourced (PATH includes ~/.local/bin etc.)
-        import shlex
-
-        if provider == "claude":
-            shell_cmd = f"{provider} {shlex.quote(initial_prompt)}"
-        else:
-            shell_cmd = f"{provider} --prompt {shlex.quote(initial_prompt)}"
-
-        # Docker exec interactive session
-        try:
-            exit_code = run_interactive(
-                [
-                    "docker",
-                    "exec",
-                    "-it",
-                    "-w",
-                    remote_dir,
-                    container_name,
-                    "bash",
-                    "-lc",
-                    shell_cmd,
-                ]
-            )
-        except (FileNotFoundError, OSError):
-            return None
-
-        # Copy results back
-        decisions_remote = f"{container_name}:{remote_dir}/output/decisions.toml"
-        docker_cp(decisions_remote, str(workspace_dir / "output") + "/")
-
-        # Copy memory.md back (if agent updated it)
-        memory_remote = f"{container_name}:{remote_dir}/memory.md"
-        docker_cp(memory_remote, str(workspace_dir) + "/")
-
-        # Persist memory.md to XDG state directory
-        workspace_memory = workspace_dir / "memory.md"
-        if workspace_memory.exists():
-            self._persist_memory(workspace_memory)
-
-        # Cleanup container workspace
-        run_command(["docker", "exec", container_name, "rm", "-rf", remote_dir], timeout=30.0)
-
-        decisions_path = workspace_dir / "output" / "decisions.toml"
-        found = decisions_path.exists()
-        return AgentResult(
-            success=found,
-            output="",
-            error=None if found else f"Container session exited with code {exit_code}",
-            decisions_path=decisions_path if found else None,
-            workspace_path=workspace_dir,
-        )
-
-    def _try_codeagent_start(self, workspace_dir: Path) -> AgentResult | None:
-        """Try to start a container via codeagent, then delegate to container logic.
-
-        Starts the container without mounting to avoid ~/workspace/ conflicts
-        (e.g. when the container was previously opened with --here).
-        codeagent start is a foreground command (like docker-compose up),
-        so it runs as a background process while we interact via docker exec.
-
-        Returns AgentResult if codeagent is available, None to continue cascade.
-        """
-        import shutil
-        import time
-
-        from popctl.advisor.docker import is_container_running
-
-        if shutil.which("codeagent") is None:
-            return None
-
-        container_name = "ai-dev"
-
-        # codeagent start is a blocking foreground command — run in background
-        try:
-            process = subprocess.Popen(
-                ["codeagent", "start"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except (FileNotFoundError, OSError):
-            return None
-
-        # Poll until container is ready (max ~60s)
-        ready = False
-        for _ in range(30):
-            if process.poll() is not None:
-                return None
-            if is_container_running(container_name):
-                ready = True
-                break
-            time.sleep(2)
-
-        if not ready:
-            process.terminate()
-            return None
-
-        # Container running — delegate to docker cp + exec
-        try:
-            return self._try_container_exec(workspace_dir)
-        finally:
-            with contextlib.suppress(ProcessLookupError):
-                process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
 
     def _try_host_exec(self, workspace_dir: Path) -> AgentResult | None:
         """Try to launch the AI CLI directly on the host.
 
-        Uses os.execvp() to replace the current process for TTY handover.
-        This method never returns on success (process is replaced).
+        Uses run_interactive() for TTY handover, allowing post-session
+        cleanup (memory persistence, decisions detection).
 
         Returns None if the CLI tool is not available.
         """
-        import os
         import shutil
+
+        from popctl.utils.shell import run_interactive
 
         provider = self.config.provider
         initial_prompt = INITIAL_PROMPT
 
         if provider == "claude" and shutil.which("claude") is not None:
-            os.chdir(workspace_dir)
-            os.execvp("claude", ["claude", initial_prompt])
+            cmd = ["claude", initial_prompt]
+            if self.config.model:
+                cmd.extend(["--model", self.config.effective_model])
+        elif provider == "gemini" and shutil.which("gemini") is not None:
+            cmd = ["gemini", "--prompt", initial_prompt]
+            if self.config.model:
+                cmd.extend(["--model", self.config.effective_model])
+        else:
+            return None
 
-        if provider == "gemini" and shutil.which("gemini") is not None:
-            os.chdir(workspace_dir)
-            os.execvp("gemini", ["gemini", "--prompt", initial_prompt])
+        run_interactive(cmd, cwd=str(workspace_dir))
 
-        return None
+        # Post-session: persist memory if agent updated it
+        memory_src = workspace_dir / "memory.md"
+        if memory_src.exists():
+            self._persist_memory(memory_src)
+
+        # Check for decisions
+        decisions = workspace_dir / "output" / "decisions.toml"
+        return AgentResult(
+            success=decisions.exists(),
+            output="",
+            decisions_path=decisions if decisions.exists() else None,
+            workspace_path=workspace_dir,
+        )
 
     def _manual_instructions(self, workspace_dir: Path) -> AgentResult:
         """Return manual instructions when no automated launch is possible."""
@@ -349,12 +204,12 @@ class AgentRunner:
         import logging
         import shutil
 
-        from popctl.advisor.paths import ensure_advisor_memory_dir, get_advisor_memory_path
+        from popctl.core.paths import ensure_dir, get_state_dir
 
         logger = logging.getLogger(__name__)
         try:
-            ensure_advisor_memory_dir()
-            persistent_path = get_advisor_memory_path()
+            advisor_dir = ensure_dir(get_state_dir() / "advisor", "advisor memory")
+            persistent_path = advisor_dir / "memory.md"
             shutil.copy2(workspace_memory, persistent_path)
             logger.debug("Persisted memory.md to %s", persistent_path)
         except (OSError, RuntimeError) as e:
@@ -370,33 +225,15 @@ class AgentRunner:
             List of command arguments for subprocess execution.
         """
         provider = self.config.provider
-        model = self.config.effective_model
         initial_prompt = INITIAL_PROMPT
 
-        if self.config.container_mode:
-            return [
-                "codeagent",
-                "run",
-                provider,
-                initial_prompt,
-                "--write",
-                "--mount",
-                str(workspace_dir),
-                "--model",
-                model,
-            ]
-
         if provider == "claude":
-            return [
-                "claude",
-                "-p",
-                initial_prompt,
-                "--output-format",
-                "json",
-            ]
+            cmd = ["claude", "-p", initial_prompt, "--output-format", "json"]
+            if self.config.model:
+                cmd.extend(["--model", self.config.effective_model])
+            return cmd
         # gemini
-        return [
-            "gemini",
-            "--prompt",
-            initial_prompt,
-        ]
+        cmd = ["gemini", "--prompt", initial_prompt]
+        if self.config.model:
+            cmd.extend(["--model", self.config.effective_model])
+        return cmd
