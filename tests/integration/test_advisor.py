@@ -97,7 +97,6 @@ def sample_manifest(tmp_path: Path) -> tuple[Path, Manifest]:
 
     manifest = Manifest(
         meta=ManifestMeta(
-            version="1.0",
             created=datetime.now(UTC),
             updated=datetime.now(UTC),
         ),
@@ -191,7 +190,7 @@ class TestAdvisorIntegration:
             patch("popctl.cli.commands.advisor.load_advisor_config", return_value=mock_config),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch("popctl.cli.commands.advisor._scan_system", return_value=sample_scan_result),
+            patch("popctl.cli.commands.advisor.scan_system", return_value=sample_scan_result),
             patch(
                 "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
                 return_value=tmp_path / "sessions",
@@ -278,7 +277,7 @@ class TestAdvisorIntegration:
             patch("popctl.cli.commands.advisor.load_advisor_config", return_value=mock_config),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch("popctl.cli.commands.advisor._scan_system", return_value=sample_scan_result),
+            patch("popctl.cli.commands.advisor.scan_system", return_value=sample_scan_result),
             patch(
                 "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
                 return_value=tmp_path / "sessions",
@@ -388,7 +387,7 @@ class TestAdvisorProviderSelection:
             ),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch("popctl.cli.commands.advisor._scan_system", return_value=sample_scan_result),
+            patch("popctl.cli.commands.advisor.scan_system", return_value=sample_scan_result),
             patch(
                 "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
                 return_value=tmp_path / "sessions",
@@ -435,7 +434,7 @@ class TestAdvisorProviderSelection:
             ),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch("popctl.cli.commands.advisor._scan_system", return_value=sample_scan_result),
+            patch("popctl.cli.commands.advisor.scan_system", return_value=sample_scan_result),
             patch(
                 "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
                 return_value=tmp_path / "sessions",
@@ -482,8 +481,8 @@ class TestAdvisorApplyDryRun:
                 return_value=None,
             ),
             patch(
-                "popctl.advisor.paths.get_exchange_dir",
-                return_value=tmp_path,
+                "popctl.advisor.exchange.EXCHANGE_DIR",
+                tmp_path,
             ),
             patch(
                 "popctl.advisor.import_decisions",
@@ -533,7 +532,7 @@ class TestAdvisorErrorHandling:
             patch("popctl.cli.commands.advisor.load_advisor_config", return_value=mock_config),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch("popctl.cli.commands.advisor._scan_system", return_value=sample_scan_result),
+            patch("popctl.cli.commands.advisor.scan_system", return_value=sample_scan_result),
             patch(
                 "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
                 return_value=tmp_path / "sessions",
@@ -583,8 +582,8 @@ class TestAdvisorErrorHandling:
                 return_value=None,
             ),
             patch(
-                "popctl.advisor.paths.get_exchange_dir",
-                return_value=tmp_path,
+                "popctl.advisor.exchange.EXCHANGE_DIR",
+                tmp_path,
             ),
             patch(
                 "popctl.advisor.import_decisions",

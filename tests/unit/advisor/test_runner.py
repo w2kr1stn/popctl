@@ -552,15 +552,9 @@ class TestAgentRunnerPersistMemory:
         config = AdvisorConfig(container_mode=False)
         runner = AgentRunner(config=config)
 
-        with (
-            patch(
-                "popctl.advisor.paths.ensure_advisor_memory_dir",
-                return_value=persistent_dir,
-            ),
-            patch(
-                "popctl.advisor.paths.get_advisor_memory_path",
-                return_value=persistent_path,
-            ),
+        with patch(
+            "popctl.core.paths.ensure_dir",
+            return_value=persistent_dir,
         ):
             persistent_dir.mkdir(parents=True, exist_ok=True)
             runner._persist_memory(workspace_memory)
@@ -577,7 +571,7 @@ class TestAgentRunnerPersistMemory:
         runner = AgentRunner(config=config)
 
         with patch(
-            "popctl.advisor.paths.ensure_advisor_memory_dir",
+            "popctl.core.paths.ensure_dir",
             side_effect=RuntimeError("Permission denied"),
         ):
             # Should not raise
