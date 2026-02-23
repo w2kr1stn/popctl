@@ -6,18 +6,29 @@ Provides consistent formatting for CLI output using Rich.
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from rich.console import Console
 from rich.table import Table
 
 from popctl.core.theme import get_theme
+from popctl.models.package import PackageSource
 
 if TYPE_CHECKING:
     from popctl.models.package import ScannedPackage
 
+# Type alias for Rich color system options
+ColorSystem = Literal["auto", "standard", "256", "truecolor", "windows"]
 
-def _detect_color_system() -> str | None:
+# Source icons for package display
+SOURCE_ICONS: dict[PackageSource, str] = {
+    PackageSource.APT: "📦",
+    PackageSource.FLATPAK: "📀",
+    PackageSource.SNAP: "🔶",
+}
+
+
+def _detect_color_system() -> ColorSystem | None:
     """Detect the best color system for the current terminal.
 
     Returns "truecolor" for interactive terminals to enable full hex color support,
@@ -54,6 +65,8 @@ def create_package_table(title: str = "Installed Packages") -> Table:
     )
     # Status column: minimal width, icon only, no header text
     table.add_column("", width=2, justify="center")
+    # Source column: emoji icon for package source
+    table.add_column("", width=2, justify="center")
     table.add_column("Package", no_wrap=True)  # Style set per row
     table.add_column("Version", style="muted")
     table.add_column("Size", style="info", justify="right")
@@ -61,7 +74,7 @@ def create_package_table(title: str = "Installed Packages") -> Table:
     return table
 
 
-def format_package_row(pkg: ScannedPackage) -> tuple[str, str, str, str, str]:
+def format_package_row(pkg: ScannedPackage) -> tuple[str, str, str, str, str, str]:
     """Format a package as a table row with proper styling.
 
     Manual packages are highlighted with a filled circle icon and mint color,
@@ -71,20 +84,22 @@ def format_package_row(pkg: ScannedPackage) -> tuple[str, str, str, str, str]:
         pkg: The scanned package to format.
 
     Returns:
-        Tuple of (icon, name, version, size, description) with Rich markup.
+        Tuple of (status_icon, source_icon, name, version, size, description) with Rich markup.
     """
     if pkg.is_manual:
-        icon = "[package_manual]\u25cf[/]"  # Filled circle
+        status_icon = "[package_manual]\u25cf[/]"  # Filled circle
         name = f"[package_manual]{pkg.name}[/]"  # bold is in the style
     else:
-        icon = "[package_auto]\u25cb[/]"  # Empty circle
+        status_icon = "[package_auto]\u25cb[/]"  # Empty circle
         name = f"[package_auto]{pkg.name}[/]"
+
+    source_icon = SOURCE_ICONS.get(pkg.source, "?")
 
     version = f"[muted]{pkg.version}[/]"
     size = f"[info]{pkg.size_human}[/]"
     desc = f"[text]{pkg.description or '-'}[/]"
 
-    return (icon, name, version, size, desc)
+    return (status_icon, source_icon, name, version, size, desc)
 
 
 def format_status(is_manual: bool) -> str:
