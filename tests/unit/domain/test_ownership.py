@@ -3,8 +3,10 @@
 from pathlib import Path
 from unittest.mock import patch
 
+from popctl.domain.models import PathType
 from popctl.domain.ownership import (
     app_name_matches,
+    classify_path_type,
     dpkg_owns_path,
     get_installed_apps,
     get_installed_packages,
@@ -84,27 +86,22 @@ class TestGetInstalledPackages:
         """Parses dpkg-query output into a set of package names."""
         result = CommandResult(stdout="vim\ncurl\nwget\n", stderr="", returncode=0)
         with patch(_MOCK, return_value=result):
-            packages = get_installed_packages(None)
+            packages = get_installed_packages()
 
         assert packages == {"vim", "curl", "wget"}
-
-    def test_returns_cache_if_provided(self) -> None:
-        """Returns the cache directly without calling dpkg-query."""
-        cache = {"cached-pkg"}
-        assert get_installed_packages(cache) is cache
 
     def test_handles_failure(self) -> None:
         """Returns empty set on dpkg-query failure."""
         result = CommandResult(stdout="", stderr="error", returncode=1)
         with patch(_MOCK, return_value=result):
-            packages = get_installed_packages(None)
+            packages = get_installed_packages()
 
         assert packages == set()
 
     def test_handles_exception(self) -> None:
         """Returns empty set on FileNotFoundError."""
         with patch(_MOCK, side_effect=FileNotFoundError("dpkg-query not found")):
-            packages = get_installed_packages(None)
+            packages = get_installed_packages()
 
         assert packages == set()
 
@@ -134,16 +131,11 @@ class TestGetInstalledApps:
             return _no_result()
 
         with patch(_MOCK, side_effect=route):
-            apps = get_installed_apps(None)
+            apps = get_installed_apps()
 
         assert "org.mozilla.firefox" in apps
         assert "org.gnome.Calculator" in apps
         assert "spotify" in apps
-
-    def test_returns_cache_if_provided(self) -> None:
-        """Returns the cache directly without querying."""
-        cache = {"cached-app"}
-        assert get_installed_apps(cache) is cache
 
     def test_handles_missing_flatpak(self) -> None:
         """Missing flatpak does not prevent snap apps from being returned."""
@@ -160,7 +152,7 @@ class TestGetInstalledApps:
             return _no_result()
 
         with patch(_MOCK, side_effect=route):
-            apps = get_installed_apps(None)
+            apps = get_installed_apps()
 
         assert "spotify" in apps
 
@@ -175,14 +167,14 @@ class TestGetInstalledApps:
             return _no_result()
 
         with patch(_MOCK, side_effect=route):
-            apps = get_installed_apps(None)
+            apps = get_installed_apps()
 
         assert "org.mozilla.firefox" in apps
 
     def test_both_unavailable(self) -> None:
         """Both flatpak and snap unavailable returns empty set."""
         with patch(_MOCK, side_effect=FileNotFoundError("not found")):
-            apps = get_installed_apps(None)
+            apps = get_installed_apps()
 
         assert apps == set()
 
@@ -257,3 +249,33 @@ class TestGetPathMtime:
     def test_nonexistent_returns_none(self, tmp_path: Path) -> None:
         """Nonexistent path returns None for mtime."""
         assert get_path_mtime(tmp_path / "nonexistent") is None
+
+
+class TestClassifyPathType:
+    """Tests for classify_path_type function."""
+
+    def test_regular_file(self, tmp_path: Path) -> None:
+        """Regular file is classified as FILE."""
+        f = tmp_path / "file.txt"
+        f.write_text("content")
+        assert classify_path_type(f) == PathType.FILE
+
+    def test_directory(self, tmp_path: Path) -> None:
+        """Directory is classified as DIRECTORY."""
+        d = tmp_path / "mydir"
+        d.mkdir()
+        assert classify_path_type(d) == PathType.DIRECTORY
+
+    def test_live_symlink(self, tmp_path: Path) -> None:
+        """Live symlink is classified as SYMLINK."""
+        target = tmp_path / "target"
+        target.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(target)
+        assert classify_path_type(link) == PathType.SYMLINK
+
+    def test_dead_symlink(self, tmp_path: Path) -> None:
+        """Dead symlink is classified as DEAD_SYMLINK."""
+        link = tmp_path / "dead"
+        link.symlink_to(tmp_path / "nonexistent")
+        assert classify_path_type(link) == PathType.DEAD_SYMLINK

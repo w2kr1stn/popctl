@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from popctl.configs.scanner import ConfigScanner
 from popctl.domain.models import OrphanReason, OrphanStatus, PathType
+from popctl.domain.ownership import classify_path_type
 from popctl.utils.shell import CommandResult
 
 
@@ -140,7 +141,7 @@ class TestScanFindsOrphans:
         _mock_cmd: object,
         tmp_path: Path,
     ) -> None:
-        """Orphaned ScannedConfig has all expected fields populated."""
+        """Orphaned ScannedEntry has all expected fields populated."""
         config_dir = tmp_path / ".config"
         config_dir.mkdir()
         orphan = config_dir / "stale-app"
@@ -373,37 +374,41 @@ class TestScanHandlesPermissionError:
 class TestNormalizedNameMatch:
     """Tests for config-specific normalized name matching."""
 
+    @staticmethod
+    def _setup_scanner(packages: set[str], apps: set[str]) -> ConfigScanner:
+        """Create a ConfigScanner with pre-populated caches."""
+        scanner = ConfigScanner()
+        scanner._packages_cache = packages
+        scanner._normalized_packages = {
+            p.lower().replace(".", "").replace("-", "") for p in packages
+        }
+        scanner._apps_cache = apps
+        scanner._normalized_apps = {a.lower().replace(".", "").replace("-", "") for a in apps}
+        return scanner
+
     def test_normalized_match_dpkg_package(self) -> None:
         """Normalized dpkg package name matching strips dots and dashes."""
-        scanner = ConfigScanner()
-        scanner._packages_cache = {"libreoffice-common"}
-        scanner._apps_cache = set()
+        scanner = self._setup_scanner({"libreoffice-common"}, set())
 
         assert scanner._normalized_name_match("libreofficecommon") is True
         assert scanner._normalized_name_match("LibreOffice-Common") is True
 
     def test_normalized_match_app(self) -> None:
         """Normalized app name matching works."""
-        scanner = ConfigScanner()
-        scanner._packages_cache = set()
-        scanner._apps_cache = {"spotify"}
+        scanner = self._setup_scanner(set(), {"spotify"})
 
         assert scanner._normalized_name_match("spotify") is True
         assert scanner._normalized_name_match("Spotify") is True
 
     def test_normalized_no_match(self) -> None:
         """No match when names differ after normalization."""
-        scanner = ConfigScanner()
-        scanner._packages_cache = {"vim"}
-        scanner._apps_cache = {"org.mozilla.firefox"}
+        scanner = self._setup_scanner({"vim"}, {"org.mozilla.firefox"})
 
         assert scanner._normalized_name_match("unknown") is False
 
     def test_normalized_match_case_insensitive(self) -> None:
         """Normalized matching is case-insensitive."""
-        scanner = ConfigScanner()
-        scanner._packages_cache = {"VLC"}
-        scanner._apps_cache = set()
+        scanner = self._setup_scanner({"VLC"}, set())
 
         assert scanner._normalized_name_match("vlc") is True
         assert scanner._normalized_name_match("VLC") is True
@@ -431,7 +436,7 @@ class TestDeadSymlinkDetection:
             results = list(scanner.scan())
 
         assert len(results) == 1
-        assert results[0].path_type == PathType.FILE
+        assert results[0].path_type == PathType.DEAD_SYMLINK
         assert results[0].orphan_reason == OrphanReason.DEAD_LINK
         assert results[0].status == OrphanStatus.ORPHAN
 
@@ -499,30 +504,27 @@ class TestCachesResetPerScan:
 
 
 class TestGetPathType:
-    """Tests for path type detection."""
+    """Tests for path type detection via shared classify_path_type."""
 
     def test_get_path_type_directory(self, tmp_path: Path) -> None:
         """Regular directories are classified as DIRECTORY."""
         d = tmp_path / "mydir"
         d.mkdir()
-        scanner = ConfigScanner()
-        assert scanner._get_path_type(d) == PathType.DIRECTORY
+        assert classify_path_type(d) == PathType.DIRECTORY
 
     def test_get_path_type_file(self, tmp_path: Path) -> None:
         """Regular files are classified as FILE."""
         f = tmp_path / "myfile.conf"
         f.write_text("content")
-        scanner = ConfigScanner()
-        assert scanner._get_path_type(f) == PathType.FILE
+        assert classify_path_type(f) == PathType.FILE
 
-    def test_get_path_type_symlink_is_file(self, tmp_path: Path) -> None:
-        """Symlinks (even to directories) are classified as FILE."""
+    def test_get_path_type_symlink(self, tmp_path: Path) -> None:
+        """Live symlinks are classified as SYMLINK."""
         target = tmp_path / "target"
         target.mkdir()
         link = tmp_path / "link"
         link.symlink_to(target)
-        scanner = ConfigScanner()
-        assert scanner._get_path_type(link) == PathType.FILE
+        assert classify_path_type(link) == PathType.SYMLINK
 
 
 class TestScanIntegration:

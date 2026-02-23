@@ -3,7 +3,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from popctl.filesystem.models import OrphanReason, PathStatus, PathType
+from popctl.domain.models import OrphanReason, OrphanStatus, PathType
+from popctl.domain.ownership import classify_path_type
 from popctl.filesystem.scanner import FilesystemScanner
 from popctl.utils.shell import CommandResult
 
@@ -115,7 +116,7 @@ class TestScanFindsOrphans:
         results = list(scanner.scan())
 
         assert len(results) == 1
-        assert results[0].status == PathStatus.ORPHAN
+        assert results[0].status == OrphanStatus.ORPHAN
         assert results[0].path == str(orphan_dir)
         assert results[0].path_type == PathType.DIRECTORY
 
@@ -127,7 +128,7 @@ class TestScanFindsOrphans:
         _mock_cmd: object,
         tmp_path: Path,
     ) -> None:
-        """Orphaned ScannedPath has all expected fields populated."""
+        """Orphaned ScannedEntry has all expected fields populated."""
         config = tmp_path / "config"
         config.mkdir()
         orphan = config / "stale-app"
@@ -424,21 +425,19 @@ class TestDeadSymlinkDetection:
 
 
 class TestPathType:
-    """Tests for path type detection."""
+    """Tests for path type detection via shared classify_path_type."""
 
     def test_get_path_type_directory(self, tmp_path: Path) -> None:
         """Regular directories are classified as DIRECTORY."""
         d = tmp_path / "mydir"
         d.mkdir()
-        scanner = FilesystemScanner()
-        assert scanner._get_path_type(d) == PathType.DIRECTORY
+        assert classify_path_type(d) == PathType.DIRECTORY
 
     def test_get_path_type_file(self, tmp_path: Path) -> None:
         """Regular files are classified as FILE."""
         f = tmp_path / "myfile.txt"
         f.write_text("content")
-        scanner = FilesystemScanner()
-        assert scanner._get_path_type(f) == PathType.FILE
+        assert classify_path_type(f) == PathType.FILE
 
     def test_get_path_type_symlink(self, tmp_path: Path) -> None:
         """Live symlinks are classified as SYMLINK."""
@@ -446,15 +445,13 @@ class TestPathType:
         target.mkdir()
         link = tmp_path / "link"
         link.symlink_to(target)
-        scanner = FilesystemScanner()
-        assert scanner._get_path_type(link) == PathType.SYMLINK
+        assert classify_path_type(link) == PathType.SYMLINK
 
     def test_get_path_type_dead_symlink(self, tmp_path: Path) -> None:
         """Dead symlinks are classified as DEAD_SYMLINK."""
         link = tmp_path / "dead"
         link.symlink_to(tmp_path / "missing")
-        scanner = FilesystemScanner()
-        assert scanner._get_path_type(link) == PathType.DEAD_SYMLINK
+        assert classify_path_type(link) == PathType.DEAD_SYMLINK
 
 
 class TestOrphanReason:

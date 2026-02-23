@@ -4,26 +4,32 @@ This module provides common enums and helper functions used across
 multiple CLI command modules to avoid code duplication.
 """
 
+from __future__ import annotations
+
 from enum import Enum
 from pathlib import Path
+from typing import Literal
 
 import typer
 
+from popctl.configs import ConfigScanner
 from popctl.core import manifest as core_manifest
+from popctl.core.diff import DiffResult, compute_diff
 from popctl.core.manifest import ManifestError, ManifestNotFoundError
 from popctl.core.paths import get_manifest_path
+from popctl.domain.models import OrphanStatus, ScannedEntry
+from popctl.filesystem import FilesystemScanner
 from popctl.models.manifest import Manifest, PackageSourceType
 from popctl.models.package import PackageSource
-from popctl.scanners.apt import AptScanner
+from popctl.scanners import get_scanners
 from popctl.scanners.base import Scanner
-from popctl.scanners.flatpak import FlatpakScanner
-from popctl.scanners.snap import SnapScanner
 from popctl.utils.formatting import print_error, print_info, print_warning
 
 __all__ = [
     "OutputFormat",
     "SourceChoice",
-    "get_available_scanners",
+    "collect_domain_orphans",
+    "compute_system_diff",
     "get_checked_scanners",
     "require_manifest",
 ]
@@ -48,16 +54,15 @@ class SourceChoice(str, Enum):
         return PackageSource(self.value)
 
     def to_source_filter(self) -> PackageSourceType | None:
-        """Convert to PackageSourceType string literal (None for ALL).
+        """Convert to PackageSourceType for diff filtering.
 
-        Returns the source value as a typed literal suitable for
-        manifest filtering and compute_diff().
+        Returns:
+            The source as a PackageSourceType literal, or None for ALL.
         """
-        if self == SourceChoice.ALL:
+        ps = self.to_package_source()
+        if ps is None:
             return None
-        # Cast is safe: non-ALL values are "apt", "flatpak", "snap"
-        source: PackageSourceType = self.value  # type: ignore[assignment]
-        return source
+        return ps.value  # type: ignore[return-value]
 
 
 class OutputFormat(str, Enum):
@@ -67,39 +72,11 @@ class OutputFormat(str, Enum):
     JSON = "json"
 
 
-_SCANNER_CLASSES: dict[PackageSource, type[Scanner]] = {
-    PackageSource.APT: AptScanner,
-    PackageSource.FLATPAK: FlatpakScanner,
-    PackageSource.SNAP: SnapScanner,
-}
+class ProviderChoice(str, Enum):
+    """Available AI providers."""
 
-
-def _get_scanners(source: SourceChoice = SourceChoice.ALL) -> list[Scanner]:
-    """Get scanner instances based on source selection.
-
-    Args:
-        source: The source choice (apt, flatpak, snap, or all).
-
-    Returns:
-        List of scanner instances.
-    """
-    pkg_source = source.to_package_source()
-    classes = _SCANNER_CLASSES if pkg_source is None else {pkg_source: _SCANNER_CLASSES[pkg_source]}
-    return [cls() for cls in classes.values()]
-
-
-def get_available_scanners(source: SourceChoice = SourceChoice.ALL) -> list[Scanner]:
-    """Get available scanner instances based on source selection.
-
-    Only returns scanners that are available on the system.
-
-    Args:
-        source: The source choice (apt, flatpak, or all).
-
-    Returns:
-        List of available scanner instances.
-    """
-    return [s for s in _get_scanners(source) if s.is_available()]
+    CLAUDE = "claude"
+    GEMINI = "gemini"
 
 
 def get_checked_scanners(
@@ -122,7 +99,7 @@ def get_checked_scanners(
     Raises:
         typer.Exit: If no package managers are available.
     """
-    scanners = _get_scanners(source)
+    scanners = get_scanners(source.to_package_source())
     available: list[Scanner] = []
 
     for scanner in scanners:
@@ -163,3 +140,59 @@ def require_manifest(manifest_path: Path | None = None) -> Manifest:
     except ManifestError as e:
         print_error(f"Failed to load manifest: {e}")
         raise typer.Exit(code=1) from e
+
+
+def compute_system_diff(source: SourceChoice, *, silent_warnings: bool = False) -> DiffResult:
+    """Load manifest, scan system, and compute diff.
+
+    Convenience helper that combines require_manifest, get_checked_scanners,
+    and compute_diff into a single call. Exits on failure.
+
+    Args:
+        source: Package source filter.
+        silent_warnings: If True, suppress scanner unavailability warnings.
+
+    Returns:
+        Diff result with NEW, MISSING, and EXTRA entries.
+
+    Raises:
+        typer.Exit: If manifest or scan fails.
+    """
+    manifest = require_manifest()
+    scanners = get_checked_scanners(source, silent=silent_warnings)
+    try:
+        return compute_diff(manifest, scanners, source.to_source_filter())
+    except RuntimeError as e:
+        print_error(f"Scan failed: {e}")
+        raise typer.Exit(code=1) from e
+
+
+def collect_domain_orphans(
+    domain: Literal["filesystem", "configs"],
+    *,
+    include_files: bool = False,
+    include_etc: bool = False,
+) -> list[ScannedEntry]:
+    """Scan a domain and return orphan entries sorted by confidence (desc).
+
+    Args:
+        domain: Which domain to scan ("filesystem" or "configs").
+        include_files: Include individual stale files (filesystem only).
+        include_etc: Include /etc in scan targets (filesystem only).
+
+    Returns:
+        List of orphan entries sorted by confidence descending.
+
+    Raises:
+        OSError: If the scan encounters filesystem errors.
+        RuntimeError: If the scanner fails.
+    """
+    scanner: FilesystemScanner | ConfigScanner
+    if domain == "filesystem":
+        scanner = FilesystemScanner(include_files=include_files, include_etc=include_etc)
+    else:
+        scanner = ConfigScanner()
+
+    orphans = [item for item in scanner.scan() if item.status == OrphanStatus.ORPHAN]
+    orphans.sort(key=lambda e: e.confidence, reverse=True)
+    return orphans

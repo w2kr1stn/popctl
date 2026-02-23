@@ -10,9 +10,10 @@ import logging
 from collections.abc import Iterator
 from pathlib import Path
 
-from popctl.configs.models import ConfigOrphanReason, ConfigStatus, ConfigType, ScannedConfig
+from popctl.domain.models import OrphanReason, OrphanStatus, PathType, ScannedEntry
 from popctl.domain.ownership import (
     app_name_matches,
+    classify_path_type,
     dpkg_owns_path,
     get_installed_apps,
     get_installed_packages,
@@ -57,8 +58,10 @@ class ConfigScanner:
         self._packages_cache: set[str] | None = None
         self._apps_cache: set[str] | None = None
         self._dpkg_cache: dict[str, bool] = {}
+        self._normalized_packages: set[str] | None = None
+        self._normalized_apps: set[str] | None = None
 
-    def scan(self) -> Iterator[ScannedConfig]:
+    def scan(self) -> Iterator[ScannedEntry]:
         """Scan for orphaned configs. Yields only ORPHAN-status entries.
 
         Scans ``~/.config/`` top-level entries and known shell dotfiles
@@ -66,20 +69,20 @@ class ConfigScanner:
         skipped.
 
         Yields:
-            ScannedConfig instances for orphaned configuration entries.
+            ScannedEntry instances for orphaned configuration entries.
         """
         self._reset_caches()
         yield from self._scan_config_dir()
         yield from self._scan_dotfiles()
 
-    def _scan_config_dir(self) -> Iterator[ScannedConfig]:
+    def _scan_config_dir(self) -> Iterator[ScannedEntry]:
         """Scan ~/.config/ top-level entries only (not recursive).
 
         Iterates over direct children of ``~/.config/``, skipping
         protected entries and entries owned by installed packages.
 
         Yields:
-            ScannedConfig for each orphaned entry in ``~/.config/``.
+            ScannedEntry for each orphaned entry in ``~/.config/``.
         """
         config_dir = Path.home() / ".config"
 
@@ -99,14 +102,14 @@ class ConfigScanner:
                 logger.warning("Permission denied accessing: %s", entry)
                 continue
 
-    def _scan_dotfiles(self) -> Iterator[ScannedConfig]:
+    def _scan_dotfiles(self) -> Iterator[ScannedEntry]:
         """Scan known shell dotfiles in the home directory.
 
         Checks a predefined list of shell-related dotfiles in the
         user's home directory. Only existing files are evaluated.
 
         Yields:
-            ScannedConfig for each orphaned dotfile.
+            ScannedEntry for each orphaned dotfile.
         """
         home = Path.home()
 
@@ -121,17 +124,17 @@ class ConfigScanner:
                 logger.warning("Permission denied accessing: %s", dotfile)
                 continue
 
-    def _process_entry(self, entry: Path) -> Iterator[ScannedConfig]:
+    def _process_entry(self, entry: Path) -> Iterator[ScannedEntry]:
         """Process a single filesystem entry for orphan detection.
 
         Checks protection status and ownership, then yields a
-        ScannedConfig if the entry is classified as an orphan.
+        ScannedEntry if the entry is classified as an orphan.
 
         Args:
             entry: Path to evaluate.
 
         Yields:
-            ScannedConfig if the entry is an orphan.
+            ScannedEntry if the entry is an orphan.
         """
         name = entry.name
         path_str = str(entry)
@@ -141,39 +144,39 @@ class ConfigScanner:
 
         # Detect dead symlinks before checking ownership
         if entry.is_symlink() and not entry.exists():
-            yield ScannedConfig(
+            yield ScannedEntry(
                 path=path_str,
-                config_type=ConfigType.FILE,
-                status=ConfigStatus.ORPHAN,
+                path_type=PathType.DEAD_SYMLINK,
+                status=OrphanStatus.ORPHAN,
                 size_bytes=get_path_size(entry),
                 mtime=get_path_mtime(entry),
-                orphan_reason=ConfigOrphanReason.DEAD_LINK,
+                parent_target=None,
+                orphan_reason=OrphanReason.DEAD_LINK,
                 confidence=_CONFIDENCE_FILE,
             )
             return
 
-        config_type = self._get_config_type(entry)
+        path_type = classify_path_type(entry)
         status = self._check_ownership(name, entry)
 
-        if status != ConfigStatus.ORPHAN:
+        if status != OrphanStatus.ORPHAN:
             return
 
-        orphan_reason = ConfigOrphanReason.NO_PACKAGE_MATCH
-        confidence = (
-            _CONFIDENCE_DIRECTORY if config_type == ConfigType.DIRECTORY else _CONFIDENCE_FILE
-        )
+        orphan_reason = OrphanReason.NO_PACKAGE_MATCH
+        confidence = _CONFIDENCE_DIRECTORY if path_type == PathType.DIRECTORY else _CONFIDENCE_FILE
 
-        yield ScannedConfig(
+        yield ScannedEntry(
             path=path_str,
-            config_type=config_type,
-            status=ConfigStatus.ORPHAN,
+            path_type=path_type,
+            status=OrphanStatus.ORPHAN,
             size_bytes=get_path_size(entry),
             mtime=get_path_mtime(entry),
+            parent_target=None,
             orphan_reason=orphan_reason,
             confidence=confidence,
         )
 
-    def _check_ownership(self, name: str, path: Path) -> ConfigStatus:
+    def _check_ownership(self, name: str, path: Path) -> OrphanStatus:
         """Determine if config is owned by an installed package or app.
 
         Checks in order:
@@ -187,19 +190,19 @@ class ConfigScanner:
             path: Full path to the configuration entry.
 
         Returns:
-            ConfigStatus indicating ownership classification.
+            OrphanStatus indicating ownership classification.
         """
         if dpkg_owns_path(path, self._dpkg_cache):
-            return ConfigStatus.OWNED
+            return OrphanStatus.OWNED
 
         apps = self._ensure_apps_cache()
         if app_name_matches(name, apps):
-            return ConfigStatus.OWNED
+            return OrphanStatus.OWNED
 
         if self._normalized_name_match(name):
-            return ConfigStatus.OWNED
+            return OrphanStatus.OWNED
 
-        return ConfigStatus.ORPHAN
+        return OrphanStatus.ORPHAN
 
     def _normalized_name_match(self, name: str) -> bool:
         """Config-specific: normalized comparison against packages and apps.
@@ -215,43 +218,36 @@ class ConfigScanner:
             True if the normalized name matches any installed package or app.
         """
         name_normalized = name.lower().replace(".", "").replace("-", "")
-
-        packages = self._ensure_packages_cache()
-        if any(
-            name_normalized == pkg.lower().replace(".", "").replace("-", "") for pkg in packages
-        ):
+        self._ensure_packages_cache()
+        assert self._normalized_packages is not None
+        if name_normalized in self._normalized_packages:
             return True
-
-        apps = self._ensure_apps_cache()
-        return any(name_normalized == app.lower().replace(".", "").replace("-", "") for app in apps)
+        self._ensure_apps_cache()
+        assert self._normalized_apps is not None
+        return name_normalized in self._normalized_apps
 
     def _ensure_packages_cache(self) -> set[str]:
         """Ensure packages cache is populated and return it."""
         if self._packages_cache is None:
-            self._packages_cache = get_installed_packages(None)
+            self._packages_cache = get_installed_packages()
+            self._normalized_packages = {
+                p.lower().replace(".", "").replace("-", "") for p in self._packages_cache
+            }
         return self._packages_cache
 
     def _ensure_apps_cache(self) -> set[str]:
         """Ensure apps cache is populated and return it."""
         if self._apps_cache is None:
-            self._apps_cache = get_installed_apps(None)
+            self._apps_cache = get_installed_apps()
+            self._normalized_apps = {
+                a.lower().replace(".", "").replace("-", "") for a in self._apps_cache
+            }
         return self._apps_cache
-
-    def _get_config_type(self, path: Path) -> ConfigType:
-        """Determine ConfigType for a path.
-
-        Args:
-            path: Path to classify.
-
-        Returns:
-            ConfigType.DIRECTORY for directories, ConfigType.FILE otherwise.
-        """
-        if path.is_dir() and not path.is_symlink():
-            return ConfigType.DIRECTORY
-        return ConfigType.FILE
 
     def _reset_caches(self) -> None:
         """Reset all caches. Called at start of each scan()."""
         self._packages_cache = None
         self._apps_cache = None
         self._dpkg_cache = {}
+        self._normalized_packages = None
+        self._normalized_apps = None

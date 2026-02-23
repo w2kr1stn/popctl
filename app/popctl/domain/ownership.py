@@ -1,4 +1,4 @@
-"""Package/app ownership checking for orphan scanners.
+"""Package/app ownership checking and path metadata for orphan scanners.
 
 Provides shared functions for determining whether filesystem or config
 paths are owned by installed packages (dpkg, flatpak, snap). Caches
@@ -9,9 +9,29 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
+from popctl.domain.models import PathType
 from popctl.utils.shell import run_command
 
 logger = logging.getLogger(__name__)
+
+
+def classify_path_type(path: Path) -> PathType:
+    """Classify a filesystem path into a PathType.
+
+    Handles regular files, directories, symlinks (live and dead),
+    and falls back to FILE for special files (sockets, FIFOs).
+
+    Args:
+        path: Path to classify.
+
+    Returns:
+        The PathType classification.
+    """
+    if path.is_symlink():
+        return PathType.DEAD_SYMLINK if not path.exists() else PathType.SYMLINK
+    if path.is_dir():
+        return PathType.DIRECTORY
+    return PathType.FILE
 
 
 def dpkg_owns_path(path: Path, cache: dict[str, bool]) -> bool:
@@ -41,21 +61,14 @@ def dpkg_owns_path(path: Path, cache: dict[str, bool]) -> bool:
     return owned
 
 
-def get_installed_packages(cache: set[str] | None) -> set[str]:
-    """Get installed dpkg package names (lazy-cached).
+def get_installed_packages() -> set[str]:
+    """Get installed dpkg package names.
 
     Runs ``dpkg-query -f '${Package}\\n' -W`` and returns the result.
-    If cache is not None, returns it directly.
-
-    Args:
-        cache: Existing cache to return if not None.
 
     Returns:
         Set of installed package names.
     """
-    if cache is not None:
-        return cache
-
     try:
         result = run_command(
             ["dpkg-query", "-f", "${Package}\n", "-W"],
@@ -70,21 +83,15 @@ def get_installed_packages(cache: set[str] | None) -> set[str]:
     return set()
 
 
-def get_installed_apps(cache: set[str] | None) -> set[str]:
-    """Get installed flatpak + snap app names (lazy-cached).
+def get_installed_apps() -> set[str]:
+    """Get installed flatpak + snap app names.
 
     Queries both flatpak and snap for installed applications.
     If either is unavailable, its contribution is an empty set.
 
-    Args:
-        cache: Existing cache to return if not None.
-
     Returns:
         Set of installed application identifiers.
     """
-    if cache is not None:
-        return cache
-
     apps: set[str] = set()
 
     # Flatpak apps
@@ -95,8 +102,8 @@ def get_installed_apps(cache: set[str] | None) -> set[str]:
         )
         if result.success:
             apps.update(line.strip() for line in result.stdout.strip().split("\n") if line.strip())
-    except (FileNotFoundError, OSError):
-        pass
+    except (FileNotFoundError, OSError) as exc:
+        logger.debug("flatpak not available: %s", exc)
 
     # Snap apps
     try:
@@ -108,8 +115,8 @@ def get_installed_apps(cache: set[str] | None) -> set[str]:
                 parts = line.split()
                 if parts:
                     apps.add(parts[0])
-    except (FileNotFoundError, OSError):
-        pass
+    except (FileNotFoundError, OSError) as exc:
+        logger.debug("snap not available: %s", exc)
 
     return apps
 
@@ -167,10 +174,10 @@ def get_path_size(path: Path) -> int | None:
                 except OSError:
                     continue
             return total
+
+        return None  # special file (socket, FIFO, device node)
     except OSError:
         return None
-
-    return None
 
 
 def get_path_mtime(path: Path) -> str | None:

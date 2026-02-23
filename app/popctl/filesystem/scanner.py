@@ -10,15 +10,16 @@ import logging
 from collections.abc import Iterator
 from pathlib import Path
 
+from popctl.domain.models import OrphanReason, OrphanStatus, PathType, ScannedEntry
 from popctl.domain.ownership import (
     app_name_matches,
+    classify_path_type,
     dpkg_owns_path,
     get_installed_apps,
     get_path_mtime,
     get_path_size,
 )
 from popctl.domain.protected import is_protected
-from popctl.filesystem.models import OrphanReason, PathStatus, PathType, ScannedPath
 
 logger = logging.getLogger(__name__)
 
@@ -69,15 +70,15 @@ class FilesystemScanner:
         self._installed_apps: set[str] | None = None
         self._dpkg_cache: dict[str, bool] = {}
 
-    def scan(self) -> Iterator[ScannedPath]:
+    def scan(self) -> Iterator[ScannedEntry]:
         """Scan all target directories and yield orphaned paths.
 
         Iterates over each configured target directory. Skips
-        non-existent targets silently. Yields ScannedPath for each
+        non-existent targets silently. Yields ScannedEntry for each
         top-level entry that is classified as an orphan.
 
         Yields:
-            ScannedPath instances for orphaned filesystem entries.
+            ScannedEntry instances for orphaned filesystem entries.
         """
         # Reset caches for each scan session
         self._installed_apps = None
@@ -88,7 +89,7 @@ class FilesystemScanner:
                 continue
             yield from self._scan_directory(target)
 
-    def _scan_directory(self, target: Path) -> Iterator[ScannedPath]:
+    def _scan_directory(self, target: Path) -> Iterator[ScannedEntry]:
         """Scan a single target directory for orphaned entries.
 
         Iterates over top-level entries in the target directory,
@@ -99,7 +100,7 @@ class FilesystemScanner:
             target: Directory to scan.
 
         Yields:
-            ScannedPath for each orphaned entry.
+            ScannedEntry for each orphaned entry.
         """
         try:
             entries = sorted(target.iterdir())
@@ -109,7 +110,7 @@ class FilesystemScanner:
 
         for entry in entries:
             try:
-                path_type = self._get_path_type(entry)
+                path_type = classify_path_type(entry)
             except OSError:
                 logger.warning("Cannot determine type of: %s", entry)
                 continue
@@ -121,7 +122,7 @@ class FilesystemScanner:
             name = entry.name
             status = self._check_ownership(name, entry)
 
-            if status in (PathStatus.OWNED, PathStatus.PROTECTED):
+            if status in (OrphanStatus.OWNED, OrphanStatus.PROTECTED):
                 continue
 
             # Determine orphan reason
@@ -133,10 +134,10 @@ class FilesystemScanner:
             # Build parent_target as tilde-prefixed path for home dirs
             parent_target = self._format_target(target)
 
-            yield ScannedPath(
+            yield ScannedEntry(
                 path=str(entry),
                 path_type=path_type,
-                status=PathStatus.ORPHAN,
+                status=OrphanStatus.ORPHAN,
                 size_bytes=size,
                 mtime=mtime,
                 parent_target=parent_target,
@@ -144,7 +145,7 @@ class FilesystemScanner:
                 confidence=confidence,
             )
 
-    def _check_ownership(self, name: str, path: Path) -> PathStatus:
+    def _check_ownership(self, name: str, path: Path) -> OrphanStatus:
         """Determine if a path is owned by an installed package or app.
 
         Checks in order:
@@ -157,24 +158,24 @@ class FilesystemScanner:
             path: Full path to the entry.
 
         Returns:
-            PathStatus indicating ownership classification.
+            OrphanStatus indicating ownership classification.
         """
         if is_protected(str(path), "filesystem"):
-            return PathStatus.PROTECTED
+            return OrphanStatus.PROTECTED
 
         if dpkg_owns_path(path, self._dpkg_cache):
-            return PathStatus.OWNED
+            return OrphanStatus.OWNED
 
         apps = self._ensure_apps_cache()
         if app_name_matches(name, apps):
-            return PathStatus.OWNED
+            return OrphanStatus.OWNED
 
-        return PathStatus.ORPHAN
+        return OrphanStatus.ORPHAN
 
     def _ensure_apps_cache(self) -> set[str]:
         """Ensure apps cache is populated and return it."""
         if self._installed_apps is None:
-            self._installed_apps = get_installed_apps(None)
+            self._installed_apps = get_installed_apps()
         return self._installed_apps
 
     def _calculate_confidence(self, target: str) -> float:
@@ -197,29 +198,6 @@ class FilesystemScanner:
             return 0.50
 
         return 0.60
-
-    def _get_path_type(self, path: Path) -> PathType:
-        """Determine the type of a filesystem path.
-
-        Checks for symlinks first (before is_dir/is_file which follow
-        symlinks), distinguishing between live and dead symlinks.
-
-        Args:
-            path: Path to classify.
-
-        Returns:
-            PathType classification.
-        """
-        if path.is_symlink():
-            # Check if symlink target exists (without following further)
-            if not path.exists():
-                return PathType.DEAD_SYMLINK
-            return PathType.SYMLINK
-
-        if path.is_dir():
-            return PathType.DIRECTORY
-
-        return PathType.FILE
 
     @staticmethod
     def _format_target(target: Path) -> str:
