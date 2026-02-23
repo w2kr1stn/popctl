@@ -1,10 +1,11 @@
 """Prompt templates for AI-assisted package classification.
 
 This module provides prompt templates for the Claude Advisor to classify
-packages as keep, remove, or ask. It supports both headless (autonomous)
-and interactive modes.
+packages as keep, remove, or ask. It supports headless (autonomous) mode
+and workspace-based interactive sessions via CLAUDE.md.
 
-Templates are based on the classification rules from SPEC.md Section 8.
+Templates encode classification rules for protected packages, confidence
+thresholds, valid categories, and output format (decisions.toml).
 """
 
 from datetime import UTC, datetime
@@ -92,29 +93,38 @@ Write your decisions to `{decisions_output_path}` in TOML format.
 ## Context
 
 - **OS**: Pop!_OS 24.04 LTS with COSMIC desktop
-- **User profile**: Developer who uses containers for most work
-- **Goal**: Identify packages that can be safely removed vs. must be kept
+- **User profile**: Developer who uses containers for all development work
+- **Goal**: Achieve a maximally lean, minimally invasive host system
+- **Philosophy**: The host provides only the OS, desktop, drivers, and
+  container runtime. All development tools, compilers, interpreters,
+  and build dependencies belong inside dev-containers, NOT on the host.
+- If `memory.md` exists in the working directory, read it first and use
+  prior user decisions to pre-classify packages with higher confidence.
 {system_context}
 
 ## Classification Rules
 
 ### 1. KEEP (confidence >= 0.9)
 - System-critical packages (kernel, systemd, drivers)
-- Libraries actively used by installed applications
-- Hardware support (GPU, audio, network drivers)
+- Libraries required by installed desktop applications
+- Hardware support (GPU, audio, network, bluetooth drivers)
 - Desktop environment components (COSMIC, GNOME libraries)
-- Essential development tools actively used
+- Container runtime and tooling (docker, podman)
 
 ### 2. REMOVE (confidence >= 0.9)
+- Development tools and compilers (gcc, make, *-dev headers) —
+  these belong in containers
 - Packages for uninstalled applications (orphaned dependencies)
 - Obsolete/deprecated packages no longer maintained
 - Known bloatware or telemetry (apport, whoopsie, popularity-contest)
-- Duplicate functionality (e.g., multiple editors when user prefers one)
+- Duplicate functionality (e.g., multiple editors, redundant utilities)
+- Server software not needed on a desktop (apache, nginx, postfix)
+- Printer drivers if no printer is connected
 
 ### 3. ASK (confidence < 0.9)
-- Packages with unclear purpose
-- Development tools (user might need them)
-- Optional features that may or may not be used
+- Packages where the removal impact is unclear
+- Libraries that MIGHT be needed by installed desktop apps
+- Optional desktop features (accessibility, input methods)
 - Anything where you are uncertain
 
 ## Valid Categories
@@ -149,9 +159,10 @@ ask = []
 
 ## Important Notes
 
-1. Read the scan.json file completely before classifying
-2. Be conservative - when in doubt, use "ask" instead of "remove"
-3. Never recommend removing system-critical packages
+1. Read the scan.json file and memory.md (if present) completely before classifying
+2. Lean towards removal — if a package is not clearly needed on the host,
+   recommend removal. Use "ask" only when removal impact is genuinely unclear.
+3. Never recommend removing system-critical or protected packages
 4. Provide clear, concise reasons for each classification
 5. Confidence should reflect your certainty (0.0 to 1.0)
 6. The output file MUST be valid TOML syntax
@@ -163,59 +174,179 @@ Read `{scan_json_path}` and write your decisions to `{decisions_output_path}`.
 # fmt: on
 
 # =============================================================================
-# Interactive Mode Instructions
+# Session CLAUDE.md Template (auto-loaded by Claude Code from workspace CWD)
 # =============================================================================
 
 # fmt: off
-INTERACTIVE_INSTRUCTIONS = """\
-# Package Classification Task
+SESSION_CLAUDE_MD = """\
+# Interaktive Paket-Klassifikation
 
-You are helping to classify packages on a Pop!_OS 24.04 system.
+You are a Linux system administration expert helping the user classify
+packages on a Pop!_OS 24.04 system. This is an **interactive session** —
+you work together with the user, not autonomously.
 
-## Files Available
+## Context
+{system_context}
 
-| File | Description |
-|------|-------------|
-| `{scan_json_path}` | System scan data (packages to classify) |
-| `{manifest_path}` | Current manifest (for reference) |
+## Design Philosophy
 
-## Your Output
+The user strives for a **maximally lean, minimally invasive host system**.
+The host provides only: OS, desktop environment, hardware drivers, and
+container runtime. All development tools, compilers, interpreters, and
+build dependencies belong inside dev-containers, NOT on the host.
 
-Write your classification decisions to: `{decisions_output_path}`
+When in doubt, **lean towards removal** — the user prefers to discover
+a missing package later and re-install it, rather than keeping unnecessary
+packages on the host.
 
-## Classification Guidelines
+## Input Files
 
-### KEEP (confidence >= 0.9)
-- System-critical packages (kernel, systemd, cosmic-*, pop-*, drivers)
-- Libraries needed by installed applications
-- Hardware support packages
-- Desktop environment components
+- `scan.json` — Package scan data (read this first)
+- `manifest.toml` — Current manifest for reference (if present)
+- `memory.md` — Past session decisions and user preferences (if present)
 
-### REMOVE (confidence >= 0.9)
-- Orphaned dependencies (packages for removed apps)
-- Obsolete/deprecated packages
-- Known telemetry (apport, whoopsie, popularity-contest)
+## Workflow (STRICT — follow phases in order)
 
-### ASK (confidence < 0.9)
-- Unclear purpose
-- Development tools (may or may not be needed)
-- Optional features
+### Phase 0: Agenda
 
-## Output Format (decisions.toml)
+1. Read `scan.json` completely
+2. If `memory.md` exists, read it to learn prior user decisions
+3. Greet the user briefly in German
+4. Present a short agenda:
+   - Total package count from scan
+   - Estimated auto-classifiable count (confidence >= 0.9)
+   - Estimated packages requiring user input
+   - If memory.md had relevant prior decisions, mention how many packages
+     can be pre-classified from memory
+5. Wait for user acknowledgment before proceeding
+
+### Phase 1: Auto-classify obvious packages (SILENT)
+
+Classify these packages automatically WITHOUT asking the user:
+
+- **KEEP** (confidence >= 0.9): System-critical, protected, libraries
+  required by installed desktop apps, hardware drivers, desktop environment
+- **REMOVE** (confidence >= 0.9): Development tools and compilers
+  (gcc, make, *-dev headers), known bloatware/telemetry (apport, whoopsie),
+  orphaned dependencies, server software, printer drivers (no printer),
+  clearly unnecessary packages for a lean desktop
+- **Memory-based**: Packages with prior decisions in `memory.md` —
+  classify according to the stored decision (unless context has changed)
+
+### Phase 2: Present Auto-classified Results
+
+Present the results of Phase 1 to the user:
+
+- **KEEP**: Show summary count only, offer opt-in drill-down.
+  Example: "84 Pakete → KEEP (System, Desktop, Treiber). Liste sehen?"
+- **REMOVE**: List ALL packages marked for removal with brief reason.
+  Present as a table: | Paket | Grund | Kategorie |
+- **Memory-based**: Mention how many were pre-classified from memory.
+
+Ask the user to **confirm or adjust** before proceeding.
+The user may:
+- Confirm all ("Passt so")
+- Move specific packages between categories ("Behalte X, entferne Y")
+- Request the full KEEP list for review
+
+**DO NOT proceed to Phase 3 until the user has confirmed.**
+
+### Phase 3: Interactive Triage (AskUserQuestion)
+
+For ALL remaining uncertain packages (confidence < 0.9, not covered by
+memory), use the **AskUserQuestion** tool to present them to the user.
+
+**Batching**: Present up to 4 packages per AskUserQuestion call.
+Each question should contain:
+- Package name and brief description of what it does
+- Your recommendation with reasoning
+- Question format: "[package]: [description]. Empfehlung: [action]. [reason]"
+
+**Options per question** (exactly 3):
+1. "Behalten" — Keep the package
+2. "Entfernen" — Remove the package
+3. "Diskutieren" — Discuss further in Phase 4
+
+Group packages by category when batching (e.g., 4 development tools
+together, then 4 media packages, etc.).
+
+Collect all "Diskutieren" responses for Phase 4.
+
+### Phase 4: Deep-Dive Discussion
+
+For each package the user marked as "Diskutieren" in Phase 3:
+
+**DO NOT use AskUserQuestion here. Use free-form conversation.**
+
+For each package, provide:
+1. Detailed description — what the package does, who uses it
+2. Dependencies — what it pulls in, what depends on it
+3. Impact assessment — what breaks if removed
+4. Clear recommendation with confidence level
+5. Answer any follow-up questions from the user
+
+After discussing each package, ask for the user's final decision
+(keep or remove) before moving to the next package.
+
+### Phase 5: Write Artifact + Session Close
+
+1. Write ALL collected decisions to `output/decisions.toml`
+2. Update `memory.md` with new decisions and any learned preferences:
+   - Add/update entries in the Known Decisions section
+   - Note any new user preferences discovered during the session
+   - Remove entries for packages no longer present in the scan
+   - Keep the file concise — summarize categories with 20+ entries
+3. Present a final summary table:
+   - Total KEEP count
+   - Total REMOVE count
+   - Packages discussed in detail
+4. Print: "**Session abgeschlossen.** Die Entscheidungen wurden in \
+`output/decisions.toml` geschrieben. Du kannst die Session jetzt schliessen."
+
+## Memory File Format (memory.md)
+
+If `memory.md` does not exist, create it at the end of the session.
+If it exists, update it. Structure:
+
+```markdown
+# Advisor Memory
+
+## User Preferences
+- [learned preferences, e.g., "User removes all dev tools from host"]
+
+## Known Decisions
+### Keep
+- package-name: reason (YYYY-MM-DD)
+
+### Remove
+- package-name: reason (YYYY-MM-DD)
+
+## Notes
+- [any other context that helps future classifications]
+```
+
+## Protected Packages (NEVER remove)
+
+Packages matching these patterns must always be classified as KEEP:
+`linux-*`, `systemd*`, `cosmic-*`, `pop-*`, `system76-*`, `grub-*`,
+`apt*`, `dpkg*`, `flatpak`, `bash`, `coreutils`, `sudo`, `networkmanager*`
+
+## Valid Categories
+
+{categories}
+
+## Output Format (output/decisions.toml)
 
 ```toml
-# Generated by AI Advisor
-# Date: {timestamp}
-
 [packages.apt]
 keep = [
-    {{ name = "pkg", reason = "why", confidence = 0.95, category = "system" }},
+    {{ name = "libvdpau1", reason = "GPU acceleration", confidence = 0.95, category = "drivers" }},
 ]
 remove = [
-    {{ name = "pkg", reason = "why", confidence = 0.92, category = "telemetry" }},
+    {{ name = "apport", reason = "Crash telemetry", confidence = 0.92, category = "telemetry" }},
 ]
 ask = [
-    {{ name = "pkg", reason = "why", confidence = 0.45, category = "development" }},
+    {{ name = "gcc", reason = "Development tool", confidence = 0.65, category = "development" }},
 ]
 
 [packages.flatpak]
@@ -224,27 +355,27 @@ remove = []
 ask = []
 ```
 
-## Valid Categories
+## Rules
 
-{categories}
-
-## Workflow
-
-1. Read the scan.json file to understand what packages are installed
-2. Reference the manifest.toml to see what the user already tracks
-3. Classify each package according to the guidelines
-4. Write your decisions to the output file
-
-## Important
-
-- Be conservative: prefer "ask" over "remove" when uncertain
-- Never remove packages matching: linux-*, systemd*, cosmic-*, pop-*, system76-*
-- Provide clear reasons for each classification
-- Output MUST be valid TOML syntax
-
-When ready, ask any clarifying questions or proceed with classification.
+1. Read `scan.json` and `memory.md` (if present) completely before starting
+2. Lean towards removal — if not clearly needed on the host, recommend removal
+3. The `ask` list in decisions.toml should be EMPTY after an interactive session
+   — all packages must be resolved to keep or remove through discussion
+4. Never remove protected packages
+5. Confidence reflects your certainty (0.0 to 1.0)
+6. Output MUST be valid TOML syntax
+7. **NEVER write decisions.toml before finishing ALL discussions with the user**
+8. **ALWAYS update memory.md at the end of the session**
 """
 # fmt: on
+
+# Initial prompt sent to Claude Code when starting an interactive session.
+# Directs the agent to follow the phased workflow defined in CLAUDE.md.
+INITIAL_PROMPT = (
+    "Lies scan.json, CLAUDE.md und memory.md (falls vorhanden). "
+    "Beginne mit Phase 0: Stelle dich kurz vor und praesentiere die Agenda. "
+    "Folge dann dem Workflow in CLAUDE.md strikt — Phase fuer Phase."
+)
 
 
 def build_headless_prompt(
@@ -301,45 +432,57 @@ def build_headless_prompt(
     )
 
 
-def build_interactive_instructions(
-    scan_json_path: str,
-    manifest_path: str,
-    decisions_output_path: str,
+def build_session_claude_md(
+    system_info: dict[str, str] | None = None,
+    summary: dict[str, int] | None = None,
 ) -> str:
-    """Build instructions.md content for interactive mode.
+    """Build CLAUDE.md content for an interactive session workspace.
 
-    Creates a Markdown document that guides the AI agent through the
-    interactive classification process. This is used when the user
-    wants to supervise or collaborate with the agent.
+    Creates a comprehensive CLAUDE.md file that Claude Code picks up
+    automatically from the working directory. Contains classification
+    rules, output format, and system context.
 
     Args:
-        scan_json_path: Path to scan.json file containing package data.
-        manifest_path: Path to current manifest.toml for reference.
-        decisions_output_path: Path for agent to write decisions.toml.
+        system_info: Optional system context (hostname, os).
+        summary: Optional package count summary (total, manual, auto).
 
     Returns:
-        Markdown content for instructions.md.
-
-    Example:
-        >>> instructions = build_interactive_instructions(
-        ...     "/tmp/popctl-exchange/scan.json",
-        ...     "~/.config/popctl/manifest.toml",
-        ...     "/tmp/popctl-exchange/decisions.toml"
-        ... )
+        CLAUDE.md content string.
     """
-    # Format categories as comma-separated list for compact display
-    categories_formatted = ", ".join(f"`{cat}`" for cat in CATEGORIES)
+    # Build system context section
+    context_lines: list[str] = []
+    if system_info:
+        if "hostname" in system_info:
+            context_lines.append(f"- **Hostname**: {system_info['hostname']}")
+        if "os" in system_info:
+            context_lines.append(f"- **OS Version**: {system_info['os']}")
+    if summary:
+        if "total" in summary:
+            context_lines.append(f"- **Total packages scanned**: {summary['total']}")
+        if "manual" in summary:
+            context_lines.append(f"- **Manually installed**: {summary['manual']}")
 
-    # Generate timestamp
     timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    context_lines.append(f"- **Scan date**: {timestamp}")
 
-    return INTERACTIVE_INSTRUCTIONS.format(
-        scan_json_path=scan_json_path,
-        manifest_path=manifest_path,
-        decisions_output_path=decisions_output_path,
-        categories=categories_formatted,
-        timestamp=timestamp,
+    system_context = "\n".join(context_lines) if context_lines else "No system context available."
+
+    # Format categories as bullet list
+    categories_list = "\n".join(f"- `{cat}`" for cat in CATEGORIES)
+
+    return SESSION_CLAUDE_MD.format(
+        system_context=system_context,
+        categories=categories_list,
     )
+
+
+def build_initial_prompt() -> str:
+    """Get the initial prompt for interactive Claude Code sessions.
+
+    Returns:
+        Short German prompt to kick off the classification conversation.
+    """
+    return INITIAL_PROMPT
 
 
 def get_decisions_schema(provider: str = "claude") -> str:
@@ -368,15 +511,3 @@ def get_prompt_file_path(exchange_dir: Path) -> Path:
         Path to prompt.txt in the exchange directory.
     """
     return exchange_dir / "prompt.txt"
-
-
-def get_instructions_file_path(exchange_dir: Path) -> Path:
-    """Get the standard path for instructions.md in exchange directory.
-
-    Args:
-        exchange_dir: Exchange directory path.
-
-    Returns:
-        Path to instructions.md in the exchange directory.
-    """
-    return exchange_dir / "instructions.md"
