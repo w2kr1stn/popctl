@@ -12,15 +12,13 @@ import pytest
 from popctl.advisor.exchange import (
     DecisionsResult,
     DomainDecisions,
-    OrphanEntry,
     PackageDecision,
-    PackageScanEntry,
     PathDecision,
-    ScanExport,
     SourceDecisions,
+    apply_domain_decisions_to_manifest,
     import_decisions,
 )
-from popctl.models.manifest import Manifest
+from popctl.models.manifest import DomainConfig, DomainEntry, Manifest
 
 # =============================================================================
 # Test Fixtures
@@ -91,92 +89,6 @@ keep = [
     { name = "test", reason = "test"
 ]
 """
-
-
-# =============================================================================
-# Test PackageScanEntry Model
-# =============================================================================
-
-
-class TestPackageScanEntry:
-    """Tests for PackageScanEntry Pydantic model."""
-
-    def test_create_entry_with_all_fields(self) -> None:
-        """PackageScanEntry accepts all fields."""
-        entry = PackageScanEntry(
-            name="firefox",
-            source="apt",
-            version="128.0",
-            status="manual",
-            description="Web browser",
-            size_bytes=204800,
-        )
-
-        assert entry.name == "firefox"
-        assert entry.source == "apt"
-        assert entry.version == "128.0"
-        assert entry.status == "manual"
-        assert entry.description == "Web browser"
-        assert entry.size_bytes == 204800
-
-    def test_create_entry_with_minimal_fields(self) -> None:
-        """PackageScanEntry works with minimal required fields."""
-        entry = PackageScanEntry(
-            name="test",
-            source="apt",
-            version="1.0",
-            status="manual",
-        )
-
-        assert entry.name == "test"
-        assert entry.description is None
-        assert entry.size_bytes is None
-
-    def test_entry_is_frozen(self) -> None:
-        """PackageScanEntry is immutable."""
-        entry = PackageScanEntry(
-            name="test",
-            source="apt",
-            version="1.0",
-            status="manual",
-        )
-
-        from pydantic import ValidationError
-
-        with pytest.raises(ValidationError):  # Pydantic frozen models raise ValidationError
-            entry.name = "changed"  # type: ignore[misc]
-
-
-# =============================================================================
-# Test ScanExport Model
-# =============================================================================
-
-
-class TestScanExport:
-    """Tests for ScanExport Pydantic model."""
-
-    def test_create_scan_export(self) -> None:
-        """ScanExport accepts complete data."""
-        entries = [
-            PackageScanEntry(
-                name="firefox",
-                source="apt",
-                version="128.0",
-                status="manual",
-            )
-        ]
-
-        export = ScanExport(
-            scan_date="2026-01-25T12:00:00Z",
-            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
-            summary={"total_packages": 1, "manual_apt": 1},
-            packages={"unknown": entries, "new_since_manifest": []},
-        )
-
-        assert export.scan_date == "2026-01-25T12:00:00Z"
-        assert export.system["hostname"] == "test-host"
-        assert export.summary["total_packages"] == 1
-        assert len(export.packages["unknown"]) == 1
 
 
 # =============================================================================
@@ -303,7 +215,7 @@ class TestImportDecisions:
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(valid_decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         assert isinstance(result, DecisionsResult)
         assert "apt" in result.packages
@@ -315,7 +227,7 @@ class TestImportDecisions:
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(valid_decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         apt_keep = result.packages["apt"].keep
         assert len(apt_keep) == 2
@@ -330,7 +242,7 @@ class TestImportDecisions:
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(valid_decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         apt_remove = result.packages["apt"].remove
         assert len(apt_remove) == 1
@@ -342,7 +254,7 @@ class TestImportDecisions:
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(valid_decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         apt_ask = result.packages["apt"].ask
         assert len(apt_ask) == 1
@@ -356,7 +268,7 @@ class TestImportDecisions:
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(valid_decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         flatpak_keep = result.packages["flatpak"].keep
         assert len(flatpak_keep) == 1
@@ -368,7 +280,7 @@ class TestImportDecisions:
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(valid_decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         snap_keep = result.packages["snap"].keep
         assert len(snap_keep) == 1
@@ -397,7 +309,7 @@ ask = []
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         # Should have empty snap decisions
         assert "snap" in result.packages
@@ -408,7 +320,7 @@ ask = []
     def test_import_raises_file_not_found(self, tmp_path: Path) -> None:
         """import_decisions raises FileNotFoundError if file missing."""
         with pytest.raises(FileNotFoundError, match="decisions.toml not found"):
-            import_decisions(tmp_path)
+            import_decisions(tmp_path / "decisions.toml")
 
     def test_import_raises_on_invalid_toml(self, tmp_path: Path, invalid_toml_syntax: str) -> None:
         """import_decisions raises ValueError on invalid TOML syntax."""
@@ -416,7 +328,7 @@ ask = []
         decisions_path.write_text(invalid_toml_syntax)
 
         with pytest.raises(ValueError, match="Invalid TOML"):
-            import_decisions(tmp_path)
+            import_decisions(tmp_path / "decisions.toml")
 
     def test_import_raises_on_invalid_category(
         self, tmp_path: Path, invalid_category_toml: str
@@ -426,7 +338,7 @@ ask = []
         decisions_path.write_text(invalid_category_toml)
 
         with pytest.raises(ValueError, match="Invalid category"):
-            import_decisions(tmp_path)
+            import_decisions(tmp_path / "decisions.toml")
 
     def test_import_handles_empty_lists(self, tmp_path: Path) -> None:
         """import_decisions handles empty decision lists."""
@@ -449,7 +361,7 @@ ask = []
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         assert result.packages["apt"].keep == []
         assert result.packages["apt"].remove == []
@@ -470,218 +382,13 @@ ask = []
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         # Should have empty flatpak and snap decisions
         assert result.packages["flatpak"].keep == []
         assert result.packages["flatpak"].remove == []
         assert result.packages["snap"].keep == []
         assert result.packages["snap"].remove == []
-
-
-# =============================================================================
-# Test Module Exports
-# =============================================================================
-
-
-class TestModuleExports:
-    """Tests for module-level exports."""
-
-    def test_exchange_module_exports(self) -> None:
-        """exchange module exports expected symbols."""
-        from popctl.advisor import exchange
-
-        # Models
-        assert hasattr(exchange, "PackageScanEntry")
-        assert hasattr(exchange, "ScanExport")
-        assert hasattr(exchange, "PackageDecision")
-        assert hasattr(exchange, "SourceDecisions")
-        assert hasattr(exchange, "DecisionsResult")
-        assert hasattr(exchange, "PathDecision")
-        assert hasattr(exchange, "DomainDecisions")
-        assert hasattr(exchange, "OrphanEntry")
-
-        # Functions
-        assert hasattr(exchange, "import_decisions")
-        assert hasattr(exchange, "apply_decisions_to_manifest")
-
-    def test_advisor_init_exports_exchange(self) -> None:
-        """advisor __init__ exports exchange symbols."""
-        from popctl.advisor import (
-            DecisionsResult,
-            DomainDecisions,
-            OrphanEntry,
-            PackageDecision,
-            PackageScanEntry,
-            PathDecision,
-            ScanExport,
-            SourceDecisions,
-            import_decisions,
-        )
-
-        # Verify imports work and are callable/classes
-        assert callable(import_decisions)
-        assert PackageScanEntry is not None
-        assert ScanExport is not None
-        assert PackageDecision is not None
-        assert SourceDecisions is not None
-        assert DecisionsResult is not None
-        assert PathDecision is not None
-        assert DomainDecisions is not None
-        assert OrphanEntry is not None
-
-
-# =============================================================================
-# Test OrphanEntry Model
-# =============================================================================
-
-
-class TestOrphanEntry:
-    """Tests for OrphanEntry Pydantic model."""
-
-    def test_orphan_entry_creation_with_parent_target(self) -> None:
-        """OrphanEntry accepts all fields including parent_target."""
-        entry = OrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            size_bytes=4096,
-            mtime="2024-01-15T10:00:00Z",
-            parent_target="~/.config",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        assert entry.path == "~/.config/vlc"
-        assert entry.path_type == "directory"
-        assert entry.size_bytes == 4096
-        assert entry.mtime == "2024-01-15T10:00:00Z"
-        assert entry.parent_target == "~/.config"
-        assert entry.orphan_reason == "no_package_match"
-        assert entry.confidence == 0.70
-
-    def test_orphan_entry_creation_without_parent_target(self) -> None:
-        """OrphanEntry works without parent_target (config use case)."""
-        entry = OrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            size_bytes=4096,
-            mtime="2024-01-15T10:00:00Z",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        assert entry.path == "~/.config/vlc"
-        assert entry.parent_target is None
-
-    def test_orphan_entry_optional_fields(self) -> None:
-        """OrphanEntry defaults optional fields to None."""
-        entry = OrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        assert entry.size_bytes is None
-        assert entry.mtime is None
-        assert entry.parent_target is None
-
-    def test_orphan_entry_frozen(self) -> None:
-        """OrphanEntry is immutable."""
-        from pydantic import ValidationError
-
-        entry = OrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            parent_target="~/.config",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        with pytest.raises(ValidationError):
-            entry.path = "changed"  # type: ignore[misc]
-
-
-# =============================================================================
-# Test ScanExport with filesystem_orphans
-# =============================================================================
-
-
-class TestScanExportFilesystemOrphans:
-    """Tests for ScanExport filesystem_orphans field."""
-
-    def test_scan_export_filesystem_orphans_defaults(self) -> None:
-        """ScanExport defaults to empty filesystem_orphans list."""
-        export = ScanExport(
-            scan_date="2026-01-25T12:00:00Z",
-            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
-            summary={"total_packages": 0},
-            packages={"unknown": []},
-        )
-
-        assert export.filesystem_orphans == []
-
-    def test_scan_export_filesystem_orphans_with_entries(self) -> None:
-        """ScanExport accepts filesystem orphan entries."""
-        orphan = OrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            parent_target="~/.config",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        export = ScanExport(
-            scan_date="2026-01-25T12:00:00Z",
-            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
-            summary={"total_packages": 0},
-            packages={"unknown": []},
-            filesystem_orphans=[orphan],
-        )
-
-        assert len(export.filesystem_orphans) == 1
-        assert export.filesystem_orphans[0].path == "~/.config/vlc"
-
-
-# =============================================================================
-# Test ScanExport with Filesystem Orphans (integration)
-# =============================================================================
-
-
-class TestScanExportWithFilesystem:
-    """Tests for ScanExport with filesystem_orphans field."""
-
-    def test_scan_export_with_filesystem_orphans(self) -> None:
-        """ScanExport includes filesystem_orphans when provided."""
-        orphan = OrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            parent_target="~/.config",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        export = ScanExport(
-            scan_date="2026-01-25T12:00:00Z",
-            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
-            summary={"total_packages": 0},
-            packages={"unknown": []},
-            filesystem_orphans=[orphan],
-        )
-
-        assert len(export.filesystem_orphans) == 1
-        assert export.filesystem_orphans[0].path == "~/.config/vlc"
-
-    def test_scan_export_without_filesystem_orphans(self) -> None:
-        """ScanExport defaults filesystem_orphans to empty list."""
-        export = ScanExport(
-            scan_date="2026-01-25T12:00:00Z",
-            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
-            summary={"total_packages": 0},
-            packages={"unknown": []},
-        )
-
-        assert export.filesystem_orphans == []
 
 
 # =============================================================================
@@ -903,7 +610,7 @@ ask = [
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         assert result.filesystem is not None
         assert len(result.filesystem.keep) == 1
@@ -941,7 +648,7 @@ ask = []
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         assert result.filesystem is None
 
@@ -971,135 +678,12 @@ ask = []
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         assert result.filesystem is not None
         assert result.filesystem.keep == []
         assert result.filesystem.remove == []
         assert result.filesystem.ask == []
-
-
-# =============================================================================
-# Test OrphanEntry Serialization
-# =============================================================================
-
-
-class TestOrphanEntrySerialization:
-    """Tests for OrphanEntry serialization."""
-
-    def test_orphan_entry_serialization(self) -> None:
-        """OrphanEntry serializes correctly via model_dump."""
-        entry = OrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            size_bytes=4096,
-            mtime="2024-01-15T10:00:00Z",
-            orphan_reason="app_not_installed",
-            confidence=0.70,
-        )
-
-        data = entry.model_dump()
-
-        assert data["path"] == "~/.config/vlc"
-        assert data["path_type"] == "directory"
-        assert data["size_bytes"] == 4096
-        assert data["mtime"] == "2024-01-15T10:00:00Z"
-        assert data["orphan_reason"] == "app_not_installed"
-        assert data["confidence"] == 0.70
-        assert data["parent_target"] is None
-
-    def test_orphan_entry_serialization_with_parent_target(self) -> None:
-        """OrphanEntry serializes parent_target when set."""
-        entry = OrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            parent_target="~/.config",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        data = entry.model_dump()
-        assert data["parent_target"] == "~/.config"
-
-
-# =============================================================================
-# Test ScanExport with config_orphans
-# =============================================================================
-
-
-class TestScanExportConfigOrphans:
-    """Tests for ScanExport config_orphans field."""
-
-    def test_scan_export_config_orphans_defaults(self) -> None:
-        """ScanExport defaults to empty config_orphans list."""
-        export = ScanExport(
-            scan_date="2026-01-25T12:00:00Z",
-            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
-            summary={"total_packages": 0},
-            packages={"unknown": []},
-        )
-
-        assert export.config_orphans == []
-
-    def test_scan_export_config_orphans_with_entries(self) -> None:
-        """ScanExport accepts config orphan entries."""
-        orphan = OrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        export = ScanExport(
-            scan_date="2026-01-25T12:00:00Z",
-            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
-            summary={"total_packages": 0},
-            packages={"unknown": []},
-            config_orphans=[orphan],
-        )
-
-        assert len(export.config_orphans) == 1
-        assert export.config_orphans[0].path == "~/.config/vlc"
-
-
-# =============================================================================
-# Test ScanExport with Config Orphans (integration)
-# =============================================================================
-
-
-class TestScanExportWithConfigs:
-    """Tests for ScanExport with config_orphans field."""
-
-    def test_scan_export_with_config_orphans(self) -> None:
-        """ScanExport includes config_orphans when provided."""
-        orphan = OrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            orphan_reason="app_not_installed",
-            confidence=0.70,
-        )
-
-        export = ScanExport(
-            scan_date="2026-01-25T12:00:00Z",
-            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
-            summary={"total_packages": 0},
-            packages={"unknown": []},
-            config_orphans=[orphan],
-        )
-
-        assert len(export.config_orphans) == 1
-        assert export.config_orphans[0].path == "~/.config/vlc"
-
-    def test_scan_export_without_config_orphans(self) -> None:
-        """ScanExport defaults config_orphans to empty list."""
-        export = ScanExport(
-            scan_date="2026-01-25T12:00:00Z",
-            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
-            summary={"total_packages": 0},
-            packages={"unknown": []},
-        )
-
-        assert export.config_orphans == []
 
 
 # =============================================================================
@@ -1198,7 +782,7 @@ ask = [
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         assert result.configs is not None
         assert len(result.configs.keep) == 1
@@ -1236,7 +820,7 @@ ask = []
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         assert result.configs is None
 
@@ -1266,7 +850,7 @@ ask = []
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         assert result.configs is not None
         assert result.configs.keep == []
@@ -1304,7 +888,7 @@ ask = []
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         assert result.configs is not None
         assert len(result.configs.keep) == 2
@@ -1364,7 +948,6 @@ class TestApplyDecisionsToManifest:
 
         assert "firefox" in empty_manifest.packages.keep
         assert empty_manifest.packages.keep["firefox"].source == "apt"
-        assert empty_manifest.packages.keep["firefox"].status == "keep"
         assert empty_manifest.packages.keep["firefox"].reason == "Web browser"
         assert stats["apt"]["keep"] == 1
         assert ask_packages == []
@@ -1394,7 +977,6 @@ class TestApplyDecisionsToManifest:
 
         assert "bloatware" in empty_manifest.packages.remove
         assert empty_manifest.packages.remove["bloatware"].source == "apt"
-        assert empty_manifest.packages.remove["bloatware"].status == "remove"
         assert stats["apt"]["remove"] == 1
         assert ask_packages == []
 
@@ -1521,3 +1103,133 @@ class TestApplyDecisionsToManifest:
             assert source_stats["remove"] == 0
             assert source_stats["ask"] == 0
         assert ask_packages == []
+
+
+# =============================================================================
+# Test apply_domain_decisions_to_manifest
+# =============================================================================
+
+
+class TestApplyDomainDecisionsToManifest:
+    """Tests for the apply_domain_decisions_to_manifest function."""
+
+    @pytest.fixture
+    def empty_manifest(self) -> Manifest:
+        """Create an empty manifest for testing."""
+        from datetime import UTC, datetime
+
+        from popctl.models.manifest import ManifestMeta, PackageConfig, SystemConfig
+
+        return Manifest(
+            meta=ManifestMeta(
+                created=datetime.now(UTC),
+                updated=datetime.now(UTC),
+            ),
+            system=SystemConfig(name="test", base="pop-os-24.04"),
+            packages=PackageConfig(keep={}, remove={}),
+        )
+
+    def test_applies_keep_and_remove(self, empty_manifest: Manifest) -> None:
+        """Keep and remove decisions are placed into the correct sections."""
+        decisions = DomainDecisions(
+            keep=[
+                PathDecision(
+                    path="~/.config/nvim", reason="User config", confidence=0.95, category="editor"
+                ),
+            ],
+            remove=[
+                PathDecision(
+                    path="~/.config/vlc", reason="VLC removed", confidence=0.90, category="obsolete"
+                ),
+            ],
+        )
+
+        ask = apply_domain_decisions_to_manifest(empty_manifest, "filesystem", decisions)
+
+        assert empty_manifest.filesystem is not None
+        assert "~/.config/nvim" in empty_manifest.filesystem.keep
+        assert empty_manifest.filesystem.keep["~/.config/nvim"].reason == "User config"
+        assert "~/.config/vlc" in empty_manifest.filesystem.remove
+        assert empty_manifest.filesystem.remove["~/.config/vlc"].reason == "VLC removed"
+        assert ask == []
+
+    def test_preserves_existing_unreclassified(self, empty_manifest: Manifest) -> None:
+        """Existing entries not in new decisions are preserved."""
+        empty_manifest.filesystem = DomainConfig(
+            keep={"~/.config/old": DomainEntry(reason="Old entry")},
+            remove={"~/.cache/stale": DomainEntry(reason="Stale cache")},
+        )
+
+        decisions = DomainDecisions(
+            keep=[
+                PathDecision(path="~/.config/nvim", reason="User config", confidence=0.95),
+            ],
+        )
+
+        apply_domain_decisions_to_manifest(empty_manifest, "filesystem", decisions)
+
+        assert "~/.config/old" in empty_manifest.filesystem.keep
+        assert "~/.config/nvim" in empty_manifest.filesystem.keep
+        assert "~/.cache/stale" in empty_manifest.filesystem.remove
+
+    def test_new_decisions_override_existing(self, empty_manifest: Manifest) -> None:
+        """New decisions override existing entries for the same path."""
+        empty_manifest.filesystem = DomainConfig(
+            keep={"~/.config/vlc": DomainEntry(reason="Old reason")},
+            remove={},
+        )
+
+        decisions = DomainDecisions(
+            remove=[
+                PathDecision(path="~/.config/vlc", reason="VLC removed", confidence=0.90),
+            ],
+        )
+
+        apply_domain_decisions_to_manifest(empty_manifest, "filesystem", decisions)
+
+        assert "~/.config/vlc" not in empty_manifest.filesystem.keep
+        assert "~/.config/vlc" in empty_manifest.filesystem.remove
+        assert empty_manifest.filesystem.remove["~/.config/vlc"].reason == "VLC removed"
+
+    def test_returns_ask_decisions(self, empty_manifest: Manifest) -> None:
+        """Ask decisions are returned for manual handling."""
+        decisions = DomainDecisions(
+            ask=[
+                PathDecision(path="~/.local/share/foo", reason="Unknown", confidence=0.50),
+                PathDecision(path="~/.cache/bar", reason="Unclear", confidence=0.40),
+            ],
+        )
+
+        ask = apply_domain_decisions_to_manifest(empty_manifest, "filesystem", decisions)
+
+        assert len(ask) == 2
+        assert ask[0].path == "~/.local/share/foo"
+        assert ask[1].path == "~/.cache/bar"
+
+    def test_empty_decisions(self, empty_manifest: Manifest) -> None:
+        """Empty decisions produce no changes and no ask list."""
+        decisions = DomainDecisions()
+
+        ask = apply_domain_decisions_to_manifest(empty_manifest, "filesystem", decisions)
+
+        assert empty_manifest.filesystem is not None
+        assert empty_manifest.filesystem.keep == {}
+        assert empty_manifest.filesystem.remove == {}
+        assert ask == []
+
+    def test_works_for_both_domains(self, empty_manifest: Manifest) -> None:
+        """Function works for both 'filesystem' and 'configs' domains."""
+        fs_decisions = DomainDecisions(
+            keep=[PathDecision(path="~/.config/nvim", reason="Keep", confidence=0.95)],
+        )
+        cfg_decisions = DomainDecisions(
+            remove=[PathDecision(path="~/.config/vlc", reason="Remove", confidence=0.90)],
+        )
+
+        apply_domain_decisions_to_manifest(empty_manifest, "filesystem", fs_decisions)
+        apply_domain_decisions_to_manifest(empty_manifest, "configs", cfg_decisions)
+
+        assert empty_manifest.filesystem is not None
+        assert "~/.config/nvim" in empty_manifest.filesystem.keep
+        assert empty_manifest.configs is not None
+        assert "~/.config/vlc" in empty_manifest.configs.remove

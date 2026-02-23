@@ -677,7 +677,8 @@ class TestAdvisorApplyAskPackages:
     def test_apply_shows_ask_packages(
         self,
         tmp_path: Path,
-        sample_manifest: Path,
+        sample_manifest_path: Path,
+        empty_manifest: Manifest,
     ) -> None:
         """Apply displays packages that need manual decision."""
         from popctl.advisor import DecisionsResult, PackageDecision, SourceDecisions
@@ -706,24 +707,6 @@ class TestAdvisorApplyAskPackages:
             }
         )
 
-        from datetime import UTC, datetime
-
-        from popctl.models.manifest import (
-            Manifest,
-            ManifestMeta,
-            PackageConfig,
-            SystemConfig,
-        )
-
-        mock_manifest = Manifest(
-            meta=ManifestMeta(
-                created=datetime.now(UTC),
-                updated=datetime.now(UTC),
-            ),
-            system=SystemConfig(name="test", base="pop-os-24.04"),
-            packages=PackageConfig(keep={}, remove={}),
-        )
-
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.touch()
 
@@ -742,14 +725,14 @@ class TestAdvisorApplyAskPackages:
             ),
             patch(
                 "popctl.cli.commands.advisor.require_manifest",
-                return_value=mock_manifest,
+                return_value=empty_manifest,
             ),
             patch(
                 "popctl.cli.commands.advisor.save_manifest",
             ),
             patch(
                 "popctl.cli.commands.advisor.get_manifest_path",
-                return_value=sample_manifest,
+                return_value=sample_manifest_path,
             ),
         ):
             result = runner.invoke(app, ["advisor", "apply", "--dry-run"])
@@ -764,7 +747,8 @@ class TestAdvisorApplyHistory:
     def test_apply_records_history_on_success(
         self,
         tmp_path: Path,
-        sample_manifest: Path,
+        sample_manifest_path: Path,
+        empty_manifest: Manifest,
     ) -> None:
         """Advisor apply records classifications to history."""
         from popctl.advisor import DecisionsResult, PackageDecision, SourceDecisions
@@ -794,24 +778,6 @@ class TestAdvisorApplyHistory:
             }
         )
 
-        from datetime import UTC, datetime
-
-        from popctl.models.manifest import (
-            Manifest,
-            ManifestMeta,
-            PackageConfig,
-            SystemConfig,
-        )
-
-        mock_manifest = Manifest(
-            meta=ManifestMeta(
-                created=datetime.now(UTC),
-                updated=datetime.now(UTC),
-            ),
-            system=SystemConfig(name="test", base="pop-os-24.04"),
-            packages=PackageConfig(keep={}, remove={}),
-        )
-
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.touch()
 
@@ -830,14 +796,14 @@ class TestAdvisorApplyHistory:
             ),
             patch(
                 "popctl.cli.commands.advisor.require_manifest",
-                return_value=mock_manifest,
+                return_value=empty_manifest,
             ),
             patch(
                 "popctl.cli.commands.advisor.save_manifest",
             ),
             patch(
                 "popctl.cli.commands.advisor.get_manifest_path",
-                return_value=sample_manifest,
+                return_value=sample_manifest_path,
             ),
             patch("popctl.cli.commands.advisor.record_advisor_apply_to_history") as mock_record,
         ):
@@ -850,7 +816,8 @@ class TestAdvisorApplyHistory:
     def test_apply_does_not_record_history_on_dry_run(
         self,
         tmp_path: Path,
-        sample_manifest: Path,
+        sample_manifest_path: Path,
+        empty_manifest: Manifest,
     ) -> None:
         """Advisor apply --dry-run does NOT record history."""
         from popctl.advisor import DecisionsResult, PackageDecision, SourceDecisions
@@ -873,24 +840,6 @@ class TestAdvisorApplyHistory:
             }
         )
 
-        from datetime import UTC, datetime
-
-        from popctl.models.manifest import (
-            Manifest,
-            ManifestMeta,
-            PackageConfig,
-            SystemConfig,
-        )
-
-        mock_manifest = Manifest(
-            meta=ManifestMeta(
-                created=datetime.now(UTC),
-                updated=datetime.now(UTC),
-            ),
-            system=SystemConfig(name="test", base="pop-os-24.04"),
-            packages=PackageConfig(keep={}, remove={}),
-        )
-
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.touch()
 
@@ -909,14 +858,14 @@ class TestAdvisorApplyHistory:
             ),
             patch(
                 "popctl.cli.commands.advisor.require_manifest",
-                return_value=mock_manifest,
+                return_value=empty_manifest,
             ),
             patch(
                 "popctl.cli.commands.advisor.save_manifest",
             ) as mock_save,
             patch(
                 "popctl.cli.commands.advisor.get_manifest_path",
-                return_value=sample_manifest,
+                return_value=sample_manifest_path,
             ),
             patch("popctl.cli.commands.advisor.record_advisor_apply_to_history") as mock_record,
         ):
