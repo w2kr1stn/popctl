@@ -4,32 +4,28 @@ This module defines the Pydantic models representing the manifest.toml
 structure that describes the desired system state.
 """
 
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-
-from popctl.configs.manifest import ConfigEntry, ConfigsConfig
-from popctl.filesystem.manifest import FilesystemConfig, FilesystemEntry
 
 
 class ManifestMeta(BaseModel):
     """Metadata section of the manifest.
 
-    Contains version information and timestamps for tracking
-    when the manifest was created and last modified.
+    Contains timestamps for tracking when the manifest was created
+    and last modified.
 
     Attributes:
-        version: Manifest schema version (e.g., "1.0").
         created: Timestamp when manifest was first created.
         updated: Timestamp when manifest was last modified.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
-    version: Annotated[str, Field(description="Manifest schema version")] = "1.0"
-    created: Annotated[datetime, Field(description="Timestamp when manifest was created")]
-    updated: Annotated[datetime, Field(description="Timestamp when manifest was last modified")]
+    created: datetime
+    updated: datetime
 
 
 class SystemConfig(BaseModel):
@@ -41,42 +37,82 @@ class SystemConfig(BaseModel):
     Attributes:
         name: Machine hostname or identifier.
         base: Base OS identifier (e.g., "pop-os-24.04").
-        description: Optional description of the machine/configuration.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
-    name: Annotated[str, Field(description="Machine hostname or identifier")]
-    base: Annotated[str, Field(description="Base OS identifier")] = "pop-os-24.04"
-    description: Annotated[str | None, Field(description="Machine description")] = None
+    name: str
+    base: str = "pop-os-24.04"
 
-
-# Type alias for package status in manifest
-PackageStatusType = Literal["keep", "remove", "optional"]
 
 # Type alias for package source in manifest
 PackageSourceType = Literal["apt", "flatpak", "snap"]
 
 
-class PackageEntry(BaseModel):
-    """Entry for a single package in the manifest.
+def _validate_keep_remove_disjoint(
+    keep: Mapping[str, object], remove: Mapping[str, object], noun: str
+) -> None:
+    """Raise ValueError if any key appears in both keep and remove."""
+    duplicates = set(keep.keys()) & set(remove.keys())
+    if duplicates:
+        msg = f"{noun} cannot be in both keep and remove: {duplicates}"
+        raise ValueError(msg)
 
-    Describes a package's source and desired state.
+
+class DomainEntry(BaseModel):
+    """Entry for a single path in the manifest (filesystem or config).
+
+    Describes a path's classification reason and category.
 
     Attributes:
-        source: Package manager that provides this package ("apt" or "flatpak").
-        status: Desired state of the package ("keep", "remove", or "optional").
-        reason: Optional explanation for why this package is tracked.
+        reason: Human-readable explanation for the classification.
+        category: Optional grouping category (e.g., "config", "cache", "editor").
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    source: Annotated[PackageSourceType, Field(description="Package manager source")]
-    status: Annotated[
-        PackageStatusType,
-        Field(description="Desired package state"),
-    ] = "keep"
-    reason: Annotated[str | None, Field(description="Reason for tracking")] = None
+    reason: str | None = None
+    category: str | None = None
+
+
+class DomainConfig(BaseModel):
+    """Keep/remove configuration for a domain section.
+
+    Contains dictionaries of paths organized by their desired state
+    (keep or remove). Used for both [filesystem] and [configs] manifest sections.
+
+    Attributes:
+        keep: Paths to preserve (not delete during cleanup).
+        remove: Paths marked for deletion during cleanup.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    keep: dict[str, DomainEntry] = Field(default_factory=dict)
+    remove: dict[str, DomainEntry] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_no_duplicates(self) -> Self:
+        """Validate that no path appears in both keep and remove lists."""
+        _validate_keep_remove_disjoint(self.keep, self.remove, "Paths")
+        return self
+
+
+class PackageEntry(BaseModel):
+    """Entry for a single package in the manifest.
+
+    Describes a package's source. The keep/remove state is determined
+    by which dict the entry belongs to (``packages.keep`` vs ``packages.remove``).
+
+    Attributes:
+        source: Package manager that provides this package ("apt" or "flatpak").
+        reason: Optional explanation for why this package is tracked.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    source: PackageSourceType
+    reason: str | None = None
 
 
 class PackageConfig(BaseModel):
@@ -91,22 +127,13 @@ class PackageConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    keep: Annotated[
-        dict[str, PackageEntry],
-        Field(default_factory=dict, description="Packages to keep installed"),
-    ]
-    remove: Annotated[
-        dict[str, PackageEntry],
-        Field(default_factory=dict, description="Packages to remove"),
-    ]
+    keep: dict[str, PackageEntry] = Field(default_factory=dict)
+    remove: dict[str, PackageEntry] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_no_duplicates(self) -> PackageConfig:
         """Validate that no package appears in both keep and remove lists."""
-        duplicates = set(self.keep.keys()) & set(self.remove.keys())
-        if duplicates:
-            msg = f"Packages cannot be in both keep and remove: {duplicates}"
-            raise ValueError(msg)
+        _validate_keep_remove_disjoint(self.keep, self.remove, "Packages")
         return self
 
 
@@ -126,17 +153,11 @@ class Manifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    meta: Annotated[ManifestMeta, Field(description="Manifest metadata")]
-    system: Annotated[SystemConfig, Field(description="System configuration")]
-    packages: Annotated[PackageConfig, Field(description="Package configuration")]
-    filesystem: Annotated[
-        FilesystemConfig | None,
-        Field(description="Filesystem cleanup configuration"),
-    ] = None
-    configs: Annotated[
-        ConfigsConfig | None,
-        Field(description="Config cleanup configuration"),
-    ] = None
+    meta: ManifestMeta
+    system: SystemConfig
+    packages: PackageConfig
+    filesystem: DomainConfig | None = None
+    configs: DomainConfig | None = None
 
     def get_keep_packages(self, source: PackageSourceType | None = None) -> dict[str, PackageEntry]:
         """Get packages marked as 'keep', optionally filtered by source.
@@ -168,51 +189,27 @@ class Manifest(BaseModel):
             name: entry for name, entry in self.packages.remove.items() if entry.source == source
         }
 
-    def get_fs_keep_paths(self) -> dict[str, FilesystemEntry]:
-        """Get filesystem paths marked as 'keep'.
+    def _get_domain_remove(
+        self, domain: Literal["filesystem", "configs"]
+    ) -> dict[str, DomainEntry]:
+        """Get remove paths for the specified domain section."""
+        section = self.filesystem if domain == "filesystem" else self.configs
+        return section.remove if section is not None else {}
 
-        Returns:
-            Dictionary of path strings to FilesystemEntry for paths to preserve.
-            Returns empty dict if no filesystem section is configured.
-        """
-        if self.filesystem is None:
-            return {}
-        return self.filesystem.keep
-
-    def get_fs_remove_paths(self) -> dict[str, FilesystemEntry]:
+    def get_fs_remove_paths(self) -> dict[str, DomainEntry]:
         """Get filesystem paths marked for removal.
 
         Returns:
-            Dictionary of path strings to FilesystemEntry for paths to delete.
+            Dictionary of path strings to DomainEntry for paths to delete.
             Returns empty dict if no filesystem section is configured.
         """
-        if self.filesystem is None:
-            return {}
-        return self.filesystem.remove
+        return self._get_domain_remove("filesystem")
 
-    def get_config_keep_paths(self) -> dict[str, ConfigEntry]:
-        """Get config paths marked as 'keep'.
-
-        Returns:
-            Dictionary of path strings to ConfigEntry for configs to preserve.
-            Returns empty dict if no configs section is configured.
-        """
-        if self.configs is None:
-            return {}
-        return self.configs.keep
-
-    def get_config_remove_paths(self) -> dict[str, ConfigEntry]:
+    def get_config_remove_paths(self) -> dict[str, DomainEntry]:
         """Get config paths marked for removal.
 
         Returns:
-            Dictionary of path strings to ConfigEntry for configs to delete.
+            Dictionary of path strings to DomainEntry for configs to delete.
             Returns empty dict if no configs section is configured.
         """
-        if self.configs is None:
-            return {}
-        return self.configs.remove
-
-    @property
-    def package_count(self) -> int:
-        """Total number of packages tracked in the manifest."""
-        return len(self.packages.keep) + len(self.packages.remove)
+        return self._get_domain_remove("configs")

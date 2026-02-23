@@ -14,17 +14,14 @@ from popctl.cli.display import (
     print_actions_summary,
     print_results_summary,
 )
-from popctl.cli.types import SourceChoice, get_scanners
-from popctl.core.actions import diff_to_actions
-from popctl.core.diff import DiffEngine
-from popctl.core.executor import execute_actions, get_available_operators, record_actions_to_history
-from popctl.scanners.base import Scanner
+from popctl.cli.types import SourceChoice, compute_system_diff
+from popctl.core.diff import diff_to_actions
+from popctl.core.executor import execute_actions, record_actions_to_history
+from popctl.operators import get_available_operators
 from popctl.utils.formatting import (
     console,
-    print_error,
     print_info,
     print_success,
-    print_warning,
 )
 
 app = typer.Typer(
@@ -33,24 +30,8 @@ app = typer.Typer(
 )
 
 
-def _confirm_actions(action_count: int) -> bool:
-    """Prompt user to confirm action execution.
-
-    Args:
-        action_count: Number of actions to be executed.
-
-    Returns:
-        True if user confirms, False otherwise.
-    """
-    return typer.confirm(
-        f"\nProceed with {action_count} action(s)?",
-        default=False,
-    )
-
-
 @app.callback(invoke_without_command=True)
 def apply_manifest(
-    ctx: typer.Context,
     yes: Annotated[
         bool,
         typer.Option(
@@ -105,38 +86,8 @@ def apply_manifest(
         popctl apply --source apt       # Only APT packages
         popctl apply --purge            # Remove APT packages with configs
     """
-    # Skip if a subcommand is being invoked
-    if ctx.invoked_subcommand is not None:
-        return
-
-    # Load manifest (exits with helpful message if not found)
-    from popctl.core.manifest import require_manifest
-
-    manifest = require_manifest()
-
-    # Get scanners and check availability
-    scanners = get_scanners(source)
-    available_scanners: list[Scanner] = []
-
-    for scanner in scanners:
-        if scanner.is_available():
-            available_scanners.append(scanner)
-        else:
-            print_warning(f"{scanner.source.value.upper()} package manager is not available.")
-
-    if not available_scanners:
-        print_error("No package managers are available on this system.")
-        raise typer.Exit(code=1)
-
-    # Compute diff
-    source_filter = source.value if source != SourceChoice.ALL else None
-    engine = DiffEngine(manifest)
-
-    try:
-        diff_result = engine.compute_diff(available_scanners, source_filter)
-    except RuntimeError as e:
-        print_error(f"Scan failed: {e}")
-        raise typer.Exit(code=1) from e
+    # Compute diff (exits on failure)
+    diff_result = compute_system_diff(source)
 
     # Convert diff to actions
     actions = diff_to_actions(diff_result, purge=purge)
@@ -157,12 +108,12 @@ def apply_manifest(
         return
 
     # Confirm unless --yes was provided
-    if not yes and not _confirm_actions(len(actions)):
+    if not yes and not typer.confirm(f"\nProceed with {len(actions)} action(s)?", default=False):
         print_info("Aborted.")
         raise typer.Exit(code=0)
 
     # Get available operators (filters out unavailable package managers)
-    available_operators = get_available_operators(source)
+    available_operators = get_available_operators(source.to_package_source())
 
     # Execute actions
     console.print("\n[bold]Executing actions...[/bold]\n")

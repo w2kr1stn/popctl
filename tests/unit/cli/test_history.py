@@ -28,9 +28,9 @@ def sample_history_entries() -> list[HistoryEntry]:
             timestamp="2026-01-26T14:30:00+00:00",
             action_type=HistoryActionType.INSTALL,
             items=(
-                HistoryItem(name="vim", source=PackageSource.APT, version="9.0"),
-                HistoryItem(name="htop", source=PackageSource.APT, version="3.3.0"),
-                HistoryItem(name="curl", source=PackageSource.APT, version="8.5.0"),
+                HistoryItem(name="vim", source=PackageSource.APT),
+                HistoryItem(name="htop", source=PackageSource.APT),
+                HistoryItem(name="curl", source=PackageSource.APT),
             ),
             reversible=True,
         ),
@@ -38,7 +38,7 @@ def sample_history_entries() -> list[HistoryEntry]:
             id="def678901234",
             timestamp="2026-01-26T14:25:00+00:00",
             action_type=HistoryActionType.REMOVE,
-            items=(HistoryItem(name="nano", source=PackageSource.APT, version="7.2"),),
+            items=(HistoryItem(name="nano", source=PackageSource.APT),),
             reversible=True,
         ),
         HistoryEntry(
@@ -63,17 +63,20 @@ class TestHistoryCommand:
 
     def test_history_help(self) -> None:
         """History command shows help."""
+        from tests.unit.conftest import strip_ansi
+
         result = runner.invoke(app, ["history", "--help"])
         assert result.exit_code == 0
-        assert "View history of package changes" in result.stdout
-        assert "--limit" in result.stdout
-        assert "--since" in result.stdout
-        assert "--json" in result.stdout
+        output = strip_ansi(result.stdout)
+        assert "View history of package changes" in output
+        assert "--limit" in output
+        assert "--since" in output
+        assert "--json" in output
 
     def test_history_empty(self) -> None:
         """History shows message when no entries exist."""
-        with patch("popctl.cli.commands.history.StateManager") as mock_state:
-            mock_state.return_value.get_history.return_value = []
+        with patch("popctl.cli.commands.history.get_history") as mock_get_history:
+            mock_get_history.return_value = []
 
             result = runner.invoke(app, ["history"])
 
@@ -82,8 +85,8 @@ class TestHistoryCommand:
 
     def test_history_with_entries(self, sample_history_entries: list[HistoryEntry]) -> None:
         """History shows entries in table format."""
-        with patch("popctl.cli.commands.history.StateManager") as mock_state:
-            mock_state.return_value.get_history.return_value = sample_history_entries
+        with patch("popctl.cli.commands.history.get_history") as mock_get_history:
+            mock_get_history.return_value = sample_history_entries
 
             result = runner.invoke(app, ["history"])
 
@@ -102,19 +105,19 @@ class TestHistoryCommand:
 
     def test_history_limit_option(self, sample_history_entries: list[HistoryEntry]) -> None:
         """History --limit option limits entries."""
-        with patch("popctl.cli.commands.history.StateManager") as mock_state:
-            # Simulate limit being applied by StateManager
-            mock_state.return_value.get_history.return_value = sample_history_entries[:2]
+        with patch("popctl.cli.commands.history.get_history") as mock_get_history:
+            # Simulate limit being applied by get_history
+            mock_get_history.return_value = sample_history_entries[:2]
 
             result = runner.invoke(app, ["history", "--limit", "2"])
 
         assert result.exit_code == 0
-        mock_state.return_value.get_history.assert_called_once_with(limit=2)
+        mock_get_history.assert_called_once_with(limit=2, since=None)
 
     def test_history_json_output(self, sample_history_entries: list[HistoryEntry]) -> None:
         """History --json outputs valid JSON."""
-        with patch("popctl.cli.commands.history.StateManager") as mock_state:
-            mock_state.return_value.get_history.return_value = sample_history_entries[:1]
+        with patch("popctl.cli.commands.history.get_history") as mock_get_history:
+            mock_get_history.return_value = sample_history_entries[:1]
 
             result = runner.invoke(app, ["history", "--json"])
 
@@ -133,13 +136,15 @@ class TestHistoryCommand:
 
     def test_history_since_filter(self, sample_history_entries: list[HistoryEntry]) -> None:
         """History --since filters by date."""
-        with patch("popctl.cli.commands.history.StateManager") as mock_state:
-            mock_state.return_value.get_history.return_value = sample_history_entries
+        # Only return entries matching the since filter (as core now handles filtering)
+        filtered = [e for e in sample_history_entries if e.timestamp[:10] >= "2026-01-26"]
+        with patch("popctl.cli.commands.history.get_history") as mock_get_history:
+            mock_get_history.return_value = filtered
 
-            # Filter to only include entries from 2026-01-26
             result = runner.invoke(app, ["history", "--since", "2026-01-26"])
 
         assert result.exit_code == 0
+        mock_get_history.assert_called_once_with(limit=20, since="2026-01-26")
         # Should only show 2 entries from Jan 26
         assert "abc12345" in result.stdout
         assert "def67890" in result.stdout
@@ -148,20 +153,17 @@ class TestHistoryCommand:
 
     def test_history_since_invalid_date(self) -> None:
         """History --since with invalid date shows error."""
-        with patch("popctl.cli.commands.history.StateManager") as mock_state:
-            mock_state.return_value.get_history.return_value = []
-
-            result = runner.invoke(app, ["history", "--since", "invalid-date"])
+        result = runner.invoke(app, ["history", "--since", "invalid-date"])
 
         assert result.exit_code == 1
-        assert "Invalid date format" in result.stderr
+        assert "Invalid date format" in (result.stdout + (result.stderr or ""))
 
     def test_history_shows_undo_availability(
         self, sample_history_entries: list[HistoryEntry]
     ) -> None:
         """History shows whether entries can be undone."""
-        with patch("popctl.cli.commands.history.StateManager") as mock_state:
-            mock_state.return_value.get_history.return_value = sample_history_entries
+        with patch("popctl.cli.commands.history.get_history") as mock_get_history:
+            mock_get_history.return_value = sample_history_entries
 
             result = runner.invoke(app, ["history"])
 
@@ -184,8 +186,8 @@ class TestHistoryTableFormatting:
             reversible=True,
         )
 
-        with patch("popctl.cli.commands.history.StateManager") as mock_state:
-            mock_state.return_value.get_history.return_value = [entry]
+        with patch("popctl.cli.commands.history.get_history") as mock_get_history:
+            mock_get_history.return_value = [entry]
 
             result = runner.invoke(app, ["history"])
 
@@ -204,8 +206,8 @@ class TestHistoryTableFormatting:
             reversible=True,
         )
 
-        with patch("popctl.cli.commands.history.StateManager") as mock_state:
-            mock_state.return_value.get_history.return_value = [entry]
+        with patch("popctl.cli.commands.history.get_history") as mock_get_history:
+            mock_get_history.return_value = [entry]
 
             result = runner.invoke(app, ["history"])
 
@@ -226,14 +228,13 @@ class TestHistoryJsonOutput:
             id="test12345678",
             timestamp="2026-01-26T14:30:00+00:00",
             action_type=HistoryActionType.INSTALL,
-            items=(HistoryItem(name="vim", source=PackageSource.APT, version="9.0"),),
+            items=(HistoryItem(name="vim", source=PackageSource.APT),),
             reversible=True,
-            success=True,
             metadata={"command": "popctl apply"},
         )
 
-        with patch("popctl.cli.commands.history.StateManager") as mock_state:
-            mock_state.return_value.get_history.return_value = [entry]
+        with patch("popctl.cli.commands.history.get_history") as mock_get_history:
+            mock_get_history.return_value = [entry]
 
             result = runner.invoke(app, ["history", "--json"])
 
@@ -246,21 +247,23 @@ class TestHistoryJsonOutput:
         assert record["timestamp"] == "2026-01-26T14:30:00+00:00"
         assert record["action_type"] == "install"
         assert record["reversible"] is True
-        assert record["success"] is True
         assert record["metadata"] == {"command": "popctl apply"}
         assert len(record["items"]) == 1
         assert record["items"][0]["name"] == "vim"
         assert record["items"][0]["source"] == "apt"
-        assert record["items"][0]["version"] == "9.0"
+        assert "version" not in record["items"][0]
 
     def test_json_with_since_filter(self, sample_history_entries: list[HistoryEntry]) -> None:
         """JSON output respects --since filter."""
-        with patch("popctl.cli.commands.history.StateManager") as mock_state:
-            mock_state.return_value.get_history.return_value = sample_history_entries
+        # Core now handles filtering; mock returns pre-filtered results
+        filtered = [e for e in sample_history_entries if e.timestamp[:10] >= "2026-01-26"]
+        with patch("popctl.cli.commands.history.get_history") as mock_get_history:
+            mock_get_history.return_value = filtered
 
             result = runner.invoke(app, ["history", "--json", "--since", "2026-01-26"])
 
         assert result.exit_code == 0
+        mock_get_history.assert_called_once_with(limit=20, since="2026-01-26")
         data = json.loads(result.stdout)
         # Should only have 2 entries from Jan 26
         assert len(data) == 2

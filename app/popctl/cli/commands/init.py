@@ -3,25 +3,19 @@
 Creates a manifest.toml file from the current system state.
 """
 
-import socket
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from popctl.core.baseline import is_protected
-from popctl.core.manifest import manifest_exists, save_manifest
-from popctl.core.paths import ensure_config_dir, get_manifest_path
-from popctl.models.manifest import (
-    Manifest,
-    ManifestMeta,
-    PackageConfig,
-    PackageEntry,
-    SystemConfig,
+from popctl.core.manifest import (
+    manifest_exists,
+    save_manifest,
+    scan_and_create_manifest,
 )
-from popctl.models.package import PackageStatus
-from popctl.scanners.base import Scanner
+from popctl.core.paths import get_manifest_path
+from popctl.models.manifest import Manifest
+from popctl.scanners import get_available_scanners
 from popctl.utils.formatting import (
     console,
     print_error,
@@ -34,71 +28,6 @@ app = typer.Typer(
     help="Initialize manifest from current system state.",
     invoke_without_command=True,
 )
-
-
-def _collect_manual_packages(
-    scanners: list[Scanner],
-) -> tuple[dict[str, PackageEntry], list[str]]:
-    """Collect manually installed packages from all scanners.
-
-    Protected packages and auto-installed dependencies are filtered out.
-
-    Args:
-        scanners: List of Scanner instances to use.
-
-    Returns:
-        Tuple of (packages dict, list of skipped protected package names).
-    """
-    packages: dict[str, PackageEntry] = {}
-    skipped_protected: list[str] = []
-
-    for scanner in scanners:
-        source_name = scanner.source.value
-
-        for pkg in scanner.scan():
-            # Skip auto-installed packages (dependencies)
-            if pkg.status != PackageStatus.MANUAL:
-                continue
-
-            # Skip protected system packages (but track them)
-            if is_protected(pkg.name):
-                skipped_protected.append(pkg.name)
-                continue
-
-            packages[pkg.name] = PackageEntry(
-                source=source_name,  # type: ignore[arg-type]
-                status="keep",
-            )
-
-    return packages, skipped_protected
-
-
-def _create_manifest(packages: dict[str, PackageEntry]) -> Manifest:
-    """Create a new manifest with the given packages.
-
-    Args:
-        packages: Dictionary of packages to include.
-
-    Returns:
-        New Manifest object.
-    """
-    now = datetime.now(UTC)
-
-    return Manifest(
-        meta=ManifestMeta(
-            version="1.0",
-            created=now,
-            updated=now,
-        ),
-        system=SystemConfig(
-            name=socket.gethostname(),
-            base="pop-os-24.04",
-        ),
-        packages=PackageConfig(
-            keep=packages,
-            remove={},
-        ),
-    )
 
 
 def _show_manifest_summary(
@@ -141,7 +70,6 @@ def _show_manifest_summary(
 
 @app.callback(invoke_without_command=True)
 def init_manifest(
-    ctx: typer.Context,
     output: Annotated[
         Path | None,
         typer.Option(
@@ -181,10 +109,6 @@ def init_manifest(
         popctl init --force            # Overwrite existing manifest
         popctl init --dry-run          # Preview without writing
     """
-    # Skip if a subcommand is being invoked
-    if ctx.invoked_subcommand is not None:
-        return
-
     # Determine output path
     output_path = output or get_manifest_path()
 
@@ -201,8 +125,6 @@ def init_manifest(
             print_warning(f"Overwriting existing manifest: {output_path}")
 
     # Get available scanners
-    from popctl.cli.types import get_available_scanners
-
     scanners = get_available_scanners()
     if not scanners:
         print_error("No package managers available (APT or Flatpak required).")
@@ -212,18 +134,15 @@ def init_manifest(
     source_names = [s.source.value.upper() for s in scanners]
     print_info(f"Scanning system packages: {', '.join(source_names)}")
 
-    # Collect packages
+    # Collect packages and create manifest
     try:
-        packages, skipped_protected = _collect_manual_packages(scanners)
+        manifest, packages, skipped_protected = scan_and_create_manifest(scanners)
     except RuntimeError as e:
         print_error(f"Scan failed: {e}")
         raise typer.Exit(code=1) from e
 
     if not packages:
         print_warning("No manually installed packages found (excluding protected system packages).")
-
-    # Create manifest
-    manifest = _create_manifest(packages)
 
     # Show summary
     _show_manifest_summary(manifest, output_path, skipped_protected)
@@ -232,9 +151,6 @@ def init_manifest(
     if dry_run:
         print_info("[DRY-RUN] No files were written.")
         return
-
-    # Ensure config directory exists
-    ensure_config_dir()
 
     # Save manifest
     try:

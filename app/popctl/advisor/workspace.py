@@ -17,6 +17,8 @@ Workspace structure:
 from __future__ import annotations
 
 import json
+import logging
+import platform
 import shutil
 import socket
 from datetime import UTC, datetime
@@ -24,9 +26,24 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from popctl.advisor.prompts import build_session_claude_md
+from popctl.core.paths import ensure_dir, get_state_dir
 
 if TYPE_CHECKING:
-    from popctl.models.scan_result import ScanResult
+    from typing import Any
+
+    from popctl.models.package import ScannedPackage, ScanResult
+
+
+def ensure_advisor_sessions_dir() -> Path:
+    """Create the advisor sessions directory if it doesn't exist.
+
+    Returns:
+        Path to the advisor sessions directory.
+
+    Raises:
+        RuntimeError: If the directory cannot be created.
+    """
+    return ensure_dir(get_state_dir() / "advisor-sessions", "advisor sessions")
 
 
 def create_session_workspace(
@@ -35,6 +52,8 @@ def create_session_workspace(
     manifest_path: Path | None = None,
     system_info: dict[str, str] | None = None,
     memory_path: Path | None = None,
+    filesystem_orphans: list[dict[str, Any]] | None = None,
+    config_orphans: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Create an ephemeral workspace directory for a classification session.
 
@@ -47,6 +66,8 @@ def create_session_workspace(
         manifest_path: Optional path to manifest file to copy.
         system_info: Optional system context for CLAUDE.md.
         memory_path: Optional path to persistent memory.md to copy.
+        filesystem_orphans: Optional filesystem orphan entries for FS advisor.
+        config_orphans: Optional config orphan entries for config advisor.
 
     Returns:
         Path to the created session workspace directory.
@@ -67,13 +88,18 @@ def create_session_workspace(
 
     # Build system info if not provided
     if system_info is None:
+        try:
+            os_name = platform.freedesktop_os_release()["PRETTY_NAME"]
+        except OSError:
+            os_name = "Unknown"
+
         system_info = {
             "hostname": socket.gethostname(),
-            "os": "Pop!_OS 24.04 LTS",
+            "os": os_name,
         }
 
-    # Build summary from scan result
-    summary = dict(scan_result.summary)
+    # Build summary from packages
+    summary = _build_summary(scan_result)
 
     # Write CLAUDE.md
     claude_md_content = build_session_claude_md(
@@ -87,7 +113,9 @@ def create_session_workspace(
         raise RuntimeError(msg) from e
 
     # Write scan.json
-    scan_data = scan_result.to_dict()
+    scan_data = _build_scan_data(
+        scan_result, system_info, summary, filesystem_orphans, config_orphans
+    )
     try:
         with (session_dir / "scan.json").open("w", encoding="utf-8") as f:
             json.dump(scan_data, f, indent=2, ensure_ascii=False)
@@ -101,14 +129,87 @@ def create_session_workspace(
             shutil.copy2(manifest_path, session_dir / "manifest.toml")
         except OSError as e:
             # Non-critical — log but don't fail
-            import logging
-
             logging.getLogger(__name__).warning("Could not copy manifest to workspace: %s", e)
 
     # Copy memory.md for cross-session learning
     _copy_memory_to_workspace(memory_path, sessions_dir, session_dir)
 
     return session_dir
+
+
+def _build_scan_data(
+    scan_result: ScanResult,
+    system_info: dict[str, str],
+    summary: dict[str, int],
+    filesystem_orphans: list[dict[str, Any]] | None,
+    config_orphans: list[dict[str, Any]] | None,
+) -> dict[str, object]:
+    """Build scan.json data as a plain dictionary.
+
+    Args:
+        scan_result: Package scan data.
+        system_info: System context dict.
+        summary: Pre-computed package count summary.
+        filesystem_orphans: Optional FS orphan entry dicts.
+        config_orphans: Optional config orphan entry dicts.
+
+    Returns:
+        Dictionary ready for JSON serialization.
+    """
+    pkg_entries = [
+        {
+            k: v
+            for k, v in {
+                "name": p.name,
+                "source": p.source.value,
+                "version": p.version,
+                "status": p.status.value,
+                "description": p.description,
+                "size_bytes": p.size_bytes,
+            }.items()
+            if v is not None
+        }
+        for p in scan_result
+    ]
+
+    data: dict[str, object] = {
+        "scan_date": datetime.now(UTC).isoformat(),
+        "system": system_info,
+        "summary": summary,
+        "packages": {"unknown": pkg_entries},
+    }
+    if filesystem_orphans:
+        data["filesystem_orphans"] = filesystem_orphans
+    if config_orphans:
+        data["config_orphans"] = config_orphans
+    return data
+
+
+def _build_summary(packages: tuple[ScannedPackage, ...]) -> dict[str, int]:
+    """Build package count summary from packages.
+
+    Args:
+        packages: Tuple of scanned packages.
+
+    Returns:
+        Summary dict with source counts, total, manual, auto.
+    """
+    summary: dict[str, int] = {}
+    manual_count = 0
+    auto_count = 0
+
+    for pkg in packages:
+        source_key = pkg.source.value
+        summary[source_key] = summary.get(source_key, 0) + 1
+        if pkg.is_manual:
+            manual_count += 1
+        else:
+            auto_count += 1
+
+    summary["total"] = len(packages)
+    summary["manual"] = manual_count
+    summary["auto"] = auto_count
+    return summary
 
 
 _MEMORY_SIZE_WARN_KB = 50
@@ -130,8 +231,6 @@ def _copy_memory_to_workspace(
         sessions_dir: Base directory containing all session workspaces.
         session_dir: Current session workspace to copy into.
     """
-    import logging
-
     logger = logging.getLogger(__name__)
 
     # Try persistent memory path first
@@ -161,15 +260,13 @@ def _copy_memory_from_latest_session(
 ) -> None:
     """Copy memory.md from the most recent previous session if available.
 
-    Provides fallback chaining for host-mode (os.execvp) where
-    post-processing cannot copy memory.md back to the persistent location.
+    Provides fallback chaining for host-mode where the interactive
+    session exits before post-processing can persist memory.md back.
 
     Args:
         sessions_dir: Base directory containing session workspaces.
         target_session_dir: Current session directory to copy into.
     """
-    import logging
-
     logger = logging.getLogger(__name__)
 
     for session_dir in list_sessions(sessions_dir):

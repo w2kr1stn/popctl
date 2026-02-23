@@ -5,4 +5,3 @@ in a manifest file and automatically maintain that state over time.
 """
 
 __version__ = "0.1.0"
-__author__ = "popctl contributors"

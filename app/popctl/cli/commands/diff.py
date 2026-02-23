@@ -9,15 +9,11 @@ from typing import Annotated
 import typer
 from rich.table import Table
 
-from popctl.cli.types import SourceChoice, get_scanners
-from popctl.core.diff import DiffEngine, DiffEntry, DiffResult, DiffType
-from popctl.core.manifest import require_manifest
-from popctl.scanners.base import Scanner
+from popctl.cli.types import SourceChoice, compute_system_diff
+from popctl.core.diff import DiffResult, DiffType
 from popctl.utils.formatting import (
     console,
-    print_error,
     print_success,
-    print_warning,
 )
 
 app = typer.Typer(
@@ -25,104 +21,16 @@ app = typer.Typer(
     invoke_without_command=True,
 )
 
-
-def _get_status_display(diff_type: DiffType) -> tuple[str, str]:
-    """Get status icon and style for a diff type.
-
-    Args:
-        diff_type: The type of difference.
-
-    Returns:
-        Tuple of (status_icon, style_name).
-    """
-    if diff_type == DiffType.NEW:
-        return "[+]", "added"
-    if diff_type == DiffType.MISSING:
-        return "[-]", "warning"
-    # EXTRA
-    return "[x]", "removed"
-
-
-def _get_note(diff_type: DiffType) -> str:
-    """Get explanatory note for a diff type.
-
-    Args:
-        diff_type: The type of difference.
-
-    Returns:
-        Human-readable explanation of the difference.
-    """
-    if diff_type == DiffType.NEW:
-        return "Not in manifest"
-    if diff_type == DiffType.MISSING:
-        return "Not installed"
-    # EXTRA
-    return "Marked removal"
-
-
-def _create_diff_table() -> Table:
-    """Create a table for displaying diff results.
-
-    Returns:
-        Rich Table configured for diff display.
-    """
-    table = Table(
-        title="System Differences",
-        show_header=True,
-        header_style="bold_header",
-        border_style="border",
-    )
-    table.add_column("Status", width=6, justify="center")
-    table.add_column("Source", width=8)
-    table.add_column("Package", no_wrap=True)
-    table.add_column("Note")
-    return table
-
-
-def _add_entries_to_table(table: Table, entries: tuple[DiffEntry, ...]) -> None:
-    """Add diff entries to the table.
-
-    Args:
-        table: The Rich Table to add rows to.
-        entries: Tuple of DiffEntry objects to add.
-    """
-    for entry in entries:
-        status_icon, style = _get_status_display(entry.diff_type)
-        note = _get_note(entry.diff_type)
-
-        table.add_row(
-            f"[{style}]{status_icon}[/{style}]",
-            entry.source,
-            f"[{style}]{entry.name}[/{style}]",
-            f"[muted]{note}[/muted]",
-        )
-
-
-def _print_summary(result: DiffResult) -> None:
-    """Print summary line for diff results.
-
-    Args:
-        result: The DiffResult to summarize.
-    """
-    parts: list[str] = []
-
-    if result.new:
-        parts.append(f"[added]{len(result.new)} new[/added]")
-    if result.missing:
-        parts.append(f"[warning]{len(result.missing)} missing[/warning]")
-    if result.extra:
-        parts.append(f"[removed]{len(result.extra)} extra[/removed]")
-
-    if parts:
-        summary = ", ".join(parts)
-        console.print(f"\nSummary: {summary} ({result.total_changes} total changes)")
-    else:
-        console.print("\n[muted]No differences found.[/muted]")
+# (icon, style, note) per diff type
+_DIFF_DISPLAY: dict[DiffType, tuple[str, str, str]] = {
+    DiffType.NEW: ("[+]", "added", "Not in manifest"),
+    DiffType.MISSING: ("[-]", "warning", "Not installed"),
+    DiffType.EXTRA: ("[x]", "removed", "Marked removal"),
+}
 
 
 @app.callback(invoke_without_command=True)
 def diff_packages(
-    ctx: typer.Context,
     source: Annotated[
         SourceChoice,
         typer.Option(
@@ -165,36 +73,7 @@ def diff_packages(
         popctl diff --source apt       # Filter to APT packages
         popctl diff --json             # JSON output for scripting
     """
-    # Skip if a subcommand is being invoked
-    if ctx.invoked_subcommand is not None:
-        return
-
-    # Load manifest (exits with helpful message if not found)
-    manifest = require_manifest()
-
-    # Get scanners
-    scanners = get_scanners(source)
-    available_scanners: list[Scanner] = []
-
-    for scanner in scanners:
-        if scanner.is_available():
-            available_scanners.append(scanner)
-        elif not json_output:
-            print_warning(f"{scanner.source.value.upper()} package manager is not available.")
-
-    if not available_scanners:
-        print_error("No package managers are available on this system.")
-        raise typer.Exit(code=1)
-
-    # Compute diff
-    source_filter = source.value if source != SourceChoice.ALL else None
-    engine = DiffEngine(manifest)
-
-    try:
-        result = engine.compute_diff(available_scanners, source_filter)
-    except RuntimeError as e:
-        print_error(f"Scan failed: {e}")
-        raise typer.Exit(code=1) from e
+    result = compute_system_diff(source, silent_warnings=json_output)
 
     # JSON output
     if json_output:
@@ -203,13 +82,7 @@ def diff_packages(
 
     # Brief output (summary only)
     if brief:
-        if result.is_in_sync:
-            print_success("System is in sync with manifest.")
-        else:
-            console.print(f"[added]New:[/added] {len(result.new)}")
-            console.print(f"[warning]Missing:[/warning] {len(result.missing)}")
-            console.print(f"[removed]Extra:[/removed] {len(result.extra)}")
-            console.print(f"[muted]Total changes: {result.total_changes}[/muted]")
+        _print_brief(result)
         return
 
     # Full output (table)
@@ -217,13 +90,51 @@ def diff_packages(
         print_success("System is in sync with manifest.")
         return
 
-    # Create and populate table
-    table = _create_diff_table()
+    # Build and populate table
+    table = Table(
+        title="System Differences",
+        show_header=True,
+        header_style="bold_header",
+        border_style="border",
+    )
+    table.add_column("Status", width=6, justify="center")
+    table.add_column("Source", width=8)
+    table.add_column("Package", no_wrap=True)
+    table.add_column("Note")
 
-    # Add entries in order: new, missing, extra
-    _add_entries_to_table(table, result.new)
-    _add_entries_to_table(table, result.missing)
-    _add_entries_to_table(table, result.extra)
+    for entry in (*result.new, *result.missing, *result.extra):
+        icon, style, note = _DIFF_DISPLAY[entry.diff_type]
+        table.add_row(
+            f"[{style}]{icon}[/{style}]",
+            entry.source,
+            f"[{style}]{entry.name}[/{style}]",
+            f"[muted]{note}[/muted]",
+        )
 
     console.print(table)
-    _print_summary(result)
+
+    # Summary line
+    parts: list[str] = []
+    if result.new:
+        parts.append(f"[added]{len(result.new)} new[/added]")
+    if result.missing:
+        parts.append(f"[warning]{len(result.missing)} missing[/warning]")
+    if result.extra:
+        parts.append(f"[removed]{len(result.extra)} extra[/removed]")
+
+    if parts:
+        summary = ", ".join(parts)
+        console.print(f"\nSummary: {summary} ({result.total_changes} total changes)")
+    else:
+        console.print("\n[muted]No differences found.[/muted]")
+
+
+def _print_brief(result: DiffResult) -> None:
+    """Print brief summary counts."""
+    if result.is_in_sync:
+        print_success("System is in sync with manifest.")
+    else:
+        console.print(f"[added]New:[/added] {len(result.new)}")
+        console.print(f"[warning]Missing:[/warning] {len(result.missing)}")
+        console.print(f"[removed]Extra:[/removed] {len(result.extra)}")
+        console.print(f"[muted]Total changes: {result.total_changes}[/muted]")

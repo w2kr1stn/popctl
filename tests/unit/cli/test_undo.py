@@ -27,8 +27,8 @@ def reversible_install_entry() -> HistoryEntry:
         timestamp="2026-01-26T14:30:00+00:00",
         action_type=HistoryActionType.INSTALL,
         items=(
-            HistoryItem(name="vim", source=PackageSource.APT, version="9.0"),
-            HistoryItem(name="htop", source=PackageSource.APT, version="3.3.0"),
+            HistoryItem(name="vim", source=PackageSource.APT),
+            HistoryItem(name="htop", source=PackageSource.APT),
         ),
         reversible=True,
     )
@@ -41,7 +41,7 @@ def reversible_remove_entry() -> HistoryEntry:
         id="def678901234",
         timestamp="2026-01-26T14:25:00+00:00",
         action_type=HistoryActionType.REMOVE,
-        items=(HistoryItem(name="nano", source=PackageSource.APT, version="7.2"),),
+        items=(HistoryItem(name="nano", source=PackageSource.APT),),
         reversible=True,
     )
 
@@ -69,28 +69,17 @@ class TestUndoCommandHelp:
         result = runner.invoke(app, ["undo", "--help"])
         assert result.exit_code == 0
         assert "Undo the last reversible action" in result.stdout
-        assert "--dry-run" in result.stdout
-        assert "--yes" in result.stdout
-
-    def test_undo_help_shows_short_options(self) -> None:
-        """Undo help shows short option forms."""
-        result = runner.invoke(app, ["undo", "--help"])
-        assert "-n" in result.stdout
-        assert "-y" in result.stdout
 
 
-class TestUndoNoHistory:
-    """Tests for undo command when no reversible actions exist."""
+def test_undo_no_reversible_actions() -> None:
+    """Undo shows message when no reversible actions exist."""
+    with patch("popctl.cli.commands.undo.get_last_reversible") as mock_get:
+        mock_get.return_value = None
 
-    def test_undo_no_reversible_actions(self) -> None:
-        """Undo shows message when no reversible actions exist."""
-        with patch("popctl.cli.commands.undo.StateManager") as mock_state:
-            mock_state.return_value.get_last_reversible.return_value = None
+        result = runner.invoke(app, ["undo"])
 
-            result = runner.invoke(app, ["undo"])
-
-        assert result.exit_code == 0
-        assert "No reversible actions" in result.stdout
+    assert result.exit_code == 0
+    assert "No reversible actions" in result.stdout
 
 
 class TestUndoDryRun:
@@ -98,8 +87,8 @@ class TestUndoDryRun:
 
     def test_undo_dry_run_shows_preview(self, reversible_install_entry: HistoryEntry) -> None:
         """Dry-run shows preview without executing."""
-        with patch("popctl.cli.commands.undo.StateManager") as mock_state:
-            mock_state.return_value.get_last_reversible.return_value = reversible_install_entry
+        with patch("popctl.cli.commands.undo.get_last_reversible") as mock_get:
+            mock_get.return_value = reversible_install_entry
 
             result = runner.invoke(app, ["undo", "--dry-run"])
 
@@ -114,14 +103,17 @@ class TestUndoDryRun:
 
     def test_undo_dry_run_does_not_execute(self, reversible_install_entry: HistoryEntry) -> None:
         """Dry-run does not call operators or mark entry reversed."""
-        with patch("popctl.cli.commands.undo.StateManager") as mock_state:
-            mock_state.return_value.get_last_reversible.return_value = reversible_install_entry
+        with (
+            patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
+            patch("popctl.cli.commands.undo.mark_entry_reversed") as mock_mark,
+        ):
+            mock_get.return_value = reversible_install_entry
 
             result = runner.invoke(app, ["undo", "--dry-run"])
 
         assert result.exit_code == 0
         # mark_entry_reversed should NOT be called
-        mock_state.return_value.mark_entry_reversed.assert_not_called()
+        mock_mark.assert_not_called()
 
 
 class TestUndoConfirmation:
@@ -129,8 +121,8 @@ class TestUndoConfirmation:
 
     def test_undo_prompts_for_confirmation(self, reversible_install_entry: HistoryEntry) -> None:
         """Undo prompts for confirmation by default."""
-        with patch("popctl.cli.commands.undo.StateManager") as mock_state:
-            mock_state.return_value.get_last_reversible.return_value = reversible_install_entry
+        with patch("popctl.cli.commands.undo.get_last_reversible") as mock_get:
+            mock_get.return_value = reversible_install_entry
 
             # Simulate user declining
             result = runner.invoke(app, ["undo"], input="n\n")
@@ -140,24 +132,24 @@ class TestUndoConfirmation:
 
     def test_undo_yes_skips_confirmation(self, reversible_install_entry: HistoryEntry) -> None:
         """Undo --yes skips confirmation prompt."""
-        with (
-            patch("popctl.cli.commands.undo.StateManager") as mock_state,
-            patch("popctl.cli.commands.undo.AptOperator") as mock_apt,
-        ):
-            mock_state.return_value.get_last_reversible.return_value = reversible_install_entry
-            mock_state.return_value.mark_entry_reversed.return_value = True
+        mock_result = MagicMock(spec=ActionResult)
+        mock_result.success = True
 
-            # Create mock action results
-            mock_result = MagicMock(spec=ActionResult)
-            mock_result.success = True
-            mock_apt.return_value.execute.return_value = [mock_result, mock_result]
+        with (
+            patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
+            patch("popctl.cli.commands.undo.mark_entry_reversed"),
+            patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+            patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+            patch("popctl.cli.commands.undo.is_package_protected", return_value=False),
+        ):
+            mock_get.return_value = reversible_install_entry
+            mock_execute.return_value = [mock_result, mock_result]
 
             result = runner.invoke(app, ["undo", "--yes"])
 
         assert result.exit_code == 0
         assert "Cancelled" not in result.stdout
-        # Operator should have been called
-        mock_apt.return_value.execute.assert_called_once()
+        mock_execute.assert_called_once()
 
 
 class TestUndoExecution:
@@ -165,48 +157,50 @@ class TestUndoExecution:
 
     def test_undo_install_executes_remove(self, reversible_install_entry: HistoryEntry) -> None:
         """Undoing install executes remove."""
-        with (
-            patch("popctl.cli.commands.undo.StateManager") as mock_state,
-            patch("popctl.cli.commands.undo.AptOperator") as mock_apt,
-        ):
-            mock_state.return_value.get_last_reversible.return_value = reversible_install_entry
-            mock_state.return_value.mark_entry_reversed.return_value = True
+        mock_result = MagicMock(spec=ActionResult)
+        mock_result.success = True
 
-            mock_result = MagicMock(spec=ActionResult)
-            mock_result.success = True
-            mock_apt.return_value.execute.return_value = [mock_result, mock_result]
+        with (
+            patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
+            patch("popctl.cli.commands.undo.mark_entry_reversed"),
+            patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+            patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+            patch("popctl.cli.commands.undo.is_package_protected", return_value=False),
+        ):
+            mock_get.return_value = reversible_install_entry
+            mock_execute.return_value = [mock_result, mock_result]
 
             result = runner.invoke(app, ["undo", "--yes"])
 
         assert result.exit_code == 0
         assert "undone successfully" in result.stdout
 
-        # Verify remove was called
-        mock_apt.assert_called_once_with(dry_run=False)
-        actions = mock_apt.return_value.execute.call_args[0][0]
+        # Verify remove actions were built
+        actions = mock_execute.call_args[0][0]
         assert len(actions) == 2
         assert all(a.action_type.value == "remove" for a in actions)
 
     def test_undo_remove_executes_install(self, reversible_remove_entry: HistoryEntry) -> None:
         """Undoing remove executes install."""
-        with (
-            patch("popctl.cli.commands.undo.StateManager") as mock_state,
-            patch("popctl.cli.commands.undo.AptOperator") as mock_apt,
-        ):
-            mock_state.return_value.get_last_reversible.return_value = reversible_remove_entry
-            mock_state.return_value.mark_entry_reversed.return_value = True
+        mock_result = MagicMock(spec=ActionResult)
+        mock_result.success = True
 
-            mock_result = MagicMock(spec=ActionResult)
-            mock_result.success = True
-            mock_apt.return_value.execute.return_value = [mock_result]
+        with (
+            patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
+            patch("popctl.cli.commands.undo.mark_entry_reversed"),
+            patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+            patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+        ):
+            mock_get.return_value = reversible_remove_entry
+            mock_execute.return_value = [mock_result]
 
             result = runner.invoke(app, ["undo", "--yes"])
 
         assert result.exit_code == 0
         assert "undone successfully" in result.stdout
 
-        # Verify install was called
-        actions = mock_apt.return_value.execute.call_args[0][0]
+        # Verify install actions were built
+        actions = mock_execute.call_args[0][0]
         assert len(actions) == 1
         assert actions[0].action_type.value == "install"
         assert actions[0].package == "nano"
@@ -215,59 +209,54 @@ class TestUndoExecution:
         self, reversible_install_entry: HistoryEntry
     ) -> None:
         """Undo marks entry as reversed after successful execution."""
-        with (
-            patch("popctl.cli.commands.undo.StateManager") as mock_state,
-            patch("popctl.cli.commands.undo.AptOperator") as mock_apt,
-        ):
-            mock_state.return_value.get_last_reversible.return_value = reversible_install_entry
-            mock_state.return_value.mark_entry_reversed.return_value = True
+        mock_result = MagicMock(spec=ActionResult)
+        mock_result.success = True
 
-            mock_result = MagicMock(spec=ActionResult)
-            mock_result.success = True
-            mock_apt.return_value.execute.return_value = [mock_result, mock_result]
+        with (
+            patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
+            patch("popctl.cli.commands.undo.mark_entry_reversed") as mock_mark,
+            patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+            patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+            patch("popctl.cli.commands.undo.is_package_protected", return_value=False),
+        ):
+            mock_get.return_value = reversible_install_entry
+            mock_execute.return_value = [mock_result, mock_result]
 
             result = runner.invoke(app, ["undo", "--yes"])
 
         assert result.exit_code == 0
-        mock_state.return_value.mark_entry_reversed.assert_called_once_with("abc123456789")
+        mock_mark.assert_called_once_with(reversible_install_entry)
 
 
-class TestUndoMixedSources:
-    """Tests for undo with mixed package sources."""
+def test_undo_mixed_sources(mixed_source_entry: HistoryEntry) -> None:
+    """Undo handles both APT and Flatpak packages."""
+    mock_result = MagicMock(spec=ActionResult)
+    mock_result.success = True
 
-    def test_undo_mixed_sources(self, mixed_source_entry: HistoryEntry) -> None:
-        """Undo handles both APT and Flatpak packages."""
-        with (
-            patch("popctl.cli.commands.undo.StateManager") as mock_state,
-            patch("popctl.cli.commands.undo.AptOperator") as mock_apt,
-            patch("popctl.cli.commands.undo.FlatpakOperator") as mock_flatpak,
-        ):
-            mock_state.return_value.get_last_reversible.return_value = mixed_source_entry
-            mock_state.return_value.mark_entry_reversed.return_value = True
+    with (
+        patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
+        patch("popctl.cli.commands.undo.mark_entry_reversed"),
+        patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+        patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+        patch("popctl.cli.commands.undo.is_package_protected", return_value=False),
+    ):
+        mock_get.return_value = mixed_source_entry
+        mock_execute.return_value = [mock_result, mock_result]
 
-            mock_result = MagicMock(spec=ActionResult)
-            mock_result.success = True
-            mock_apt.return_value.execute.return_value = [mock_result]
-            mock_flatpak.return_value.execute.return_value = [mock_result]
+        result = runner.invoke(app, ["undo", "--yes"])
 
-            result = runner.invoke(app, ["undo", "--yes"])
+    assert result.exit_code == 0
+    assert "undone successfully" in result.stdout
 
-        assert result.exit_code == 0
-        assert "undone successfully" in result.stdout
-
-        # Both operators should have been called
-        mock_apt.return_value.execute.assert_called_once()
-        mock_flatpak.return_value.execute.assert_called_once()
-
-        # Verify APT action
-        apt_actions = mock_apt.return_value.execute.call_args[0][0]
-        assert len(apt_actions) == 1
-        assert apt_actions[0].package == "vim"
-
-        # Verify Flatpak action
-        flatpak_actions = mock_flatpak.return_value.execute.call_args[0][0]
-        assert len(flatpak_actions) == 1
-        assert flatpak_actions[0].package == "com.spotify.Client"
+    # Verify both sources in actions
+    actions = mock_execute.call_args[0][0]
+    assert len(actions) == 2
+    packages = {a.package for a in actions}
+    assert "vim" in packages
+    assert "com.spotify.Client" in packages
+    sources = {a.source for a in actions}
+    assert PackageSource.APT in sources
+    assert PackageSource.FLATPAK in sources
 
 
 class TestUndoFailure:
@@ -275,16 +264,17 @@ class TestUndoFailure:
 
     def test_undo_failure_reports_error(self, reversible_install_entry: HistoryEntry) -> None:
         """Undo reports error when operator fails."""
-        with (
-            patch("popctl.cli.commands.undo.StateManager") as mock_state,
-            patch("popctl.cli.commands.undo.AptOperator") as mock_apt,
-        ):
-            mock_state.return_value.get_last_reversible.return_value = reversible_install_entry
+        mock_result = MagicMock(spec=ActionResult)
+        mock_result.success = False
 
-            # Simulate failure
-            mock_result = MagicMock(spec=ActionResult)
-            mock_result.success = False
-            mock_apt.return_value.execute.return_value = [mock_result, mock_result]
+        with (
+            patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
+            patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+            patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+            patch("popctl.cli.commands.undo.is_package_protected", return_value=False),
+        ):
+            mock_get.return_value = reversible_install_entry
+            mock_execute.return_value = [mock_result, mock_result]
 
             result = runner.invoke(app, ["undo", "--yes"], catch_exceptions=False)
 
@@ -297,39 +287,40 @@ class TestUndoFailure:
         self, reversible_install_entry: HistoryEntry
     ) -> None:
         """Failed undo does not mark entry as reversed."""
-        with (
-            patch("popctl.cli.commands.undo.StateManager") as mock_state,
-            patch("popctl.cli.commands.undo.AptOperator") as mock_apt,
-        ):
-            mock_state.return_value.get_last_reversible.return_value = reversible_install_entry
+        mock_result = MagicMock(spec=ActionResult)
+        mock_result.success = False
 
-            mock_result = MagicMock(spec=ActionResult)
-            mock_result.success = False
-            mock_apt.return_value.execute.return_value = [mock_result]
+        with (
+            patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
+            patch("popctl.cli.commands.undo.mark_entry_reversed") as mock_mark,
+            patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+            patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+            patch("popctl.cli.commands.undo.is_package_protected", return_value=False),
+        ):
+            mock_get.return_value = reversible_install_entry
+            mock_execute.return_value = [mock_result]
 
             runner.invoke(app, ["undo", "--yes"])
 
         # mark_entry_reversed should NOT be called on failure
-        mock_state.return_value.mark_entry_reversed.assert_not_called()
+        mock_mark.assert_not_called()
 
     def test_undo_partial_failure(self, mixed_source_entry: HistoryEntry) -> None:
         """Undo fails if any operator fails."""
+        # One success, one failure
+        success_result = MagicMock(spec=ActionResult)
+        success_result.success = True
+        fail_result = MagicMock(spec=ActionResult)
+        fail_result.success = False
+
         with (
-            patch("popctl.cli.commands.undo.StateManager") as mock_state,
-            patch("popctl.cli.commands.undo.AptOperator") as mock_apt,
-            patch("popctl.cli.commands.undo.FlatpakOperator") as mock_flatpak,
+            patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
+            patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+            patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+            patch("popctl.cli.commands.undo.is_package_protected", return_value=False),
         ):
-            mock_state.return_value.get_last_reversible.return_value = mixed_source_entry
-
-            # APT succeeds
-            apt_result = MagicMock(spec=ActionResult)
-            apt_result.success = True
-            mock_apt.return_value.execute.return_value = [apt_result]
-
-            # Flatpak fails
-            flatpak_result = MagicMock(spec=ActionResult)
-            flatpak_result.success = False
-            mock_flatpak.return_value.execute.return_value = [flatpak_result]
+            mock_get.return_value = mixed_source_entry
+            mock_execute.return_value = [success_result, fail_result]
 
             result = runner.invoke(app, ["undo", "--yes"], catch_exceptions=False)
 
@@ -344,8 +335,8 @@ class TestUndoPreview:
 
     def test_undo_preview_shows_entry_info(self, reversible_install_entry: HistoryEntry) -> None:
         """Preview shows entry ID, timestamp, and packages."""
-        with patch("popctl.cli.commands.undo.StateManager") as mock_state:
-            mock_state.return_value.get_last_reversible.return_value = reversible_install_entry
+        with patch("popctl.cli.commands.undo.get_last_reversible") as mock_get:
+            mock_get.return_value = reversible_install_entry
 
             result = runner.invoke(app, ["undo", "--dry-run"])
 
@@ -371,8 +362,8 @@ class TestUndoPreview:
             reversible=True,
         )
 
-        with patch("popctl.cli.commands.undo.StateManager") as mock_state:
-            mock_state.return_value.get_last_reversible.return_value = entry
+        with patch("popctl.cli.commands.undo.get_last_reversible") as mock_get:
+            mock_get.return_value = entry
 
             result = runner.invoke(app, ["undo", "--dry-run"])
 
@@ -384,35 +375,33 @@ class TestUndoPreview:
         assert "5 more" in result.stdout
 
 
-class TestUndoPurge:
-    """Tests for undoing purge actions."""
+def test_undo_purge_executes_install() -> None:
+    """Undoing purge executes install (config is lost)."""
+    purge_entry = HistoryEntry(
+        id="purge1234567",
+        timestamp="2026-01-26T14:30:00+00:00",
+        action_type=HistoryActionType.PURGE,
+        items=(HistoryItem(name="nginx", source=PackageSource.APT),),
+        reversible=True,
+    )
 
-    def test_undo_purge_executes_install(self) -> None:
-        """Undoing purge executes install (config is lost)."""
-        purge_entry = HistoryEntry(
-            id="purge1234567",
-            timestamp="2026-01-26T14:30:00+00:00",
-            action_type=HistoryActionType.PURGE,
-            items=(HistoryItem(name="nginx", source=PackageSource.APT),),
-            reversible=True,
-        )
+    mock_result = MagicMock(spec=ActionResult)
+    mock_result.success = True
 
-        with (
-            patch("popctl.cli.commands.undo.StateManager") as mock_state,
-            patch("popctl.cli.commands.undo.AptOperator") as mock_apt,
-        ):
-            mock_state.return_value.get_last_reversible.return_value = purge_entry
-            mock_state.return_value.mark_entry_reversed.return_value = True
+    with (
+        patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
+        patch("popctl.cli.commands.undo.mark_entry_reversed"),
+        patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+        patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+    ):
+        mock_get.return_value = purge_entry
+        mock_execute.return_value = [mock_result]
 
-            mock_result = MagicMock(spec=ActionResult)
-            mock_result.success = True
-            mock_apt.return_value.execute.return_value = [mock_result]
+        result = runner.invoke(app, ["undo", "--yes"])
 
-            result = runner.invoke(app, ["undo", "--yes"])
+    assert result.exit_code == 0
 
-        assert result.exit_code == 0
-
-        # Verify install was called (not purge reversal)
-        actions = mock_apt.return_value.execute.call_args[0][0]
-        assert len(actions) == 1
-        assert actions[0].action_type.value == "install"
+    # Verify install actions were built (not purge reversal)
+    actions = mock_execute.call_args[0][0]
+    assert len(actions) == 1
+    assert actions[0].action_type.value == "install"

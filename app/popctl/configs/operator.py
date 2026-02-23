@@ -11,28 +11,20 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from popctl.configs.protected import is_protected_config
-from popctl.core.paths import ensure_config_backup_dir
+from popctl.core.paths import ensure_dir, get_state_dir
+from popctl.domain.models import DomainActionResult
+from popctl.domain.protected import is_protected
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
-class ConfigActionResult:
-    """Result of a single config deletion operation.
+class ConfigActionResult(DomainActionResult):
+    """Result of a single config deletion operation with backup path.
 
-    Attributes:
-        path: Absolute path that was operated on.
-        success: Whether the operation completed successfully.
-        error: Error message if the operation failed, None otherwise.
-        dry_run: Whether this was a dry-run (no actual deletion).
-        backup_path: Path to backup copy, None if backup was skipped or failed.
+    Extends DomainActionResult with an optional backup_path field.
     """
 
-    path: str
-    success: bool
-    error: str | None = None
-    dry_run: bool = False
     backup_path: str | None = None
 
 
@@ -73,7 +65,7 @@ class ConfigOperator:
 
         # Create timestamped backup directory for this batch
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        backup_base = ensure_config_backup_dir()
+        backup_base = ensure_dir(get_state_dir() / "config-backups", "config backup")
         backup_dir = backup_base / timestamp
 
         if not self._dry_run:
@@ -83,7 +75,6 @@ class ConfigOperator:
                 logger.warning("Could not create backup directory %s: %s", backup_dir, e)
 
         results: list[ConfigActionResult] = []
-
         for path in paths:
             results.append(self._delete_single(path, backup_dir))
 
@@ -146,7 +137,7 @@ class ConfigOperator:
             ConfigActionResult indicating success or failure.
         """
         # 1. Check protected
-        if is_protected_config(path):
+        if is_protected(path, "configs"):
             return ConfigActionResult(
                 path=path,
                 success=False,

@@ -8,7 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from popctl.filesystem.operator import FilesystemActionResult, FilesystemOperator
+from popctl.domain.models import DomainActionResult
+from popctl.filesystem.operator import FilesystemOperator
 from popctl.utils.shell import CommandResult
 
 
@@ -164,14 +165,6 @@ class TestFilesystemOperator:
         assert results[0].error is not None
         assert "Permission denied" in results[0].error
 
-    def test_is_available_always_true(self) -> None:
-        """is_available always returns True."""
-        op = FilesystemOperator()
-        assert op.is_available() is True
-
-        op_dry = FilesystemOperator(dry_run=True)
-        assert op_dry.is_available() is True
-
     def test_delete_multiple_paths(self, tmp_path: Path) -> None:
         """Deleting multiple paths returns mixed results."""
         good_file = tmp_path / "good.txt"
@@ -200,28 +193,28 @@ class TestFilesystemOperator:
         results = op.delete([])
         assert results == []
 
-    @patch("popctl.filesystem.operator.is_protected_path")
+    @patch("popctl.filesystem.operator.is_protected")
     def test_delete_protected_via_mock(self, mock_protected: object) -> None:
-        """Protected path check delegates to is_protected_path."""
+        """Protected path check delegates to is_protected."""
         from unittest.mock import MagicMock
 
         mock_protected_typed = MagicMock(return_value=True)
-        with patch("popctl.filesystem.operator.is_protected_path", mock_protected_typed):
+        with patch("popctl.filesystem.operator.is_protected", mock_protected_typed):
             op = FilesystemOperator()
             results = op.delete(["/some/random/path"])
 
         assert len(results) == 1
         assert results[0].success is False
-        mock_protected_typed.assert_called_once_with("/some/random/path")
+        mock_protected_typed.assert_called_once_with("/some/random/path", "filesystem")
 
     def test_filesystem_action_result_defaults(self) -> None:
-        """FilesystemActionResult has correct defaults."""
-        result = FilesystemActionResult(path="/test", success=True)
+        """DomainActionResult has correct defaults."""
+        result = DomainActionResult(path="/test", success=True)
         assert result.error is None
         assert result.dry_run is False
 
     def test_filesystem_action_result_frozen(self) -> None:
-        """FilesystemActionResult is immutable."""
-        result = FilesystemActionResult(path="/test", success=True)
+        """DomainActionResult is immutable."""
+        result = DomainActionResult(path="/test", success=True)
         with pytest.raises(AttributeError):
             result.success = False  # type: ignore[misc]

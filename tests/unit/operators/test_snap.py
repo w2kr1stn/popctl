@@ -43,7 +43,7 @@ class TestSnapOperator:
         """install() returns success results on snap success."""
         with (
             patch("popctl.operators.snap.command_exists", return_value=True),
-            patch("popctl.operators.snap.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
@@ -66,7 +66,7 @@ class TestSnapOperator:
         """install() returns failure results on snap failure."""
         with (
             patch("popctl.operators.snap.command_exists", return_value=True),
-            patch("popctl.operators.snap.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(
                 stdout="", stderr='error: snap "nonexistent" not found', returncode=1
@@ -76,19 +76,19 @@ class TestSnapOperator:
 
         assert len(results) == 1
         assert results[0].success is False
-        assert "not found" in results[0].error.lower()
+        assert "not found" in results[0].detail.lower()
 
     def test_install_dry_run(self, dry_run_operator: SnapOperator) -> None:
         """install() in dry-run mode does not execute commands."""
         with (
             patch("popctl.operators.snap.command_exists", return_value=True),
-            patch("popctl.operators.snap.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             results = dry_run_operator.install(["firefox"])
 
         assert len(results) == 1
         assert results[0].success is True
-        assert "Dry-run" in results[0].message
+        assert "Dry-run" in results[0].detail
 
         # No actual command should have been run
         mock_run.assert_not_called()
@@ -100,19 +100,11 @@ class TestSnapOperator:
 
         assert results == []
 
-    def test_install_raises_when_unavailable(self, operator: SnapOperator) -> None:
-        """install() raises RuntimeError when snap unavailable."""
-        with (
-            patch("popctl.operators.snap.command_exists", return_value=False),
-            pytest.raises(RuntimeError, match="not available"),
-        ):
-            operator.install(["firefox"])
-
     def test_remove_success(self, operator: SnapOperator) -> None:
         """remove() returns success results on snap success."""
         with (
             patch("popctl.operators.snap.command_exists", return_value=True),
-            patch("popctl.operators.snap.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
@@ -134,7 +126,7 @@ class TestSnapOperator:
         """remove() with purge=True uses --purge flag and ActionType.PURGE."""
         with (
             patch("popctl.operators.snap.command_exists", return_value=True),
-            patch("popctl.operators.snap.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
@@ -156,7 +148,7 @@ class TestSnapOperator:
         """remove() returns failure results on snap failure."""
         with (
             patch("popctl.operators.snap.command_exists", return_value=True),
-            patch("popctl.operators.snap.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(
                 stdout="", stderr='error: snap "firefox" is not installed', returncode=1
@@ -171,13 +163,13 @@ class TestSnapOperator:
         """remove() in dry-run mode does not execute commands."""
         with (
             patch("popctl.operators.snap.command_exists", return_value=True),
-            patch("popctl.operators.snap.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             results = dry_run_operator.remove(["firefox"])
 
         assert len(results) == 1
         assert results[0].success is True
-        assert "Dry-run" in results[0].message
+        assert "Dry-run" in results[0].detail
 
         # No actual command should have been run
         mock_run.assert_not_called()
@@ -188,11 +180,3 @@ class TestSnapOperator:
             results = operator.remove([])
 
         assert results == []
-
-    def test_remove_raises_when_unavailable(self, operator: SnapOperator) -> None:
-        """remove() raises RuntimeError when snap unavailable."""
-        with (
-            patch("popctl.operators.snap.command_exists", return_value=False),
-            pytest.raises(RuntimeError, match="not available"),
-        ):
-            operator.remove(["firefox"])

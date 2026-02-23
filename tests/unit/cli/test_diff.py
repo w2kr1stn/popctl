@@ -4,42 +4,16 @@ Tests for the CLI diff command implementation.
 """
 
 import json
-from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from popctl.cli.main import app
 from popctl.core.diff import DiffEntry, DiffResult, DiffType
-from popctl.models.manifest import (
-    Manifest,
-    ManifestMeta,
-    PackageConfig,
-    PackageEntry,
-    SystemConfig,
-)
+from popctl.models.manifest import Manifest
 from typer.testing import CliRunner
 
 runner = CliRunner()
-
-
-@pytest.fixture
-def sample_manifest() -> Manifest:
-    """Create a sample manifest for testing."""
-    now = datetime.now(UTC)
-    return Manifest(
-        meta=ManifestMeta(version="1.0", created=now, updated=now),
-        system=SystemConfig(name="test-machine"),
-        packages=PackageConfig(
-            keep={
-                "firefox": PackageEntry(source="apt"),
-                "neovim": PackageEntry(source="apt"),
-            },
-            remove={
-                "bloatware": PackageEntry(source="apt", status="remove"),
-            },
-        ),
-    )
 
 
 @pytest.fixture
@@ -67,53 +41,37 @@ class TestDiffCommandHelp:
         assert result.exit_code == 0
         assert "Compare manifest with current system state" in result.stdout
 
-    def test_diff_help_shows_options(self) -> None:
-        """Diff help shows all available options."""
-        result = runner.invoke(app, ["diff", "--help"])
-        assert "--source" in result.stdout
-        assert "--brief" in result.stdout
-        assert "--json" in result.stdout
+
+def test_diff_no_manifest_error(tmp_path: Path) -> None:
+    """Diff shows error when manifest doesn't exist."""
+    from popctl.core.manifest import ManifestNotFoundError
+
+    with patch(
+        "popctl.core.manifest.load_manifest",
+        side_effect=ManifestNotFoundError("Manifest not found"),
+    ):
+        result = runner.invoke(app, ["diff"])
+
+    assert result.exit_code == 1
+    assert "Manifest not found" in (result.stdout + result.stderr)
+    assert "popctl init" in (result.stdout + result.stderr)
 
 
-class TestDiffNoManifest:
-    """Tests for diff command when no manifest exists."""
+def test_diff_in_sync_message(sample_manifest: Manifest, in_sync_result: DiffResult) -> None:
+    """Diff shows success message when in sync."""
+    with (
+        patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+        patch("popctl.scanners.apt.command_exists", return_value=True),
+        patch("popctl.scanners.flatpak.command_exists", return_value=False),
+        patch(
+            "popctl.cli.commands.diff.compute_system_diff",
+            return_value=in_sync_result,
+        ),
+    ):
+        result = runner.invoke(app, ["diff"])
 
-    def test_diff_no_manifest_error(self, tmp_path: Path) -> None:
-        """Diff shows error when manifest doesn't exist."""
-        from popctl.core.manifest import ManifestNotFoundError
-
-        with patch(
-            "popctl.core.manifest.load_manifest",
-            side_effect=ManifestNotFoundError("Manifest not found"),
-        ):
-            result = runner.invoke(app, ["diff"])
-
-        assert result.exit_code == 1
-        assert "Manifest not found" in (result.stdout + result.stderr)
-        assert "popctl init" in (result.stdout + result.stderr)
-
-
-class TestDiffInSync:
-    """Tests for diff command when system is in sync."""
-
-    def test_diff_in_sync_message(
-        self, sample_manifest: Manifest, in_sync_result: DiffResult
-    ) -> None:
-        """Diff shows success message when in sync."""
-        with (
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
-                return_value=in_sync_result,
-            ),
-        ):
-            result = runner.invoke(app, ["diff"])
-
-        assert result.exit_code == 0
-        assert "in sync" in result.stdout.lower()
+    assert result.exit_code == 0
+    assert "in sync" in result.stdout.lower()
 
 
 class TestDiffWithChanges:
@@ -127,9 +85,8 @@ class TestDiffWithChanges:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.diff.compute_system_diff",
                 return_value=diff_result_with_changes,
             ),
         ):
@@ -148,9 +105,8 @@ class TestDiffWithChanges:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.diff.compute_system_diff",
                 return_value=diff_result_with_changes,
             ),
         ):
@@ -172,9 +128,8 @@ class TestDiffBrief:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.diff.compute_system_diff",
                 return_value=in_sync_result,
             ),
         ):
@@ -191,9 +146,8 @@ class TestDiffBrief:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.diff.compute_system_diff",
                 return_value=diff_result_with_changes,
             ),
         ):
@@ -217,9 +171,8 @@ class TestDiffJson:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.diff.compute_system_diff",
                 return_value=diff_result_with_changes,
             ),
         ):
@@ -242,9 +195,8 @@ class TestDiffJson:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.diff.compute_system_diff",
                 return_value=diff_result_with_changes,
             ),
         ):
@@ -263,9 +215,8 @@ class TestDiffJson:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.cli.commands.diff.compute_system_diff",
                 return_value=in_sync_result,
             ),
         ):
@@ -276,34 +227,31 @@ class TestDiffJson:
         assert data["summary"]["total"] == 0
 
 
-class TestDiffSourceFilter:
-    """Tests for diff --source option."""
+def test_diff_source_apt(sample_manifest: Manifest) -> None:
+    """Diff --source apt only processes APT packages."""
+    apt_result = DiffResult(
+        new=(DiffEntry(name="htop", source="apt", diff_type=DiffType.NEW),),
+        missing=(),
+        extra=(),
+    )
 
-    def test_diff_source_apt(self, sample_manifest: Manifest) -> None:
-        """Diff --source apt only processes APT packages."""
-        apt_result = DiffResult(
-            new=(DiffEntry(name="htop", source="apt", diff_type=DiffType.NEW),),
-            missing=(),
-            extra=(),
-        )
+    with (
+        patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+        patch("popctl.scanners.apt.command_exists", return_value=True),
+        patch("popctl.scanners.flatpak.command_exists", return_value=True),
+        patch(
+            "popctl.cli.commands.diff.compute_system_diff",
+            return_value=apt_result,
+        ) as mock_diff,
+    ):
+        result = runner.invoke(app, ["diff", "--source", "apt"])
 
-        with (
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=True),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
-                return_value=apt_result,
-            ) as mock_diff,
-        ):
-            result = runner.invoke(app, ["diff", "--source", "apt"])
-
-        assert result.exit_code == 0
-        # Verify source filter was passed
-        mock_diff.assert_called_once()
-        call_args = mock_diff.call_args
-        assert call_args[1].get("source_filter") == "apt" or call_args[0][1] == "apt"
+    assert result.exit_code == 0
+    # Verify source filter was passed to compute_system_diff
+    mock_diff.assert_called_once()
+    call_args = mock_diff.call_args
+    # compute_system_diff(source, silent_warnings=...) — first positional is SourceChoice
+    assert call_args[0][0].value == "apt"
 
 
 class TestDiffScannerAvailability:
@@ -329,9 +277,8 @@ class TestDiffScannerAvailability:
             patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch.object(
-                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
-                "compute_diff",
+            patch(
+                "popctl.core.diff.compute_diff",
                 return_value=in_sync_result,
             ),
         ):

@@ -3,6 +3,7 @@
 Provides safe subprocess execution with proper error handling.
 """
 
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -31,7 +32,6 @@ class CommandResult:
 def run_command(
     args: list[str],
     *,
-    check: bool = False,
     timeout: float | None = 60.0,
     cwd: str | None = None,
 ) -> CommandResult:
@@ -39,7 +39,6 @@ def run_command(
 
     Args:
         args: Command and arguments to execute.
-        check: If True, raise CalledProcessError on non-zero exit.
         timeout: Maximum time in seconds to wait for command.
         cwd: Working directory for the command. If None, uses current directory.
 
@@ -47,7 +46,6 @@ def run_command(
         CommandResult with stdout, stderr, and returncode.
 
     Raises:
-        subprocess.CalledProcessError: If check=True and command fails.
         subprocess.TimeoutExpired: If command exceeds timeout.
         FileNotFoundError: If command executable is not found.
     """
@@ -55,7 +53,7 @@ def run_command(
         args,
         capture_output=True,
         text=True,
-        check=check,
+        check=False,
         timeout=timeout,
         cwd=cwd,
     )
@@ -102,8 +100,6 @@ def run_interactive(
         FileNotFoundError: If command executable is not found.
         OSError: If command cannot be executed.
     """
-    import os
-
     full_env = {**os.environ, **(env or {})}
     result = subprocess.run(
         args,
@@ -112,58 +108,3 @@ def run_interactive(
         env=full_env,
     )
     return result.returncode
-
-
-def find_running_container(name_pattern: str = "ai-dev") -> str | None:
-    """Find a running Docker container whose name contains the pattern.
-
-    Docker Compose generates names like ``ai-dev-base-dev-1``, so this
-    uses substring matching rather than exact name comparison.
-
-    Args:
-        name_pattern: Substring to match against container names.
-
-    Returns:
-        Full container name if found, None otherwise.
-    """
-    try:
-        result = run_command(
-            ["docker", "ps", "--filter", f"name={name_pattern}", "--format", "{{.Names}}"],
-            timeout=10.0,
-        )
-        if not result.success:
-            return None
-        for line in result.stdout.strip().splitlines():
-            if name_pattern in line:
-                return line.strip()
-        return None
-    except (FileNotFoundError, OSError):
-        return None
-
-
-def is_container_running(name: str = "ai-dev") -> bool:
-    """Check if a Docker container matching the name is running.
-
-    Args:
-        name: Substring to match against container names.
-
-    Returns:
-        True if a matching container is running, False otherwise.
-    """
-    return find_running_container(name) is not None
-
-
-def docker_cp(src: str, dest: str) -> CommandResult:
-    """Copy files between host and a Docker container.
-
-    Args:
-        src: Source path (host path or container:path).
-        dest: Destination path (host path or container:path).
-
-    Returns:
-        CommandResult with stdout, stderr, and returncode.
-
-    Raises:
-        FileNotFoundError: If docker is not found.
-    """
-    return run_command(["docker", "cp", src, dest], timeout=60.0)

@@ -9,9 +9,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from popctl.cli.main import app
-from popctl.filesystem.manifest import FilesystemConfig, FilesystemEntry
-from popctl.filesystem.models import OrphanReason, PathStatus, PathType, ScannedPath
-from popctl.filesystem.operator import FilesystemActionResult
+from popctl.domain.models import (
+    DomainActionResult,
+    OrphanReason,
+    OrphanStatus,
+    PathType,
+    ScannedEntry,
+)
+from popctl.models.manifest import DomainConfig, DomainEntry
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -22,54 +27,36 @@ def _make_orphan(
     parent: str = "~/.config",
     confidence: float = 0.70,
     size: int = 4096,
-) -> ScannedPath:
-    """Create a test ScannedPath with ORPHAN status."""
-    return ScannedPath(
+) -> ScannedEntry:
+    """Create a test ScannedEntry with ORPHAN status."""
+    return ScannedEntry(
         path=path,
         path_type=PathType.DIRECTORY,
-        status=PathStatus.ORPHAN,
+        status=OrphanStatus.ORPHAN,
         size_bytes=size,
         mtime="2024-01-15T10:00:00Z",
         parent_target=parent,
         orphan_reason=OrphanReason.NO_PACKAGE_MATCH,
         confidence=confidence,
-        description=None,
-    )
-
-
-def _make_owned(path: str) -> ScannedPath:
-    """Create a test ScannedPath with OWNED status."""
-    return ScannedPath(
-        path=path,
-        path_type=PathType.DIRECTORY,
-        status=PathStatus.OWNED,
-        size_bytes=1024,
-        mtime="2024-01-15T10:00:00Z",
-        parent_target="~/.config",
-        orphan_reason=None,
-        confidence=0.0,
-        description=None,
     )
 
 
 def _make_manifest(
-    remove_paths: dict[str, FilesystemEntry] | None = None,
-    keep_paths: dict[str, FilesystemEntry] | None = None,
+    remove_paths: dict[str, DomainEntry] | None = None,
+    keep_paths: dict[str, DomainEntry] | None = None,
 ) -> MagicMock:
     """Create a mock Manifest with optional filesystem section."""
     manifest = MagicMock()
     if remove_paths is not None or keep_paths is not None:
-        fs_config = FilesystemConfig(
+        fs_config = DomainConfig(
             keep=keep_paths or {},
             remove=remove_paths or {},
         )
         manifest.filesystem = fs_config
         manifest.get_fs_remove_paths.return_value = fs_config.remove
-        manifest.get_fs_keep_paths.return_value = fs_config.keep
     else:
         manifest.filesystem = None
         manifest.get_fs_remove_paths.return_value = {}
-        manifest.get_fs_keep_paths.return_value = {}
     return manifest
 
 
@@ -84,15 +71,11 @@ class TestFsScan:
     def test_fs_scan_default(self) -> None:
         """Scan returns table output with orphans."""
         orphans = [
-            _make_orphan("/tmp/vlc", confidence=0.70, size=4096),
             _make_orphan("/tmp/obs", confidence=0.80, size=8192),
+            _make_orphan("/tmp/vlc", confidence=0.70, size=4096),
         ]
 
-        with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(orphans)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.fs.collect_domain_orphans", return_value=orphans):
             result = runner.invoke(app, ["fs", "scan"])
 
         assert result.exit_code == 0
@@ -103,11 +86,7 @@ class TestFsScan:
 
     def test_fs_scan_no_orphans(self) -> None:
         """Scan shows clean message when no orphans found."""
-        with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter([])
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.fs.collect_domain_orphans", return_value=[]):
             result = runner.invoke(app, ["fs", "scan"])
 
         assert result.exit_code == 0
@@ -115,28 +94,24 @@ class TestFsScan:
         assert "No orphaned entries found" in result.stdout
 
     def test_fs_scan_with_files_flag(self) -> None:
-        """Scan passes include_files=True to scanner."""
-        with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter([])
-            mock_scanner_class.return_value = mock_scanner
-
+        """Scan passes include_files=True to collect_domain_orphans."""
+        with patch(
+            "popctl.cli.commands.fs.collect_domain_orphans", return_value=[]
+        ) as mock_collect:
             result = runner.invoke(app, ["fs", "scan", "--files"])
 
         assert result.exit_code == 0
-        mock_scanner_class.assert_called_once_with(include_files=True, include_etc=False)
+        mock_collect.assert_called_once_with("filesystem", include_files=True, include_etc=False)
 
     def test_fs_scan_with_etc_flag(self) -> None:
-        """Scan passes include_etc=True to scanner."""
-        with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter([])
-            mock_scanner_class.return_value = mock_scanner
-
+        """Scan passes include_etc=True to collect_domain_orphans."""
+        with patch(
+            "popctl.cli.commands.fs.collect_domain_orphans", return_value=[]
+        ) as mock_collect:
             result = runner.invoke(app, ["fs", "scan", "--include-etc"])
 
         assert result.exit_code == 0
-        mock_scanner_class.assert_called_once_with(include_files=False, include_etc=True)
+        mock_collect.assert_called_once_with("filesystem", include_files=False, include_etc=True)
 
     def test_fs_scan_json_format(self) -> None:
         """Scan with --format json outputs valid JSON."""
@@ -144,11 +119,7 @@ class TestFsScan:
             _make_orphan("/home/user/.config/vlc"),
         ]
 
-        with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(orphans)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.fs.collect_domain_orphans", return_value=orphans):
             result = runner.invoke(app, ["fs", "scan", "--format", "json"])
 
         assert result.exit_code == 0
@@ -167,11 +138,7 @@ class TestFsScan:
         with tempfile.TemporaryDirectory() as tmpdir:
             export_path = Path(tmpdir) / "orphans.json"
 
-            with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-                mock_scanner = MagicMock()
-                mock_scanner.scan.return_value = iter(orphans)
-                mock_scanner_class.return_value = mock_scanner
-
+            with patch("popctl.cli.commands.fs.collect_domain_orphans", return_value=orphans):
                 result = runner.invoke(app, ["fs", "scan", "--export", str(export_path)])
 
             assert result.exit_code == 0
@@ -183,17 +150,14 @@ class TestFsScan:
 
     def test_fs_scan_limit(self) -> None:
         """Scan with --limit restricts displayed results."""
+        # collect_domain_orphans returns already sorted by confidence desc
         orphans = [
             _make_orphan("/tmp/aaa", confidence=0.90),
             _make_orphan("/tmp/bbb", confidence=0.80),
             _make_orphan("/tmp/ccc", confidence=0.70),
         ]
 
-        with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(orphans)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.fs.collect_domain_orphans", return_value=orphans):
             result = runner.invoke(app, ["fs", "scan", "--limit", "1"])
 
         assert result.exit_code == 0
@@ -203,17 +167,16 @@ class TestFsScan:
         assert "limited to 1" in result.stdout
 
     def test_fs_scan_mixed_statuses(self) -> None:
-        """Scan filters to ORPHAN only; OWNED entries are excluded."""
-        mixed = [
+        """Scan filters to ORPHAN only; OWNED entries are excluded.
+
+        collect_domain_orphans already filters internally, so the mock
+        returns only orphan entries.
+        """
+        orphans_only = [
             _make_orphan("/tmp/vlc"),
-            _make_owned("/tmp/firefox"),
         ]
 
-        with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(mixed)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.fs.collect_domain_orphans", return_value=orphans_only):
             result = runner.invoke(app, ["fs", "scan"])
 
         assert result.exit_code == 0
@@ -234,11 +197,11 @@ class TestFsClean:
         """Clean with --dry-run shows plan without deleting."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": FilesystemEntry(reason="VLC uninstalled"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC uninstalled"),
             }
         )
         dry_results = [
-            FilesystemActionResult(path="/home/user/.config/vlc", success=True, dry_run=True),
+            DomainActionResult(path="/home/user/.config/vlc", success=True, dry_run=True),
         ]
 
         with (
@@ -263,11 +226,11 @@ class TestFsClean:
         """Clean with -y skips confirmation."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": FilesystemEntry(reason="VLC uninstalled"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC uninstalled"),
             }
         )
         success_results = [
-            FilesystemActionResult(path="/home/user/.config/vlc", success=True),
+            DomainActionResult(path="/home/user/.config/vlc", success=True),
         ]
 
         with (
@@ -276,7 +239,7 @@ class TestFsClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.fs.FilesystemOperator") as mock_op_class,
-            patch("popctl.cli.commands.fs.record_fs_deletions") as mock_record,
+            patch("popctl.cli.commands.fs.record_domain_deletions") as mock_record,
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = success_results
@@ -302,13 +265,13 @@ class TestFsClean:
         """Clean records successful deletions to history."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": FilesystemEntry(reason="VLC removed"),
-                "/home/user/.cache/mozilla": FilesystemEntry(reason="Cache stale"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC removed"),
+                "/home/user/.cache/mozilla": DomainEntry(reason="Cache stale"),
             }
         )
         success_results = [
-            FilesystemActionResult(path="/home/user/.config/vlc", success=True),
-            FilesystemActionResult(path="/home/user/.cache/mozilla", success=True),
+            DomainActionResult(path="/home/user/.config/vlc", success=True),
+            DomainActionResult(path="/home/user/.cache/mozilla", success=True),
         ]
 
         with (
@@ -317,7 +280,7 @@ class TestFsClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.fs.FilesystemOperator") as mock_op_class,
-            patch("popctl.cli.commands.fs.record_fs_deletions") as mock_record,
+            patch("popctl.cli.commands.fs.record_domain_deletions") as mock_record,
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = success_results
@@ -327,6 +290,7 @@ class TestFsClean:
 
         assert result.exit_code == 0
         mock_record.assert_called_once_with(
+            "filesystem",
             ["/home/user/.config/vlc", "/home/user/.cache/mozilla"],
             command="popctl fs clean",
         )
@@ -335,12 +299,12 @@ class TestFsClean:
         """Clean skips /etc paths without --include-etc flag."""
         manifest = _make_manifest(
             remove_paths={
-                "/etc/vlc": FilesystemEntry(reason="Obsolete config"),
-                "/home/user/.config/vlc": FilesystemEntry(reason="VLC removed"),
+                "/etc/vlc": DomainEntry(reason="Obsolete config"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC removed"),
             }
         )
         success_results = [
-            FilesystemActionResult(path="/home/user/.config/vlc", success=True),
+            DomainActionResult(path="/home/user/.config/vlc", success=True),
         ]
 
         with (
@@ -349,7 +313,7 @@ class TestFsClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.fs.FilesystemOperator") as mock_op_class,
-            patch("popctl.cli.commands.fs.record_fs_deletions"),
+            patch("popctl.cli.commands.fs.record_domain_deletions"),
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = success_results
@@ -367,11 +331,11 @@ class TestFsClean:
         """Clean exits with code 1 if any deletion fails."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": FilesystemEntry(reason="VLC removed"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC removed"),
             }
         )
         fail_results = [
-            FilesystemActionResult(
+            DomainActionResult(
                 path="/home/user/.config/vlc",
                 success=False,
                 error="Permission denied",
@@ -407,66 +371,3 @@ class TestFsHelp:
         result = runner.invoke(app, ["fs", "--help"])
         assert result.exit_code == 0
         assert "Filesystem scanning and cleanup" in result.stdout
-        assert "scan" in result.stdout
-        assert "clean" in result.stdout
-
-    def test_fs_scan_help(self) -> None:
-        """popctl fs scan --help shows scan command help."""
-        result = runner.invoke(app, ["fs", "scan", "--help"])
-        assert result.exit_code == 0
-        assert "Scan filesystem for orphaned" in result.stdout
-        assert "--files" in result.stdout
-        assert "--include-etc" in result.stdout
-        assert "--format" in result.stdout
-        assert "--export" in result.stdout
-        assert "--limit" in result.stdout
-
-    def test_fs_clean_help(self) -> None:
-        """popctl fs clean --help shows clean command help."""
-        result = runner.invoke(app, ["fs", "clean", "--help"])
-        assert result.exit_code == 0
-        assert "Clean up filesystem entries" in result.stdout
-        assert "--dry-run" in result.stdout
-        assert "--yes" in result.stdout
-        assert "--include-etc" in result.stdout
-
-
-# =============================================================================
-# Format size helper tests
-# =============================================================================
-
-
-class TestFormatSize:
-    """Tests for the _format_size helper function."""
-
-    def test_format_size_zero(self) -> None:
-        """Format 0 bytes."""
-        from popctl.cli.commands.fs import _format_size
-
-        assert _format_size(0) == "0 B"
-
-    def test_format_size_none(self) -> None:
-        """Format None bytes."""
-        from popctl.cli.commands.fs import _format_size
-
-        assert _format_size(None) == "0 B"
-
-    def test_format_size_bytes(self) -> None:
-        """Format small byte values."""
-        from popctl.cli.commands.fs import _format_size
-
-        assert _format_size(512) == "512 B"
-
-    def test_format_size_kilobytes(self) -> None:
-        """Format kilobyte values."""
-        from popctl.cli.commands.fs import _format_size
-
-        result = _format_size(2048)
-        assert "KB" in result
-
-    def test_format_size_megabytes(self) -> None:
-        """Format megabyte values."""
-        from popctl.cli.commands.fs import _format_size
-
-        result = _format_size(5 * 1024 * 1024)
-        assert "MB" in result

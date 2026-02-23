@@ -1,177 +1,39 @@
-"""File exchange for AI-assisted package classification.
+"""Exchange models and import logic for AI-assisted classification.
 
-This module handles the file-based communication protocol between popctl
-and AI advisors (Claude Code / Gemini CLI). It provides functions to:
+This module defines the Pydantic models for the file-based communication
+protocol between popctl and AI advisors, and provides import/validation
+of advisor decisions.
 
-- Export scan data to scan.json for the AI agent
-- Export prompt files (prompt.txt)
-- Import and validate decisions.toml from the AI agent
-- Clean up exchange directory after processing
-
-File Exchange Protocol:
-    popctl writes:
-      - /tmp/popctl-exchange/scan.json       (package data)
-      - /tmp/popctl-exchange/prompt.txt      (headless mode prompt)
-
-    AI agent writes:
-      - /tmp/popctl-exchange/decisions.toml  (classification results)
+The primary workflow uses workspace-based sessions (see advisor/workspace.py).
 """
 
 from __future__ import annotations
 
-import json
-import socket
+import logging
 import tomllib
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from popctl.advisor.prompts import (
-    CATEGORIES,
-    build_headless_prompt,
-    get_prompt_file_path,
+from popctl.advisor.prompts import CATEGORIES
+from popctl.core.state import record_action
+from popctl.models.history import (
+    HistoryActionType,
+    HistoryItem,
+    create_history_entry,
 )
-from popctl.core.paths import get_exchange_dir
+from popctl.models.manifest import (
+    DomainConfig,
+    DomainEntry,
+    Manifest,
+    PackageEntry,
+    PackageSourceType,
+)
+from popctl.models.package import PACKAGE_SOURCE_KEYS, PackageSource
+from popctl.utils.formatting import print_warning
 
-if TYPE_CHECKING:
-    from popctl.models.scan_result import ScanResult
-
-# Type alias for package source keys in decisions
-PackageSourceKey = Literal["apt", "flatpak", "snap"]
-
-
-# =============================================================================
-# Export Models
-# =============================================================================
-
-
-class PackageScanEntry(BaseModel):
-    """Single package entry in scan export.
-
-    Represents a package in the scan.json export format, containing
-    the essential information needed for AI classification.
-
-    Attributes:
-        name: Package name (e.g., "firefox", "com.spotify.Client").
-        source: Package source ("apt" or "flatpak").
-        version: Installed version string.
-        status: Installation status ("manual" or "auto").
-        description: Human-readable package description.
-        size_bytes: Installed size in bytes.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    name: str
-    source: str  # "apt" | "flatpak"
-    version: str
-    status: str  # "manual" | "auto"
-    description: str | None = None
-    size_bytes: int | None = None
-
-
-class FilesystemOrphanEntry(BaseModel):
-    """Single filesystem orphan entry in scan export.
-
-    Represents an orphaned filesystem path in the scan.json export format,
-    containing the information needed for AI classification.
-
-    Attributes:
-        path: Filesystem path (tilde-prefixed, e.g., "~/.config/vlc").
-        path_type: Type of path ("directory", "file", "symlink", "dead_symlink").
-        size_bytes: Size in bytes (None if unavailable).
-        mtime: Last modification time in ISO 8601 format (None if unavailable).
-        parent_target: Scan target root directory (e.g., "~/.config").
-        orphan_reason: Reason for orphan classification.
-        confidence: Orphan confidence score (0.0 to 1.0).
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    path: str
-    path_type: str  # "directory", "file", "symlink", "dead_symlink"
-    size_bytes: int | None = None
-    mtime: str | None = None
-    parent_target: str
-    orphan_reason: str
-    confidence: float
-
-
-class FilesystemScanSection(BaseModel):
-    """Filesystem section in scan.json export.
-
-    Attributes:
-        orphans: List of orphaned filesystem entries.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    orphans: list[FilesystemOrphanEntry] = Field(default_factory=lambda: [])
-
-
-class ConfigOrphanEntry(BaseModel):
-    """Single config orphan entry in scan export.
-
-    Represents an orphaned configuration path in the scan.json export format,
-    containing the information needed for AI classification.
-
-    Attributes:
-        path: Config path (tilde-prefixed, e.g., "~/.config/vlc").
-        config_type: Type of config ("directory" or "file").
-        size_bytes: Size in bytes (None if unavailable).
-        mtime: Last modification time in ISO 8601 format (None if unavailable).
-        orphan_reason: Reason for orphan classification.
-        confidence: Orphan confidence score (0.0 to 1.0).
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    path: str
-    config_type: str  # ConfigType value: "directory" or "file"
-    size_bytes: int | None = None
-    mtime: str | None = None
-    orphan_reason: str  # ConfigOrphanReason value
-    confidence: float
-
-
-class ConfigScanSection(BaseModel):
-    """Config section in scan.json export.
-
-    Attributes:
-        orphans: List of orphaned config entries.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    orphans: list[ConfigOrphanEntry] = Field(default_factory=lambda: [])
-
-
-class ScanExport(BaseModel):
-    """Complete scan export for AI agent.
-
-    This model defines the structure of scan.json that is written to
-    the exchange directory for the AI agent to read.
-
-    Attributes:
-        scan_date: ISO format timestamp of the scan.
-        system: System information (hostname, os, manifest_path).
-        summary: Package count summary.
-        packages: Packages grouped by classification status.
-        filesystem: Optional filesystem orphan data for classification.
-        configs: Optional config orphan data for classification.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    scan_date: str  # ISO format
-    system: dict[str, str]  # hostname, os, manifest_path
-    summary: dict[str, int]  # total_packages, manual_apt, etc.
-    packages: dict[str, list[PackageScanEntry]]  # "unknown", "new_since_manifest"
-    filesystem: FilesystemScanSection | None = None
-    configs: ConfigScanSection | None = None
-
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # Import Models (decisions.toml)
@@ -226,13 +88,13 @@ class SourceDecisions(BaseModel):
     ask: list[PackageDecision] = Field(default_factory=lambda: [])
 
 
-class FilesystemPathDecision(BaseModel):
-    """Single filesystem path decision from AI agent.
+class PathDecision(BaseModel):
+    """Single path decision from AI agent (filesystem or config).
 
     Represents one path's classification in the decisions.toml file.
 
     Attributes:
-        path: Filesystem path (tilde-prefixed, e.g., "~/.config/vlc").
+        path: Path (tilde-prefixed, e.g., "~/.config/vlc").
         reason: Explanation for the classification.
         confidence: Classification confidence (0.0 - 1.0).
         category: Path category (e.g., "config", "obsolete", "other").
@@ -243,13 +105,13 @@ class FilesystemPathDecision(BaseModel):
     path: str
     reason: str
     confidence: float = Field(ge=0.0, le=1.0)
-    category: str
+    category: str | None = None
 
 
-class FilesystemDecisions(BaseModel):
-    """Filesystem decisions from AI agent.
+class DomainDecisions(BaseModel):
+    """Path decisions grouped by classification (keep/remove/ask).
 
-    Groups filesystem path decisions by classification: keep, remove, or ask.
+    Used for both filesystem and config domain decisions from the AI agent.
 
     Attributes:
         keep: Paths that should be kept.
@@ -259,47 +121,9 @@ class FilesystemDecisions(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    keep: list[FilesystemPathDecision] = Field(default_factory=lambda: [])
-    remove: list[FilesystemPathDecision] = Field(default_factory=lambda: [])
-    ask: list[FilesystemPathDecision] = Field(default_factory=lambda: [])
-
-
-class ConfigPathDecision(BaseModel):
-    """Single config path decision from AI agent.
-
-    Represents one config path's classification in the decisions.toml file.
-
-    Attributes:
-        path: Config path (tilde-prefixed, e.g., "~/.config/vlc").
-        reason: Explanation for the classification.
-        confidence: Classification confidence (0.0 - 1.0).
-        category: Config category (e.g., "editor", "media", "unknown").
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    path: str
-    reason: str
-    confidence: float = Field(ge=0.0, le=1.0)
-    category: str | None = None
-
-
-class ConfigDecisions(BaseModel):
-    """Config decisions from AI agent.
-
-    Groups config path decisions by classification: keep, remove, or ask.
-
-    Attributes:
-        keep: Config paths that should be kept.
-        remove: Config paths that should be removed.
-        ask: Config paths that need user decision.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    keep: list[ConfigPathDecision] = Field(default_factory=lambda: [])
-    remove: list[ConfigPathDecision] = Field(default_factory=lambda: [])
-    ask: list[ConfigPathDecision] = Field(default_factory=lambda: [])
+    keep: list[PathDecision] = Field(default_factory=lambda: [])
+    remove: list[PathDecision] = Field(default_factory=lambda: [])
+    ask: list[PathDecision] = Field(default_factory=lambda: [])
 
 
 class DecisionsResult(BaseModel):
@@ -315,186 +139,9 @@ class DecisionsResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    packages: dict[PackageSourceKey, SourceDecisions]
-    filesystem: FilesystemDecisions | None = None
-    configs: ConfigDecisions | None = None
-
-
-# =============================================================================
-# Export Functions
-# =============================================================================
-
-
-def export_scan_for_advisor(
-    scan_result: ScanResult,
-    exchange_dir: Path,
-    manifest_path: Path | None = None,
-    filesystem_orphans: list[FilesystemOrphanEntry] | None = None,
-    config_orphans: list[ConfigOrphanEntry] | None = None,
-) -> Path:
-    """Export scan results to exchange directory for AI agent.
-
-    Creates a scan.json file in the exchange directory containing
-    package data, optional filesystem orphan data, and optional
-    config orphan data for the AI agent to classify.
-
-    Args:
-        scan_result: Scan result from popctl scan command.
-        exchange_dir: Directory for file exchange with AI agent.
-        manifest_path: Optional path to manifest file for reference.
-        filesystem_orphans: Optional list of filesystem orphan entries.
-        config_orphans: Optional list of config orphan entries.
-
-    Returns:
-        Path to the created scan.json file.
-
-    Raises:
-        RuntimeError: If the file cannot be written.
-
-    Example:
-        >>> from popctl.models.scan_result import ScanResult
-        >>> from popctl.core.paths import ensure_exchange_dir
-        >>> scan = ScanResult.create(packages, ["apt", "flatpak"])
-        >>> path = export_scan_for_advisor(scan, ensure_exchange_dir())
-    """
-    # Ensure exchange directory exists
-    exchange_dir.mkdir(parents=True, exist_ok=True)
-
-    # Build package entries grouped by status/need
-    packages_by_group: dict[str, list[PackageScanEntry]] = {
-        "unknown": [],
-        "new_since_manifest": [],
-    }
-
-    # Convert ScannedPackages to PackageScanEntry
-    for pkg in scan_result.packages:
-        entry = PackageScanEntry(
-            name=pkg.name,
-            source=pkg.source.value,
-            version=pkg.version,
-            status=pkg.status.value,
-            description=pkg.description,
-            size_bytes=pkg.size_bytes,
-        )
-        # All scanned packages go to "unknown" for classification
-        packages_by_group["unknown"].append(entry)
-
-    # Build summary
-    summary: dict[str, int] = {
-        "total_packages": len(scan_result.packages),
-        "manual_apt": 0,
-        "auto_apt": 0,
-        "flatpak": 0,
-        "snap": 0,
-        "unknown": len(packages_by_group["unknown"]),
-    }
-
-    for pkg in scan_result.packages:
-        if pkg.source.value == "apt":
-            if pkg.is_manual:
-                summary["manual_apt"] += 1
-            else:
-                summary["auto_apt"] += 1
-        elif pkg.source.value == "flatpak":
-            summary["flatpak"] += 1
-        elif pkg.source.value == "snap":
-            summary["snap"] += 1
-
-    # Build system info
-    system_info: dict[str, str] = {
-        "hostname": socket.gethostname(),
-        "os": "Pop!_OS 24.04 LTS",
-    }
-    if manifest_path:
-        system_info["manifest_path"] = str(manifest_path)
-
-    # Build filesystem section if orphans provided
-    filesystem_section: FilesystemScanSection | None = None
-    if filesystem_orphans:
-        filesystem_section = FilesystemScanSection(orphans=filesystem_orphans)
-
-    # Build configs section if orphans provided
-    configs_section: ConfigScanSection | None = None
-    if config_orphans:
-        configs_section = ConfigScanSection(orphans=config_orphans)
-
-    # Create export model
-    scan_export = ScanExport(
-        scan_date=datetime.now(UTC).isoformat(),
-        system=system_info,
-        summary=summary,
-        packages={
-            "unknown": packages_by_group["unknown"],
-            "new_since_manifest": packages_by_group["new_since_manifest"],
-        },
-        filesystem=filesystem_section,
-        configs=configs_section,
-    )
-
-    # Write to file
-    scan_json_path = exchange_dir / "scan.json"
-    try:
-        with scan_json_path.open("w", encoding="utf-8") as f:
-            json.dump(
-                scan_export.model_dump(),
-                f,
-                indent=2,
-                ensure_ascii=False,
-            )
-    except OSError as e:
-        msg = f"Failed to write scan.json to {scan_json_path}: {e}"
-        raise RuntimeError(msg) from e
-
-    return scan_json_path
-
-
-def export_prompt_files(
-    exchange_dir: Path,
-    manifest_path: Path | None = None,
-) -> Path:
-    """Export prompt file to exchange directory.
-
-    Creates prompt.txt for the AI agent in headless mode.
-
-    Args:
-        exchange_dir: Directory for file exchange with AI agent.
-        manifest_path: Optional path to manifest file for reference.
-
-    Returns:
-        Path to the created prompt.txt file.
-
-    Raises:
-        RuntimeError: If file cannot be written.
-    """
-    # Ensure exchange directory exists
-    exchange_dir.mkdir(parents=True, exist_ok=True)
-
-    # Standard file paths
-    scan_json_path = str(exchange_dir / "scan.json")
-    decisions_path = str(exchange_dir / "decisions.toml")
-
-    # Build system info for prompt
-    system_info: dict[str, str] = {
-        "hostname": socket.gethostname(),
-        "os": "Pop!_OS 24.04 LTS",
-    }
-
-    # Create headless prompt
-    prompt_content = build_headless_prompt(
-        scan_json_path=scan_json_path,
-        decisions_output_path=decisions_path,
-        system_info=system_info,
-    )
-
-    # Write prompt.txt
-    prompt_path = get_prompt_file_path(exchange_dir)
-    try:
-        prompt_path.write_text(prompt_content, encoding="utf-8")
-    except OSError as e:
-        msg = f"Failed to write prompt.txt to {prompt_path}: {e}"
-        raise RuntimeError(msg) from e
-
-    return prompt_path
+    packages: dict[PackageSourceType, SourceDecisions]
+    filesystem: DomainDecisions | None = None
+    configs: DomainDecisions | None = None
 
 
 # =============================================================================
@@ -502,14 +149,14 @@ def export_prompt_files(
 # =============================================================================
 
 
-def import_decisions(exchange_dir: Path) -> DecisionsResult:
-    """Import and validate decisions.toml from exchange directory.
+def import_decisions(decisions_path: Path) -> DecisionsResult:
+    """Import and validate a decisions.toml file.
 
     Reads the decisions.toml file created by the AI agent and validates
     it against the expected schema using Pydantic.
 
     Args:
-        exchange_dir: Directory containing the decisions.toml file.
+        decisions_path: Path to the decisions.toml file.
 
     Returns:
         Validated DecisionsResult containing all package decisions.
@@ -519,13 +166,10 @@ def import_decisions(exchange_dir: Path) -> DecisionsResult:
         ValueError: If TOML is invalid or doesn't match schema.
 
     Example:
-        >>> from popctl.core.paths import get_exchange_dir
-        >>> decisions = import_decisions(get_exchange_dir())
+        >>> decisions = import_decisions(Path("/tmp/decisions.toml"))
         >>> for pkg in decisions.packages["apt"].keep:
         ...     print(f"Keep: {pkg.name} ({pkg.reason})")
     """
-    decisions_path = exchange_dir / "decisions.toml"
-
     # Check if file exists
     if not decisions_path.exists():
         msg = f"decisions.toml not found at {decisions_path}"
@@ -542,268 +186,158 @@ def import_decisions(exchange_dir: Path) -> DecisionsResult:
         msg = f"Failed to read decisions.toml: {e}"
         raise ValueError(msg) from e
 
-    # Validate and convert to model
+    # Validate packages section exists
+    if not isinstance(data.get("packages"), dict):
+        msg = "decisions.toml must have a 'packages' section"
+        raise ValueError(msg)
+
+    # Fill missing sources with empty defaults
+    packages: dict[str, Any] = data["packages"]
+    for source in ("apt", "flatpak", "snap"):
+        if source not in packages:
+            packages[source] = {"keep": [], "remove": [], "ask": []}
+
+    # Let Pydantic validate the full structure
     try:
-        return _parse_decisions_data(data)
-    except (ValueError, KeyError, TypeError) as e:
+        return DecisionsResult.model_validate(data)
+    except ValidationError as e:
         msg = f"Invalid decisions.toml schema: {e}"
         raise ValueError(msg) from e
 
 
-def _parse_decisions_data(data: dict[str, Any]) -> DecisionsResult:
-    """Parse and validate decisions data from TOML.
+def apply_decisions_to_manifest(
+    manifest: Manifest,
+    decisions: DecisionsResult,
+) -> tuple[dict[str, dict[str, int]], list[tuple[str, str, str, float]]]:
+    """Apply advisor package decisions to a manifest.
 
-    Internal function to convert raw TOML data to DecisionsResult model.
+    Mutates the manifest's ``packages.keep`` and ``packages.remove``
+    dicts by inserting entries derived from the advisor decisions.
 
     Args:
-        data: Parsed TOML data dictionary.
+        manifest: Manifest to update in place.
+        decisions: Validated advisor decisions.
 
     Returns:
-        Validated DecisionsResult.
-
-    Raises:
-        ValueError: If data doesn't match expected schema.
+        Tuple of ``(stats_by_source, ask_packages)`` where:
+        - ``stats_by_source`` maps each source to
+          ``{"keep": N, "remove": N, "ask": N}`` counts.
+        - ``ask_packages`` is a list of
+          ``(name, source, reason, confidence)`` tuples for decisions
+          that require manual user input.
     """
-    # Extract packages section
-    packages_data: Any = data.get("packages", {})
+    stats: dict[str, dict[str, int]] = {}
+    ask_packages: list[tuple[str, str, str, float]] = []
 
-    if not isinstance(packages_data, dict):
-        msg = "decisions.toml must have a 'packages' section"
-        raise ValueError(msg)
-
-    # Type-narrow packages_data to dict[str, Any] - cast needed for pyright
-    packages_dict: dict[str, Any] = cast(dict[str, Any], packages_data)
-
-    # Parse each source's decisions
-    parsed_packages: dict[str, SourceDecisions] = {}
-
-    for source in ("apt", "flatpak", "snap"):
-        source_data: Any = packages_dict.get(source, {})
-
-        if not isinstance(source_data, dict):
-            # Empty or missing source - use defaults
-            parsed_packages[source] = SourceDecisions()
+    for source in PACKAGE_SOURCE_KEYS:
+        source_decisions = decisions.packages.get(source)  # type: ignore[arg-type]
+        if source_decisions is None:
             continue
 
-        # Type-narrow source_data - cast for pyright
-        source_dict: dict[str, Any] = cast(dict[str, Any], source_data)
+        stats[source] = {"keep": 0, "remove": 0, "ask": 0}
 
-        # Parse each classification list
-        keep_raw: Any = source_dict.get("keep", [])
-        remove_raw: Any = source_dict.get("remove", [])
-        ask_raw: Any = source_dict.get("ask", [])
+        for decision in source_decisions.keep:
+            manifest.packages.keep[decision.name] = PackageEntry(
+                source=source,  # type: ignore[arg-type]
+                reason=decision.reason,
+            )
+            stats[source]["keep"] += 1
 
-        keep_list = _parse_decision_list(keep_raw)
-        remove_list = _parse_decision_list(remove_raw)
-        ask_list = _parse_decision_list(ask_raw)
+        for decision in source_decisions.remove:
+            manifest.packages.remove[decision.name] = PackageEntry(
+                source=source,  # type: ignore[arg-type]
+                reason=decision.reason,
+            )
+            stats[source]["remove"] += 1
 
-        parsed_packages[source] = SourceDecisions(
-            keep=keep_list,
-            remove=remove_list,
-            ask=ask_list,
-        )
+        for decision in source_decisions.ask:
+            ask_packages.append((decision.name, source, decision.reason, decision.confidence))
+            stats[source]["ask"] += 1
 
-    # Parse filesystem decisions (optional, for backward compatibility)
-    filesystem_decisions: FilesystemDecisions | None = None
-    fs_data: Any = data.get("filesystem")
-    if isinstance(fs_data, dict):
-        fs_dict: dict[str, Any] = cast(dict[str, Any], fs_data)
-        filesystem_decisions = FilesystemDecisions(
-            keep=_parse_fs_decision_list(fs_dict.get("keep", [])),
-            remove=_parse_fs_decision_list(fs_dict.get("remove", [])),
-            ask=_parse_fs_decision_list(fs_dict.get("ask", [])),
-        )
-
-    # Parse config decisions (optional, for backward compatibility)
-    config_decisions: ConfigDecisions | None = None
-    cfg_data: Any = data.get("configs")
-    if isinstance(cfg_data, dict):
-        cfg_dict: dict[str, Any] = cast(dict[str, Any], cfg_data)
-        config_decisions = ConfigDecisions(
-            keep=_parse_config_decision_list(cfg_dict.get("keep", [])),
-            remove=_parse_config_decision_list(cfg_dict.get("remove", [])),
-            ask=_parse_config_decision_list(cfg_dict.get("ask", [])),
-        )
-
-    return DecisionsResult(
-        packages=cast(dict[PackageSourceKey, SourceDecisions], parsed_packages),
-        filesystem=filesystem_decisions,
-        configs=config_decisions,
-    )
+    return stats, ask_packages
 
 
-def _parse_decision_list(items: Any) -> list[PackageDecision]:
-    """Parse a list of package decisions.
+def apply_domain_decisions_to_manifest(
+    manifest: Manifest,
+    domain: Literal["filesystem", "configs"],
+    decisions: DomainDecisions,
+) -> list[PathDecision]:
+    """Apply domain advisor decisions to a manifest.
+
+    Merges keep/remove classifications into the manifest's domain section,
+    preserving existing entries not reclassified by the advisor.
 
     Args:
-        items: List of decision dictionaries from TOML.
+        manifest: Manifest to update in place.
+        domain: Which domain section to update.
+        decisions: Domain decisions from the advisor.
 
     Returns:
-        List of validated PackageDecision objects.
-
-    Raises:
-        ValueError: If any decision is invalid.
+        List of "ask" decisions requiring manual user input.
     """
-    if not isinstance(items, list):
-        return []
+    keep_entries: dict[str, DomainEntry] = {}
+    remove_entries: dict[str, DomainEntry] = {}
 
-    decisions: list[PackageDecision] = []
-    items_list: list[Any] = cast(list[Any], items)
-
-    for item in items_list:
-        if not isinstance(item, dict):
-            continue
-
-        # Type-narrow item - cast for pyright
-        item_dict: dict[str, Any] = cast(dict[str, Any], item)
-
-        # Pydantic will validate the fields
-        decision = PackageDecision(
-            name=str(item_dict.get("name", "")),
-            reason=str(item_dict.get("reason", "")),
-            confidence=float(item_dict.get("confidence", 0.0)),
-            category=str(item_dict.get("category", "other")),
+    for decision in decisions.keep:
+        keep_entries[decision.path] = DomainEntry(
+            reason=decision.reason,
+            category=decision.category,
         )
-        decisions.append(decision)
-
-    return decisions
-
-
-def _parse_fs_decision_list(items: Any) -> list[FilesystemPathDecision]:
-    """Parse a list of filesystem path decisions.
-
-    Args:
-        items: List of decision dictionaries from TOML.
-
-    Returns:
-        List of validated FilesystemPathDecision objects.
-    """
-    if not isinstance(items, list):
-        return []
-
-    decisions: list[FilesystemPathDecision] = []
-    items_list: list[Any] = cast(list[Any], items)
-
-    for item in items_list:
-        if not isinstance(item, dict):
-            continue
-
-        # Type-narrow item - cast for pyright
-        item_dict: dict[str, Any] = cast(dict[str, Any], item)
-
-        decision = FilesystemPathDecision(
-            path=str(item_dict.get("path", "")),
-            reason=str(item_dict.get("reason", "")),
-            confidence=float(item_dict.get("confidence", 0.0)),
-            category=str(item_dict.get("category", "other")),
+    for decision in decisions.remove:
+        remove_entries[decision.path] = DomainEntry(
+            reason=decision.reason,
+            category=decision.category,
         )
-        decisions.append(decision)
 
-    return decisions
+    existing = getattr(manifest, domain)
+    if existing:
+        for path, entry in existing.keep.items():
+            if path not in keep_entries and path not in remove_entries:
+                keep_entries[path] = entry
+        for path, entry in existing.remove.items():
+            if path not in keep_entries and path not in remove_entries:
+                remove_entries[path] = entry
 
-
-def _parse_config_decision_list(items: Any) -> list[ConfigPathDecision]:
-    """Parse a list of config path decisions.
-
-    Args:
-        items: List of decision dictionaries from TOML.
-
-    Returns:
-        List of validated ConfigPathDecision objects.
-    """
-    if not isinstance(items, list):
-        return []
-
-    decisions: list[ConfigPathDecision] = []
-    items_list: list[Any] = cast(list[Any], items)
-
-    for item in items_list:
-        if not isinstance(item, dict):
-            continue
-
-        # Type-narrow item - cast for pyright
-        item_dict: dict[str, Any] = cast(dict[str, Any], item)
-
-        # category is optional for config decisions (may be None)
-        raw_category: Any = item_dict.get("category")
-        category: str | None = str(raw_category) if raw_category is not None else None
-
-        decision = ConfigPathDecision(
-            path=str(item_dict.get("path", "")),
-            reason=str(item_dict.get("reason", "")),
-            confidence=float(item_dict.get("confidence", 0.0)),
-            category=category,
-        )
-        decisions.append(decision)
-
-    return decisions
+    setattr(manifest, domain, DomainConfig(keep=keep_entries, remove=remove_entries))
+    return list(decisions.ask)
 
 
-# =============================================================================
-# Cleanup Functions
-# =============================================================================
+def record_advisor_apply_to_history(
+    decisions: DecisionsResult,
+) -> None:
+    """Record advisor apply decisions to history.
 
-
-def cleanup_exchange_dir(exchange_dir: Path) -> None:
-    """Remove all files from exchange directory.
-
-    Cleans up the exchange directory after processing is complete.
-    Only removes known exchange files, not the directory itself.
+    Creates a single history entry for all classifications applied.
+    Errors during recording are logged but do not interrupt the flow.
 
     Args:
-        exchange_dir: Exchange directory to clean.
-
-    Example:
-        >>> from popctl.core.paths import get_exchange_dir
-        >>> cleanup_exchange_dir(get_exchange_dir())
+        decisions: The decisions result that was applied.
     """
-    if not exchange_dir.exists():
-        return
+    try:
+        items: list[HistoryItem] = []
 
-    # Known exchange files to clean up
-    exchange_files = [
-        "scan.json",
-        "decisions.toml",
-        "prompt.txt",
-    ]
+        for source_str in PACKAGE_SOURCE_KEYS:
+            source_decisions = decisions.packages.get(source_str)  # type: ignore[arg-type]
+            if source_decisions is None:
+                continue
 
-    import logging
+            pkg_source = PackageSource(source_str)
 
-    logger = logging.getLogger(__name__)
+            for decision in source_decisions.keep:
+                items.append(HistoryItem(name=decision.name, source=pkg_source))
 
-    for filename in exchange_files:
-        file_path = exchange_dir / filename
-        try:
-            file_path.unlink(missing_ok=True)
-        except PermissionError as e:
-            logger.warning("Permission denied when deleting %s: %s", file_path, e)
-        except OSError as e:
-            logger.warning("Failed to delete %s: %s", file_path, e)
+            for decision in source_decisions.remove:
+                items.append(HistoryItem(name=decision.name, source=pkg_source))
 
+        if items:
+            entry = create_history_entry(
+                action_type=HistoryActionType.ADVISOR_APPLY,
+                items=items,
+                metadata={"command": "popctl advisor apply"},
+            )
+            record_action(entry)
+            logger.debug("Recorded %d advisor apply item(s) to history", len(items))
 
-def get_scan_json_path(exchange_dir: Path | None = None) -> Path:
-    """Get the standard path for scan.json in exchange directory.
-
-    Args:
-        exchange_dir: Exchange directory path. If None, uses default.
-
-    Returns:
-        Path to scan.json in the exchange directory.
-    """
-    if exchange_dir is None:
-        exchange_dir = get_exchange_dir()
-    return exchange_dir / "scan.json"
-
-
-def get_decisions_path(exchange_dir: Path | None = None) -> Path:
-    """Get the standard path for decisions.toml in exchange directory.
-
-    Args:
-        exchange_dir: Exchange directory path. If None, uses default.
-
-    Returns:
-        Path to decisions.toml in the exchange directory.
-    """
-    if exchange_dir is None:
-        exchange_dir = get_exchange_dir()
-    return exchange_dir / "decisions.toml"
+    except (OSError, RuntimeError) as e:
+        logger.warning("Failed to record advisor apply to history: %s", str(e))
+        print_warning(f"Could not record classifications to history: {e}")

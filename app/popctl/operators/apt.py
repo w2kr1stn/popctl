@@ -8,7 +8,7 @@ import logging
 from popctl.models.action import Action, ActionResult, ActionType
 from popctl.models.package import PackageSource
 from popctl.operators.base import Operator
-from popctl.utils.shell import CommandResult, command_exists, run_command
+from popctl.utils.shell import command_exists, run_command
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +23,7 @@ class AptOperator(Operator):
         dry_run: If True, uses apt-get --dry-run to simulate actions.
     """
 
-    # Timeout for apt operations (5 minutes)
-    _APT_TIMEOUT: float = 300.0
-
-    @property
-    def source(self) -> PackageSource:
-        """Return APT as the package source."""
-        return PackageSource.APT
+    source = PackageSource.APT
 
     def is_available(self) -> bool:
         """Check if apt-get is available."""
@@ -44,17 +38,11 @@ class AptOperator(Operator):
         Returns:
             List of ActionResult for each package.
 
-        Raises:
-            RuntimeError: If apt-get is not available.
         """
-        if not self.is_available():
-            msg = "APT package manager is not available on this system"
-            raise RuntimeError(msg)
-
         if not packages:
             return []
 
-        return self._execute_apt_command("install", packages)
+        return self._execute_apt_command(ActionType.INSTALL, packages)
 
     def remove(self, packages: list[str], purge: bool = False) -> list[ActionResult]:
         """Remove packages using apt-get remove or purge.
@@ -66,47 +54,31 @@ class AptOperator(Operator):
         Returns:
             List of ActionResult for each package.
 
-        Raises:
-            RuntimeError: If apt-get is not available.
         """
-        if not self.is_available():
-            msg = "APT package manager is not available on this system"
-            raise RuntimeError(msg)
-
         if not packages:
             return []
 
-        command = "purge" if purge else "remove"
-        return self._execute_apt_command(command, packages)
+        return self._execute_apt_command(ActionType.PURGE if purge else ActionType.REMOVE, packages)
 
     def _execute_apt_command(
         self,
-        command: str,
+        action_type: ActionType,
         packages: list[str],
     ) -> list[ActionResult]:
         """Execute an apt-get command for a list of packages.
 
         Args:
-            command: APT command (install, remove, purge).
+            action_type: Type of action (INSTALL, REMOVE, PURGE).
             packages: List of package names.
 
         Returns:
             List of ActionResult for each package.
         """
-        # Map command to ActionType
-        action_type_map = {
-            "install": ActionType.INSTALL,
-            "remove": ActionType.REMOVE,
-            "purge": ActionType.PURGE,
-        }
-        action_type = action_type_map[command]
+        command = action_type.value
 
-        # Build the apt-get command
         args = ["sudo", "apt-get", command, "-y"]
-
         if self.dry_run:
             args.append("--dry-run")
-
         args.extend(packages)
 
         logger.info(
@@ -116,30 +88,9 @@ class AptOperator(Operator):
             self.dry_run,
         )
 
-        result = run_command(args, timeout=self._APT_TIMEOUT)
+        result = run_command(args, timeout=self._TIMEOUT)
 
-        return self._parse_apt_result(result, packages, action_type)
-
-    def _parse_apt_result(
-        self,
-        result: CommandResult,
-        packages: list[str],
-        action_type: ActionType,
-    ) -> list[ActionResult]:
-        """Parse apt-get output and create ActionResult for each package.
-
-        For simplicity, we treat the entire operation as atomic - either
-        all packages succeed or all fail. This matches apt-get's behavior
-        where a single failure aborts the entire transaction.
-
-        Args:
-            result: CommandResult from apt-get execution.
-            packages: List of packages that were operated on.
-            action_type: Type of action performed.
-
-        Returns:
-            List of ActionResult for each package.
-        """
+        # Parse result (all packages succeed or fail atomically with apt-get)
         results: list[ActionResult] = []
 
         if result.success:
@@ -150,15 +101,8 @@ class AptOperator(Operator):
                     package=package,
                     source=PackageSource.APT,
                 )
-                results.append(
-                    ActionResult(
-                        action=action,
-                        success=True,
-                        message=message,
-                    )
-                )
+                results.append(ActionResult(action=action, success=True, detail=message))
         else:
-            # All packages fail if apt-get fails
             error_msg = result.stderr.strip() or "apt-get command failed"
             for package in packages:
                 action = Action(
@@ -166,12 +110,6 @@ class AptOperator(Operator):
                     package=package,
                     source=PackageSource.APT,
                 )
-                results.append(
-                    ActionResult(
-                        action=action,
-                        success=False,
-                        error=error_msg,
-                    )
-                )
+                results.append(ActionResult(action=action, success=False, detail=error_msg))
 
         return results

@@ -23,12 +23,6 @@ info = "#0ec1c8"                # Neutral information, hints
 # === Diff/Action Colors ===
 added = "#c1ff62"               # New packages (in system, not in manifest)
 removed = "#f53263"             # Packages marked for removal
-changed = "#0e8ac8"             # Modified entries
-
-# === Confidence Levels (Claude Advisor) ===
-confidence_high = "#03b971"     # >90% confidence - trustworthy
-confidence_medium = "#faf870"   # 50-90% confidence - review recommended
-confidence_low = "#d44ebc"      # <50% confidence - manual decision needed
 
 # === Package Status ===
 package_manual = "#69B9A1"      # Manually installed (Primary)

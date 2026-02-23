@@ -6,78 +6,23 @@ popctl and AI advisors via scan.json and decisions.toml files.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 from popctl.advisor.exchange import (
     DecisionsResult,
+    DomainDecisions,
     PackageDecision,
-    PackageScanEntry,
-    ScanExport,
+    PathDecision,
     SourceDecisions,
-    cleanup_exchange_dir,
-    export_prompt_files,
-    export_scan_for_advisor,
-    get_decisions_path,
-    get_scan_json_path,
+    apply_domain_decisions_to_manifest,
     import_decisions,
 )
-from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
-from popctl.models.scan_result import ScanResult
+from popctl.models.manifest import DomainConfig, DomainEntry, Manifest
 
 # =============================================================================
 # Test Fixtures
 # =============================================================================
-
-
-@pytest.fixture
-def sample_packages() -> list[ScannedPackage]:
-    """Create sample packages for testing."""
-    return [
-        ScannedPackage(
-            name="firefox",
-            source=PackageSource.APT,
-            version="128.0",
-            status=PackageStatus.MANUAL,
-            description="Mozilla Firefox web browser",
-            size_bytes=204800,
-        ),
-        ScannedPackage(
-            name="libgtk-3-0",
-            source=PackageSource.APT,
-            version="3.24.41",
-            status=PackageStatus.AUTO_INSTALLED,
-            description="GTK graphical toolkit",
-            size_bytes=10240,
-        ),
-        ScannedPackage(
-            name="com.spotify.Client",
-            source=PackageSource.FLATPAK,
-            version="1.2.31",
-            status=PackageStatus.MANUAL,
-            description="Music streaming service",
-            size_bytes=1073741824,
-        ),
-        ScannedPackage(
-            name="vlc",
-            source=PackageSource.SNAP,
-            version="3.0.20",
-            status=PackageStatus.MANUAL,
-            description="VLC media player",
-            size_bytes=None,
-        ),
-    ]
-
-
-@pytest.fixture
-def sample_scan_result(sample_packages: list[ScannedPackage]) -> ScanResult:
-    """Create sample ScanResult for testing."""
-    return ScanResult.create(
-        packages=sample_packages,
-        sources=["apt", "flatpak", "snap"],
-        manual_only=False,
-    )
 
 
 @pytest.fixture
@@ -144,92 +89,6 @@ keep = [
     { name = "test", reason = "test"
 ]
 """
-
-
-# =============================================================================
-# Test PackageScanEntry Model
-# =============================================================================
-
-
-class TestPackageScanEntry:
-    """Tests for PackageScanEntry Pydantic model."""
-
-    def test_create_entry_with_all_fields(self) -> None:
-        """PackageScanEntry accepts all fields."""
-        entry = PackageScanEntry(
-            name="firefox",
-            source="apt",
-            version="128.0",
-            status="manual",
-            description="Web browser",
-            size_bytes=204800,
-        )
-
-        assert entry.name == "firefox"
-        assert entry.source == "apt"
-        assert entry.version == "128.0"
-        assert entry.status == "manual"
-        assert entry.description == "Web browser"
-        assert entry.size_bytes == 204800
-
-    def test_create_entry_with_minimal_fields(self) -> None:
-        """PackageScanEntry works with minimal required fields."""
-        entry = PackageScanEntry(
-            name="test",
-            source="apt",
-            version="1.0",
-            status="manual",
-        )
-
-        assert entry.name == "test"
-        assert entry.description is None
-        assert entry.size_bytes is None
-
-    def test_entry_is_frozen(self) -> None:
-        """PackageScanEntry is immutable."""
-        entry = PackageScanEntry(
-            name="test",
-            source="apt",
-            version="1.0",
-            status="manual",
-        )
-
-        from pydantic import ValidationError
-
-        with pytest.raises(ValidationError):  # Pydantic frozen models raise ValidationError
-            entry.name = "changed"  # type: ignore[misc]
-
-
-# =============================================================================
-# Test ScanExport Model
-# =============================================================================
-
-
-class TestScanExport:
-    """Tests for ScanExport Pydantic model."""
-
-    def test_create_scan_export(self) -> None:
-        """ScanExport accepts complete data."""
-        entries = [
-            PackageScanEntry(
-                name="firefox",
-                source="apt",
-                version="128.0",
-                status="manual",
-            )
-        ]
-
-        export = ScanExport(
-            scan_date="2026-01-25T12:00:00Z",
-            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
-            summary={"total_packages": 1, "manual_apt": 1},
-            packages={"unknown": entries, "new_since_manifest": []},
-        )
-
-        assert export.scan_date == "2026-01-25T12:00:00Z"
-        assert export.system["hostname"] == "test-host"
-        assert export.summary["total_packages"] == 1
-        assert len(export.packages["unknown"]) == 1
 
 
 # =============================================================================
@@ -344,163 +203,6 @@ class TestDecisionsResult:
 
 
 # =============================================================================
-# Test export_scan_for_advisor
-# =============================================================================
-
-
-class TestExportScanForAdvisor:
-    """Tests for export_scan_for_advisor function."""
-
-    def test_export_creates_scan_json(self, tmp_path: Path, sample_scan_result: ScanResult) -> None:
-        """export_scan_for_advisor creates scan.json file."""
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path)
-
-        assert result_path.exists()
-        assert result_path.name == "scan.json"
-        assert result_path.parent == tmp_path
-
-    def test_export_creates_valid_json(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor creates valid JSON."""
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path)
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        assert "scan_date" in data
-        assert "system" in data
-        assert "summary" in data
-        assert "packages" in data
-
-    def test_export_includes_all_packages(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor includes all packages in unknown list."""
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path)
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        unknown_packages = data["packages"]["unknown"]
-        assert len(unknown_packages) == 4
-
-        names = {p["name"] for p in unknown_packages}
-        assert "firefox" in names
-        assert "libgtk-3-0" in names
-        assert "com.spotify.Client" in names
-        assert "vlc" in names
-
-    def test_export_includes_system_info(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor includes system information."""
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path)
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        assert "hostname" in data["system"]
-        assert "os" in data["system"]
-        assert data["system"]["os"] == "Pop!_OS 24.04 LTS"
-
-    def test_export_includes_manifest_path(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor includes manifest_path when provided."""
-        manifest_path = Path("/home/user/.config/popctl/manifest.toml")
-        result_path = export_scan_for_advisor(
-            sample_scan_result, tmp_path, manifest_path=manifest_path
-        )
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        assert "manifest_path" in data["system"]
-        assert data["system"]["manifest_path"] == str(manifest_path)
-
-    def test_export_calculates_summary(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor calculates correct summary."""
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path)
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        summary = data["summary"]
-        assert summary["total_packages"] == 4
-        assert summary["manual_apt"] == 1  # firefox
-        assert summary["auto_apt"] == 1  # libgtk-3-0
-        assert summary["flatpak"] == 1  # spotify
-        assert summary["snap"] == 1  # vlc
-
-    def test_export_creates_exchange_dir_if_not_exists(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor creates exchange directory if needed."""
-        exchange_dir = tmp_path / "nested" / "exchange"
-        assert not exchange_dir.exists()
-
-        result_path = export_scan_for_advisor(sample_scan_result, exchange_dir)
-
-        assert exchange_dir.exists()
-        assert result_path.exists()
-
-
-# =============================================================================
-# Test export_prompt_files
-# =============================================================================
-
-
-class TestExportPromptFiles:
-    """Tests for export_prompt_files function."""
-
-    def test_export_creates_prompt_txt(self, tmp_path: Path) -> None:
-        """export_prompt_files creates prompt.txt."""
-        prompt_path = export_prompt_files(tmp_path)
-
-        assert prompt_path.exists()
-        assert prompt_path.name == "prompt.txt"
-
-    def test_export_returns_path(self, tmp_path: Path) -> None:
-        """export_prompt_files returns Path (not tuple)."""
-        result = export_prompt_files(tmp_path)
-
-        assert isinstance(result, Path)
-
-    def test_prompt_contains_file_paths(self, tmp_path: Path) -> None:
-        """export_prompt_files includes correct file paths in prompt."""
-        prompt_path = export_prompt_files(tmp_path)
-
-        content = prompt_path.read_text()
-
-        assert "scan.json" in content
-        assert "decisions.toml" in content
-
-    def test_prompt_contains_system_info(self, tmp_path: Path) -> None:
-        """export_prompt_files includes system info in prompt."""
-        prompt_path = export_prompt_files(tmp_path)
-
-        content = prompt_path.read_text()
-
-        # Should have hostname somewhere in the prompt
-        import socket
-
-        hostname = socket.gethostname()
-        assert hostname in content
-
-    def test_export_creates_dir_if_not_exists(self, tmp_path: Path) -> None:
-        """export_prompt_files creates directory if needed."""
-        exchange_dir = tmp_path / "new" / "dir"
-        assert not exchange_dir.exists()
-
-        export_prompt_files(exchange_dir)
-
-        assert exchange_dir.exists()
-
-
-# =============================================================================
 # Test import_decisions
 # =============================================================================
 
@@ -513,7 +215,7 @@ class TestImportDecisions:
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(valid_decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         assert isinstance(result, DecisionsResult)
         assert "apt" in result.packages
@@ -525,7 +227,7 @@ class TestImportDecisions:
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(valid_decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         apt_keep = result.packages["apt"].keep
         assert len(apt_keep) == 2
@@ -540,7 +242,7 @@ class TestImportDecisions:
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(valid_decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         apt_remove = result.packages["apt"].remove
         assert len(apt_remove) == 1
@@ -552,7 +254,7 @@ class TestImportDecisions:
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(valid_decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         apt_ask = result.packages["apt"].ask
         assert len(apt_ask) == 1
@@ -566,7 +268,7 @@ class TestImportDecisions:
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(valid_decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         flatpak_keep = result.packages["flatpak"].keep
         assert len(flatpak_keep) == 1
@@ -578,7 +280,7 @@ class TestImportDecisions:
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(valid_decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         snap_keep = result.packages["snap"].keep
         assert len(snap_keep) == 1
@@ -607,7 +309,7 @@ ask = []
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         # Should have empty snap decisions
         assert "snap" in result.packages
@@ -618,7 +320,7 @@ ask = []
     def test_import_raises_file_not_found(self, tmp_path: Path) -> None:
         """import_decisions raises FileNotFoundError if file missing."""
         with pytest.raises(FileNotFoundError, match="decisions.toml not found"):
-            import_decisions(tmp_path)
+            import_decisions(tmp_path / "decisions.toml")
 
     def test_import_raises_on_invalid_toml(self, tmp_path: Path, invalid_toml_syntax: str) -> None:
         """import_decisions raises ValueError on invalid TOML syntax."""
@@ -626,7 +328,7 @@ ask = []
         decisions_path.write_text(invalid_toml_syntax)
 
         with pytest.raises(ValueError, match="Invalid TOML"):
-            import_decisions(tmp_path)
+            import_decisions(tmp_path / "decisions.toml")
 
     def test_import_raises_on_invalid_category(
         self, tmp_path: Path, invalid_category_toml: str
@@ -636,7 +338,7 @@ ask = []
         decisions_path.write_text(invalid_category_toml)
 
         with pytest.raises(ValueError, match="Invalid category"):
-            import_decisions(tmp_path)
+            import_decisions(tmp_path / "decisions.toml")
 
     def test_import_handles_empty_lists(self, tmp_path: Path) -> None:
         """import_decisions handles empty decision lists."""
@@ -659,7 +361,7 @@ ask = []
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         assert result.packages["apt"].keep == []
         assert result.packages["apt"].remove == []
@@ -680,7 +382,7 @@ ask = []
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         # Should have empty flatpak and snap decisions
         assert result.packages["flatpak"].keep == []
@@ -690,314 +392,16 @@ ask = []
 
 
 # =============================================================================
-# Test cleanup_exchange_dir
+# Test PathDecision Model
 # =============================================================================
 
 
-class TestCleanupExchangeDir:
-    """Tests for cleanup_exchange_dir function."""
-
-    def test_cleanup_removes_all_exchange_files(self, tmp_path: Path) -> None:
-        """cleanup_exchange_dir removes all known exchange files."""
-        # Create all exchange files
-        (tmp_path / "scan.json").write_text("{}")
-        (tmp_path / "decisions.toml").write_text("")
-        (tmp_path / "prompt.txt").write_text("")
-
-        cleanup_exchange_dir(tmp_path)
-
-        assert not (tmp_path / "scan.json").exists()
-        assert not (tmp_path / "decisions.toml").exists()
-        assert not (tmp_path / "prompt.txt").exists()
-
-    def test_cleanup_preserves_directory(self, tmp_path: Path) -> None:
-        """cleanup_exchange_dir preserves the directory itself."""
-        (tmp_path / "scan.json").write_text("{}")
-
-        cleanup_exchange_dir(tmp_path)
-
-        assert tmp_path.exists()
-        assert tmp_path.is_dir()
-
-    def test_cleanup_ignores_other_files(self, tmp_path: Path) -> None:
-        """cleanup_exchange_dir ignores non-exchange files."""
-        other_file = tmp_path / "other.txt"
-        other_file.write_text("keep me")
-
-        cleanup_exchange_dir(tmp_path)
-
-        assert other_file.exists()
-        assert other_file.read_text() == "keep me"
-
-    def test_cleanup_handles_nonexistent_dir(self, tmp_path: Path) -> None:
-        """cleanup_exchange_dir handles non-existent directory gracefully."""
-        nonexistent = tmp_path / "nonexistent"
-
-        # Should not raise
-        cleanup_exchange_dir(nonexistent)
-
-    def test_cleanup_handles_missing_files(self, tmp_path: Path) -> None:
-        """cleanup_exchange_dir handles missing files gracefully."""
-        # Only create some files
-        (tmp_path / "scan.json").write_text("{}")
-
-        # Should not raise even though other files don't exist
-        cleanup_exchange_dir(tmp_path)
-
-        assert not (tmp_path / "scan.json").exists()
-
-
-# =============================================================================
-# Test Path Helper Functions
-# =============================================================================
-
-
-class TestPathHelpers:
-    """Tests for path helper functions."""
-
-    def test_get_scan_json_path_with_dir(self, tmp_path: Path) -> None:
-        """get_scan_json_path returns correct path when dir provided."""
-        path = get_scan_json_path(tmp_path)
-
-        assert path == tmp_path / "scan.json"
-
-    def test_get_scan_json_path_default(self) -> None:
-        """get_scan_json_path uses default exchange dir when not provided."""
-        from popctl.core.paths import get_exchange_dir
-
-        path = get_scan_json_path()
-
-        assert path == get_exchange_dir() / "scan.json"
-
-    def test_get_decisions_path_with_dir(self, tmp_path: Path) -> None:
-        """get_decisions_path returns correct path when dir provided."""
-        path = get_decisions_path(tmp_path)
-
-        assert path == tmp_path / "decisions.toml"
-
-    def test_get_decisions_path_default(self) -> None:
-        """get_decisions_path uses default exchange dir when not provided."""
-        from popctl.core.paths import get_exchange_dir
-
-        path = get_decisions_path()
-
-        assert path == get_exchange_dir() / "decisions.toml"
-
-
-# =============================================================================
-# Test Module Exports
-# =============================================================================
-
-
-class TestModuleExports:
-    """Tests for module-level exports."""
-
-    def test_exchange_module_exports(self) -> None:
-        """exchange module exports expected symbols."""
-        from popctl.advisor import exchange
-
-        # Models
-        assert hasattr(exchange, "PackageScanEntry")
-        assert hasattr(exchange, "ScanExport")
-        assert hasattr(exchange, "PackageDecision")
-        assert hasattr(exchange, "SourceDecisions")
-        assert hasattr(exchange, "DecisionsResult")
-
-        # Functions
-        assert hasattr(exchange, "export_scan_for_advisor")
-        assert hasattr(exchange, "export_prompt_files")
-        assert hasattr(exchange, "import_decisions")
-        assert hasattr(exchange, "cleanup_exchange_dir")
-        assert hasattr(exchange, "get_scan_json_path")
-        assert hasattr(exchange, "get_decisions_path")
-
-    def test_advisor_init_exports_exchange(self) -> None:
-        """advisor __init__ exports exchange symbols."""
-        from popctl.advisor import (
-            DecisionsResult,
-            PackageDecision,
-            PackageScanEntry,
-            ScanExport,
-            SourceDecisions,
-            cleanup_exchange_dir,
-            export_prompt_files,
-            export_scan_for_advisor,
-            get_decisions_path,
-            get_scan_json_path,
-            import_decisions,
-        )
-
-        # Verify imports work and are callable/classes
-        assert callable(export_scan_for_advisor)
-        assert callable(export_prompt_files)
-        assert callable(import_decisions)
-        assert callable(cleanup_exchange_dir)
-        assert callable(get_scan_json_path)
-        assert callable(get_decisions_path)
-        assert PackageScanEntry is not None
-        assert ScanExport is not None
-        assert PackageDecision is not None
-        assert SourceDecisions is not None
-        assert DecisionsResult is not None
-
-
-# =============================================================================
-# Test FilesystemOrphanEntry Model
-# =============================================================================
-
-
-class TestFilesystemOrphanEntry:
-    """Tests for FilesystemOrphanEntry Pydantic model."""
-
-    def test_filesystem_orphan_entry_creation(self) -> None:
-        """FilesystemOrphanEntry accepts all fields."""
-        from popctl.advisor.exchange import FilesystemOrphanEntry
-
-        entry = FilesystemOrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            size_bytes=4096,
-            mtime="2024-01-15T10:00:00Z",
-            parent_target="~/.config",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        assert entry.path == "~/.config/vlc"
-        assert entry.path_type == "directory"
-        assert entry.size_bytes == 4096
-        assert entry.mtime == "2024-01-15T10:00:00Z"
-        assert entry.parent_target == "~/.config"
-        assert entry.orphan_reason == "no_package_match"
-        assert entry.confidence == 0.70
-
-    def test_filesystem_orphan_entry_optional_fields(self) -> None:
-        """FilesystemOrphanEntry defaults optional fields to None."""
-        from popctl.advisor.exchange import FilesystemOrphanEntry
-
-        entry = FilesystemOrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            parent_target="~/.config",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        assert entry.size_bytes is None
-        assert entry.mtime is None
-
-    def test_filesystem_orphan_entry_frozen(self) -> None:
-        """FilesystemOrphanEntry is immutable."""
-        from popctl.advisor.exchange import FilesystemOrphanEntry
-        from pydantic import ValidationError
-
-        entry = FilesystemOrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            parent_target="~/.config",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        with pytest.raises(ValidationError):
-            entry.path = "changed"  # type: ignore[misc]
-
-
-# =============================================================================
-# Test FilesystemScanSection Model
-# =============================================================================
-
-
-class TestFilesystemScanSection:
-    """Tests for FilesystemScanSection Pydantic model."""
-
-    def test_filesystem_scan_section_defaults(self) -> None:
-        """FilesystemScanSection defaults to empty orphans list."""
-        from popctl.advisor.exchange import FilesystemScanSection
-
-        section = FilesystemScanSection()
-
-        assert section.orphans == []
-
-    def test_filesystem_scan_section_with_orphans(self) -> None:
-        """FilesystemScanSection accepts orphan entries."""
-        from popctl.advisor.exchange import FilesystemOrphanEntry, FilesystemScanSection
-
-        orphan = FilesystemOrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            parent_target="~/.config",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        section = FilesystemScanSection(orphans=[orphan])
-
-        assert len(section.orphans) == 1
-        assert section.orphans[0].path == "~/.config/vlc"
-
-
-# =============================================================================
-# Test ScanExport with Filesystem
-# =============================================================================
-
-
-class TestScanExportWithFilesystem:
-    """Tests for ScanExport with filesystem section."""
-
-    def test_scan_export_with_filesystem(self) -> None:
-        """ScanExport includes filesystem section when provided."""
-        from popctl.advisor.exchange import (
-            FilesystemOrphanEntry,
-            FilesystemScanSection,
-        )
-
-        orphan = FilesystemOrphanEntry(
-            path="~/.config/vlc",
-            path_type="directory",
-            parent_target="~/.config",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-        fs_section = FilesystemScanSection(orphans=[orphan])
-
-        export = ScanExport(
-            scan_date="2026-01-25T12:00:00Z",
-            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
-            summary={"total_packages": 0},
-            packages={"unknown": []},
-            filesystem=fs_section,
-        )
-
-        assert export.filesystem is not None
-        assert len(export.filesystem.orphans) == 1
-        assert export.filesystem.orphans[0].path == "~/.config/vlc"
-
-    def test_scan_export_without_filesystem(self) -> None:
-        """ScanExport works without filesystem section (backward compat)."""
-        export = ScanExport(
-            scan_date="2026-01-25T12:00:00Z",
-            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
-            summary={"total_packages": 0},
-            packages={"unknown": []},
-        )
-
-        assert export.filesystem is None
-
-
-# =============================================================================
-# Test FilesystemPathDecision Model
-# =============================================================================
-
-
-class TestFilesystemPathDecision:
-    """Tests for FilesystemPathDecision Pydantic model."""
-
-    def test_filesystem_path_decision_creation(self) -> None:
-        """FilesystemPathDecision accepts valid data."""
-        from popctl.advisor.exchange import FilesystemPathDecision
-
-        decision = FilesystemPathDecision(
+class TestPathDecision:
+    """Tests for PathDecision Pydantic model."""
+
+    def test_path_decision_creation(self) -> None:
+        """PathDecision accepts valid data."""
+        decision = PathDecision(
             path="~/.config/vlc",
             reason="VLC uninstalled",
             confidence=0.90,
@@ -1009,59 +413,60 @@ class TestFilesystemPathDecision:
         assert decision.confidence == 0.90
         assert decision.category == "obsolete"
 
-    def test_filesystem_path_decision_validation(self) -> None:
-        """FilesystemPathDecision validates confidence bounds."""
-        from popctl.advisor.exchange import FilesystemPathDecision
-
+    def test_path_decision_validation(self) -> None:
+        """PathDecision validates confidence bounds."""
         # Valid boundary values
-        FilesystemPathDecision(path="test", reason="test", confidence=0.0, category="other")
-        FilesystemPathDecision(path="test", reason="test", confidence=1.0, category="other")
+        PathDecision(path="test", reason="test", confidence=0.0, category="other")
+        PathDecision(path="test", reason="test", confidence=1.0, category="other")
 
         # Invalid: below 0
         with pytest.raises(ValueError):
-            FilesystemPathDecision(path="test", reason="test", confidence=-0.1, category="other")
+            PathDecision(path="test", reason="test", confidence=-0.1, category="other")
 
         # Invalid: above 1
         with pytest.raises(ValueError):
-            FilesystemPathDecision(path="test", reason="test", confidence=1.1, category="other")
+            PathDecision(path="test", reason="test", confidence=1.1, category="other")
 
-    def test_filesystem_path_decision_frozen(self) -> None:
-        """FilesystemPathDecision is immutable."""
-        from popctl.advisor.exchange import FilesystemPathDecision
+    def test_path_decision_frozen(self) -> None:
+        """PathDecision is immutable."""
         from pydantic import ValidationError
 
-        decision = FilesystemPathDecision(
-            path="test", reason="test", confidence=0.5, category="other"
-        )
+        decision = PathDecision(path="test", reason="test", confidence=0.5, category="other")
 
         with pytest.raises(ValidationError):
             decision.path = "changed"  # type: ignore[misc]
 
+    def test_path_decision_optional_category(self) -> None:
+        """PathDecision allows None category."""
+        decision = PathDecision(
+            path="~/.config/vlc",
+            reason="VLC not installed",
+            confidence=0.85,
+        )
+
+        assert decision.category is None
+
 
 # =============================================================================
-# Test FilesystemDecisions Model
+# Test DomainDecisions Model
 # =============================================================================
 
 
-class TestFilesystemDecisions:
-    """Tests for FilesystemDecisions Pydantic model."""
+class TestDomainDecisions:
+    """Tests for DomainDecisions Pydantic model."""
 
-    def test_filesystem_decisions_defaults(self) -> None:
-        """FilesystemDecisions defaults to empty lists."""
-        from popctl.advisor.exchange import FilesystemDecisions
-
-        decisions = FilesystemDecisions()
+    def test_domain_decisions_defaults(self) -> None:
+        """DomainDecisions defaults to empty lists."""
+        decisions = DomainDecisions()
 
         assert decisions.keep == []
         assert decisions.remove == []
         assert decisions.ask == []
 
-    def test_filesystem_decisions_with_entries(self) -> None:
-        """FilesystemDecisions accepts path decision lists."""
-        from popctl.advisor.exchange import FilesystemDecisions, FilesystemPathDecision
-
+    def test_domain_decisions_with_entries(self) -> None:
+        """DomainDecisions accepts path decision lists."""
         keep = [
-            FilesystemPathDecision(
+            PathDecision(
                 path="~/.config/nvim",
                 reason="User config",
                 confidence=0.95,
@@ -1069,7 +474,7 @@ class TestFilesystemDecisions:
             )
         ]
         remove = [
-            FilesystemPathDecision(
+            PathDecision(
                 path="~/.config/vlc",
                 reason="VLC removed",
                 confidence=0.90,
@@ -1077,7 +482,32 @@ class TestFilesystemDecisions:
             )
         ]
 
-        decisions = FilesystemDecisions(keep=keep, remove=remove)
+        decisions = DomainDecisions(keep=keep, remove=remove)
+
+        assert len(decisions.keep) == 1
+        assert len(decisions.remove) == 1
+        assert len(decisions.ask) == 0
+
+    def test_domain_decisions_with_config_entries(self) -> None:
+        """DomainDecisions accepts config path decision lists."""
+        keep = [
+            PathDecision(
+                path="~/.config/nvim",
+                reason="User-created Neovim configuration",
+                confidence=0.95,
+                category="editor",
+            )
+        ]
+        remove = [
+            PathDecision(
+                path="~/.config/vlc",
+                reason="VLC not installed",
+                confidence=0.85,
+                category="media",
+            )
+        ]
+
+        decisions = DomainDecisions(keep=keep, remove=remove)
 
         assert len(decisions.keep) == 1
         assert len(decisions.remove) == 1
@@ -1085,20 +515,19 @@ class TestFilesystemDecisions:
 
 
 # =============================================================================
-# Test DecisionsResult with Filesystem
+# Test DecisionsResult with Domain (filesystem/configs)
 # =============================================================================
 
 
-class TestDecisionsResultWithFilesystem:
-    """Tests for DecisionsResult with filesystem field."""
+@pytest.mark.parametrize("domain", ["filesystem", "configs"])
+class TestDecisionsResultDomain:
+    """Tests for DecisionsResult with domain (filesystem/configs) field."""
 
-    def test_decisions_result_with_filesystem(self) -> None:
-        """DecisionsResult includes filesystem decisions when provided."""
-        from popctl.advisor.exchange import FilesystemDecisions, FilesystemPathDecision
-
-        fs_decisions = FilesystemDecisions(
+    def test_decisions_result_with_domain(self, domain: str) -> None:
+        """DecisionsResult includes domain decisions when provided."""
+        decisions = DomainDecisions(
             keep=[
-                FilesystemPathDecision(
+                PathDecision(
                     path="~/.config/nvim",
                     reason="User config",
                     confidence=0.95,
@@ -1106,7 +535,7 @@ class TestDecisionsResultWithFilesystem:
                 )
             ],
             remove=[
-                FilesystemPathDecision(
+                PathDecision(
                     path="~/.config/vlc",
                     reason="VLC removed",
                     confidence=0.90,
@@ -1121,16 +550,17 @@ class TestDecisionsResultWithFilesystem:
                 "flatpak": SourceDecisions(),
                 "snap": SourceDecisions(),
             },
-            filesystem=fs_decisions,
+            **{domain: decisions},
         )
 
-        assert result.filesystem is not None
-        assert len(result.filesystem.keep) == 1
-        assert len(result.filesystem.remove) == 1
-        assert result.filesystem.keep[0].path == "~/.config/nvim"
+        domain_result = getattr(result, domain)
+        assert domain_result is not None
+        assert len(domain_result.keep) == 1
+        assert len(domain_result.remove) == 1
+        assert domain_result.keep[0].path == "~/.config/nvim"
 
-    def test_decisions_result_without_filesystem(self) -> None:
-        """DecisionsResult works without filesystem (backward compat)."""
+    def test_decisions_result_without_domain(self, domain: str) -> None:
+        """DecisionsResult works without domain (backward compat)."""
         result = DecisionsResult(
             packages={
                 "apt": SourceDecisions(),
@@ -1139,79 +569,21 @@ class TestDecisionsResultWithFilesystem:
             }
         )
 
-        assert result.filesystem is None
+        assert getattr(result, domain) is None
 
 
 # =============================================================================
-# Test export_scan_for_advisor with Filesystem
+# Test import_decisions with Domain (filesystem/configs)
 # =============================================================================
 
 
-class TestExportScanWithFilesystem:
-    """Tests for export_scan_for_advisor with filesystem orphans."""
+@pytest.mark.parametrize("domain", ["filesystem", "configs"])
+class TestImportDecisionsDomain:
+    """Tests for import_decisions with domain (filesystem/configs) section."""
 
-    def test_export_scan_with_filesystem_orphans(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor includes filesystem section when orphans provided."""
-        from popctl.advisor.exchange import FilesystemOrphanEntry
-
-        orphans = [
-            FilesystemOrphanEntry(
-                path="~/.config/vlc",
-                path_type="directory",
-                size_bytes=4096,
-                mtime="2024-01-15T10:00:00Z",
-                parent_target="~/.config",
-                orphan_reason="no_package_match",
-                confidence=0.70,
-            ),
-            FilesystemOrphanEntry(
-                path="~/.cache/old-app",
-                path_type="directory",
-                parent_target="~/.cache",
-                orphan_reason="stale_cache",
-                confidence=0.85,
-            ),
-        ]
-
-        result_path = export_scan_for_advisor(
-            sample_scan_result, tmp_path, filesystem_orphans=orphans
-        )
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        assert "filesystem" in data
-        assert data["filesystem"] is not None
-        assert len(data["filesystem"]["orphans"]) == 2
-        assert data["filesystem"]["orphans"][0]["path"] == "~/.config/vlc"
-        assert data["filesystem"]["orphans"][1]["path"] == "~/.cache/old-app"
-        assert data["filesystem"]["orphans"][1]["size_bytes"] is None
-
-    def test_export_scan_without_filesystem_orphans(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor omits filesystem when no orphans provided."""
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path)
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        assert data["filesystem"] is None
-
-
-# =============================================================================
-# Test import_decisions with Filesystem
-# =============================================================================
-
-
-class TestImportDecisionsWithFilesystem:
-    """Tests for import_decisions with filesystem section."""
-
-    def test_import_decisions_with_filesystem(self, tmp_path: Path) -> None:
-        """import_decisions parses decisions.toml with [filesystem] section."""
-        decisions_toml = """
+    def test_import_decisions_with_domain(self, tmp_path: Path, domain: str) -> None:
+        """import_decisions parses decisions.toml with the domain section."""
+        decisions_toml = f"""
 [packages.apt]
 keep = []
 remove = []
@@ -1227,39 +599,40 @@ keep = []
 remove = []
 ask = []
 
-[filesystem]
+[{domain}]
 keep = [
-    { path = "~/.config/nvim", reason = "User config", confidence = 0.95, category = "config" },
+    {{ path = "~/.config/nvim", reason = "User config", confidence = 0.95, category = "config" }},
 ]
 remove = [
-    { path = "~/.config/vlc", reason = "VLC removed", confidence = 0.90, category = "obsolete" },
+    {{ path = "~/.config/vlc", reason = "VLC removed", confidence = 0.90, category = "obsolete" }},
 ]
 ask = [
-    { path = "~/.local/share/foo", reason = "Unknown", confidence = 0.50, category = "other" },
+    {{ path = "~/.local/share/foo", reason = "Unknown", confidence = 0.50, category = "other" }},
 ]
 """
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
-        assert result.filesystem is not None
-        assert len(result.filesystem.keep) == 1
-        assert len(result.filesystem.remove) == 1
-        assert len(result.filesystem.ask) == 1
+        section = getattr(result, domain)
+        assert section is not None
+        assert len(section.keep) == 1
+        assert len(section.remove) == 1
+        assert len(section.ask) == 1
 
-        assert result.filesystem.keep[0].path == "~/.config/nvim"
-        assert result.filesystem.keep[0].confidence == 0.95
-        assert result.filesystem.keep[0].category == "config"
+        assert section.keep[0].path == "~/.config/nvim"
+        assert section.keep[0].confidence == 0.95
+        assert section.keep[0].category == "config"
 
-        assert result.filesystem.remove[0].path == "~/.config/vlc"
-        assert result.filesystem.remove[0].reason == "VLC removed"
+        assert section.remove[0].path == "~/.config/vlc"
+        assert section.remove[0].reason == "VLC removed"
 
-        assert result.filesystem.ask[0].path == "~/.local/share/foo"
-        assert result.filesystem.ask[0].confidence == 0.50
+        assert section.ask[0].path == "~/.local/share/foo"
+        assert section.ask[0].confidence == 0.50
 
-    def test_import_decisions_without_filesystem(self, tmp_path: Path) -> None:
-        """import_decisions backward compat: no [filesystem] yields None."""
+    def test_import_decisions_without_domain(self, tmp_path: Path, domain: str) -> None:
+        """import_decisions backward compat: no domain section yields None."""
         decisions_toml = """
 [packages.apt]
 keep = []
@@ -1279,13 +652,13 @@ ask = []
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
-        assert result.filesystem is None
+        assert getattr(result, domain) is None
 
-    def test_import_decisions_filesystem_empty_lists(self, tmp_path: Path) -> None:
-        """import_decisions handles empty filesystem lists."""
-        decisions_toml = """
+    def test_import_decisions_domain_empty_lists(self, tmp_path: Path, domain: str) -> None:
+        """import_decisions handles empty domain lists."""
+        decisions_toml = f"""
 [packages.apt]
 keep = []
 remove = []
@@ -1301,7 +674,7 @@ keep = []
 remove = []
 ask = []
 
-[filesystem]
+[{domain}]
 keep = []
 remove = []
 ask = []
@@ -1309,590 +682,17 @@ ask = []
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
-        assert result.filesystem is not None
-        assert result.filesystem.keep == []
-        assert result.filesystem.remove == []
-        assert result.filesystem.ask == []
+        section = getattr(result, domain)
+        assert section is not None
+        assert section.keep == []
+        assert section.remove == []
+        assert section.ask == []
 
 
-# =============================================================================
-# Test _parse_fs_decision_list
-# =============================================================================
-
-
-class TestParseFsDecisionList:
-    """Tests for _parse_fs_decision_list helper function."""
-
-    def test_parse_fs_decision_list_valid(self) -> None:
-        """_parse_fs_decision_list parses valid input."""
-        from popctl.advisor.exchange import _parse_fs_decision_list
-
-        items = [
-            {
-                "path": "~/.config/nvim",
-                "reason": "User config",
-                "confidence": 0.95,
-                "category": "config",
-            },
-            {
-                "path": "~/.config/vlc",
-                "reason": "Removed",
-                "confidence": 0.90,
-                "category": "obsolete",
-            },
-        ]
-
-        result = _parse_fs_decision_list(items)
-
-        assert len(result) == 2
-        assert result[0].path == "~/.config/nvim"
-        assert result[1].path == "~/.config/vlc"
-
-    def test_parse_fs_decision_list_not_list(self) -> None:
-        """_parse_fs_decision_list returns empty for non-list input."""
-        from popctl.advisor.exchange import _parse_fs_decision_list
-
-        assert _parse_fs_decision_list("not a list") == []
-        assert _parse_fs_decision_list(42) == []
-        assert _parse_fs_decision_list(None) == []
-
-    def test_parse_fs_decision_list_skips_non_dict(self) -> None:
-        """_parse_fs_decision_list skips non-dict items."""
-        from popctl.advisor.exchange import _parse_fs_decision_list
-
-        items = [
-            "not a dict",
-            {
-                "path": "~/.config/nvim",
-                "reason": "User config",
-                "confidence": 0.95,
-                "category": "config",
-            },
-            42,
-        ]
-
-        result = _parse_fs_decision_list(items)
-
-        assert len(result) == 1
-        assert result[0].path == "~/.config/nvim"
-
-    def test_parse_fs_decision_list_empty(self) -> None:
-        """_parse_fs_decision_list handles empty list."""
-        from popctl.advisor.exchange import _parse_fs_decision_list
-
-        assert _parse_fs_decision_list([]) == []
-
-    def test_parse_fs_decision_list_defaults(self) -> None:
-        """_parse_fs_decision_list uses defaults for missing fields."""
-        from popctl.advisor.exchange import _parse_fs_decision_list
-
-        items: list[dict[str, str]] = [{}]
-
-        result = _parse_fs_decision_list(items)
-
-        assert len(result) == 1
-        assert result[0].path == ""
-        assert result[0].reason == ""
-        assert result[0].confidence == 0.0
-        assert result[0].category == "other"
-
-
-# =============================================================================
-# Test ConfigOrphanEntry Model
-# =============================================================================
-
-
-class TestConfigOrphanEntry:
-    """Tests for ConfigOrphanEntry Pydantic model."""
-
-    def test_config_orphan_entry_creation(self) -> None:
-        """ConfigOrphanEntry accepts all fields."""
-        from popctl.advisor.exchange import ConfigOrphanEntry
-
-        entry = ConfigOrphanEntry(
-            path="~/.config/vlc",
-            config_type="directory",
-            size_bytes=4096,
-            mtime="2024-01-15T10:00:00Z",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        assert entry.path == "~/.config/vlc"
-        assert entry.config_type == "directory"
-        assert entry.size_bytes == 4096
-        assert entry.mtime == "2024-01-15T10:00:00Z"
-        assert entry.orphan_reason == "no_package_match"
-        assert entry.confidence == 0.70
-
-    def test_config_orphan_entry_optional_fields(self) -> None:
-        """ConfigOrphanEntry defaults optional fields to None."""
-        from popctl.advisor.exchange import ConfigOrphanEntry
-
-        entry = ConfigOrphanEntry(
-            path="~/.config/vlc",
-            config_type="directory",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        assert entry.size_bytes is None
-        assert entry.mtime is None
-
-    def test_config_orphan_entry_frozen(self) -> None:
-        """ConfigOrphanEntry is immutable."""
-        from popctl.advisor.exchange import ConfigOrphanEntry
-        from pydantic import ValidationError
-
-        entry = ConfigOrphanEntry(
-            path="~/.config/vlc",
-            config_type="directory",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        with pytest.raises(ValidationError):
-            entry.path = "changed"  # type: ignore[misc]
-
-    def test_config_orphan_entry_serialization(self) -> None:
-        """ConfigOrphanEntry serializes correctly via model_dump."""
-        from popctl.advisor.exchange import ConfigOrphanEntry
-
-        entry = ConfigOrphanEntry(
-            path="~/.config/vlc",
-            config_type="directory",
-            size_bytes=4096,
-            mtime="2024-01-15T10:00:00Z",
-            orphan_reason="app_not_installed",
-            confidence=0.70,
-        )
-
-        data = entry.model_dump()
-
-        assert data["path"] == "~/.config/vlc"
-        assert data["config_type"] == "directory"
-        assert data["size_bytes"] == 4096
-        assert data["mtime"] == "2024-01-15T10:00:00Z"
-        assert data["orphan_reason"] == "app_not_installed"
-        assert data["confidence"] == 0.70
-
-
-# =============================================================================
-# Test ConfigScanSection Model
-# =============================================================================
-
-
-class TestConfigScanSection:
-    """Tests for ConfigScanSection Pydantic model."""
-
-    def test_config_scan_section_defaults(self) -> None:
-        """ConfigScanSection defaults to empty orphans list."""
-        from popctl.advisor.exchange import ConfigScanSection
-
-        section = ConfigScanSection()
-
-        assert section.orphans == []
-
-    def test_config_scan_section_with_orphans(self) -> None:
-        """ConfigScanSection accepts orphan entries."""
-        from popctl.advisor.exchange import ConfigOrphanEntry, ConfigScanSection
-
-        orphan = ConfigOrphanEntry(
-            path="~/.config/vlc",
-            config_type="directory",
-            orphan_reason="no_package_match",
-            confidence=0.70,
-        )
-
-        section = ConfigScanSection(orphans=[orphan])
-
-        assert len(section.orphans) == 1
-        assert section.orphans[0].path == "~/.config/vlc"
-
-
-# =============================================================================
-# Test ConfigPathDecision Model
-# =============================================================================
-
-
-class TestConfigPathDecision:
-    """Tests for ConfigPathDecision Pydantic model."""
-
-    def test_config_path_decision_creation(self) -> None:
-        """ConfigPathDecision accepts valid data."""
-        from popctl.advisor.exchange import ConfigPathDecision
-
-        decision = ConfigPathDecision(
-            path="~/.config/vlc",
-            reason="VLC not installed",
-            confidence=0.85,
-            category="media",
-        )
-
-        assert decision.path == "~/.config/vlc"
-        assert decision.reason == "VLC not installed"
-        assert decision.confidence == 0.85
-        assert decision.category == "media"
-
-    def test_config_path_decision_optional_category(self) -> None:
-        """ConfigPathDecision allows None category."""
-        from popctl.advisor.exchange import ConfigPathDecision
-
-        decision = ConfigPathDecision(
-            path="~/.config/vlc",
-            reason="VLC not installed",
-            confidence=0.85,
-        )
-
-        assert decision.category is None
-
-    def test_config_path_decision_validation(self) -> None:
-        """ConfigPathDecision validates confidence bounds."""
-        from popctl.advisor.exchange import ConfigPathDecision
-
-        # Valid boundary values
-        ConfigPathDecision(path="test", reason="test", confidence=0.0)
-        ConfigPathDecision(path="test", reason="test", confidence=1.0)
-
-        # Invalid: below 0
-        with pytest.raises(ValueError):
-            ConfigPathDecision(path="test", reason="test", confidence=-0.1)
-
-        # Invalid: above 1
-        with pytest.raises(ValueError):
-            ConfigPathDecision(path="test", reason="test", confidence=1.1)
-
-    def test_config_path_decision_frozen(self) -> None:
-        """ConfigPathDecision is immutable."""
-        from popctl.advisor.exchange import ConfigPathDecision
-        from pydantic import ValidationError
-
-        decision = ConfigPathDecision(path="test", reason="test", confidence=0.5, category="other")
-
-        with pytest.raises(ValidationError):
-            decision.path = "changed"  # type: ignore[misc]
-
-
-# =============================================================================
-# Test ConfigDecisions Model
-# =============================================================================
-
-
-class TestConfigDecisions:
-    """Tests for ConfigDecisions Pydantic model."""
-
-    def test_config_decisions_defaults(self) -> None:
-        """ConfigDecisions defaults to empty lists."""
-        from popctl.advisor.exchange import ConfigDecisions
-
-        decisions = ConfigDecisions()
-
-        assert decisions.keep == []
-        assert decisions.remove == []
-        assert decisions.ask == []
-
-    def test_config_decisions_with_entries(self) -> None:
-        """ConfigDecisions accepts path decision lists."""
-        from popctl.advisor.exchange import ConfigDecisions, ConfigPathDecision
-
-        keep = [
-            ConfigPathDecision(
-                path="~/.config/nvim",
-                reason="User-created Neovim configuration",
-                confidence=0.95,
-                category="editor",
-            )
-        ]
-        remove = [
-            ConfigPathDecision(
-                path="~/.config/vlc",
-                reason="VLC not installed",
-                confidence=0.85,
-                category="media",
-            )
-        ]
-
-        decisions = ConfigDecisions(keep=keep, remove=remove)
-
-        assert len(decisions.keep) == 1
-        assert len(decisions.remove) == 1
-        assert len(decisions.ask) == 0
-
-
-# =============================================================================
-# Test ScanExport with Configs
-# =============================================================================
-
-
-class TestScanExportWithConfigs:
-    """Tests for ScanExport with configs section."""
-
-    def test_scan_export_with_configs(self) -> None:
-        """ScanExport includes configs section when provided."""
-        from popctl.advisor.exchange import ConfigOrphanEntry, ConfigScanSection
-
-        orphan = ConfigOrphanEntry(
-            path="~/.config/vlc",
-            config_type="directory",
-            orphan_reason="app_not_installed",
-            confidence=0.70,
-        )
-        cfg_section = ConfigScanSection(orphans=[orphan])
-
-        export = ScanExport(
-            scan_date="2026-01-25T12:00:00Z",
-            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
-            summary={"total_packages": 0},
-            packages={"unknown": []},
-            configs=cfg_section,
-        )
-
-        assert export.configs is not None
-        assert len(export.configs.orphans) == 1
-        assert export.configs.orphans[0].path == "~/.config/vlc"
-
-    def test_scan_export_without_configs(self) -> None:
-        """ScanExport works without configs section (backward compat)."""
-        export = ScanExport(
-            scan_date="2026-01-25T12:00:00Z",
-            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
-            summary={"total_packages": 0},
-            packages={"unknown": []},
-        )
-
-        assert export.configs is None
-
-
-# =============================================================================
-# Test DecisionsResult with Configs
-# =============================================================================
-
-
-class TestDecisionsResultWithConfigs:
-    """Tests for DecisionsResult with configs field."""
-
-    def test_decisions_result_with_configs(self) -> None:
-        """DecisionsResult includes config decisions when provided."""
-        from popctl.advisor.exchange import ConfigDecisions, ConfigPathDecision
-
-        cfg_decisions = ConfigDecisions(
-            keep=[
-                ConfigPathDecision(
-                    path="~/.config/nvim",
-                    reason="User-created Neovim configuration",
-                    confidence=0.95,
-                    category="editor",
-                )
-            ],
-            remove=[
-                ConfigPathDecision(
-                    path="~/.config/vlc",
-                    reason="VLC not installed",
-                    confidence=0.85,
-                    category="media",
-                )
-            ],
-        )
-
-        result = DecisionsResult(
-            packages={
-                "apt": SourceDecisions(),
-                "flatpak": SourceDecisions(),
-                "snap": SourceDecisions(),
-            },
-            configs=cfg_decisions,
-        )
-
-        assert result.configs is not None
-        assert len(result.configs.keep) == 1
-        assert len(result.configs.remove) == 1
-        assert result.configs.keep[0].path == "~/.config/nvim"
-
-    def test_decisions_result_without_configs(self) -> None:
-        """DecisionsResult works without configs (backward compat)."""
-        result = DecisionsResult(
-            packages={
-                "apt": SourceDecisions(),
-                "flatpak": SourceDecisions(),
-                "snap": SourceDecisions(),
-            }
-        )
-
-        assert result.configs is None
-
-
-# =============================================================================
-# Test export_scan_for_advisor with Config Orphans
-# =============================================================================
-
-
-class TestExportScanWithConfigs:
-    """Tests for export_scan_for_advisor with config orphans."""
-
-    def test_export_with_config_orphans(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor includes configs section when orphans provided."""
-        from popctl.advisor.exchange import ConfigOrphanEntry
-
-        orphans = [
-            ConfigOrphanEntry(
-                path="~/.config/vlc",
-                config_type="directory",
-                size_bytes=4096,
-                mtime="2024-01-15T10:00:00Z",
-                orphan_reason="app_not_installed",
-                confidence=0.70,
-            ),
-            ConfigOrphanEntry(
-                path="~/.config/sublime-text",
-                config_type="directory",
-                orphan_reason="no_package_match",
-                confidence=0.65,
-            ),
-        ]
-
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path, config_orphans=orphans)
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        assert "configs" in data
-        assert data["configs"] is not None
-        assert len(data["configs"]["orphans"]) == 2
-        assert data["configs"]["orphans"][0]["path"] == "~/.config/vlc"
-        assert data["configs"]["orphans"][0]["config_type"] == "directory"
-        assert data["configs"]["orphans"][1]["path"] == "~/.config/sublime-text"
-        assert data["configs"]["orphans"][1]["size_bytes"] is None
-
-    def test_export_without_config_orphans(
-        self, tmp_path: Path, sample_scan_result: ScanResult
-    ) -> None:
-        """export_scan_for_advisor omits configs when no orphans provided."""
-        result_path = export_scan_for_advisor(sample_scan_result, tmp_path)
-
-        with result_path.open() as f:
-            data = json.load(f)
-
-        assert data["configs"] is None
-
-
-# =============================================================================
-# Test import_decisions with Configs
-# =============================================================================
-
-
-class TestImportDecisionsWithConfigs:
-    """Tests for import_decisions with configs section."""
-
-    def test_import_decisions_with_configs(self, tmp_path: Path) -> None:
-        """import_decisions parses decisions.toml with [configs] section."""
-        decisions_toml = """
-[packages.apt]
-keep = []
-remove = []
-ask = []
-
-[packages.flatpak]
-keep = []
-remove = []
-ask = []
-
-[packages.snap]
-keep = []
-remove = []
-ask = []
-
-[configs]
-keep = [
-    { path = "~/.config/nvim", reason = "Neovim config", confidence = 0.95, category = "editor" },
-]
-remove = [
-    { path = "~/.config/vlc", reason = "VLC removed", confidence = 0.85, category = "media" },
-]
-ask = [
-    { path = "~/.config/foo", reason = "Unclear", confidence = 0.50, category = "unknown" },
-]
-"""
-        decisions_path = tmp_path / "decisions.toml"
-        decisions_path.write_text(decisions_toml)
-
-        result = import_decisions(tmp_path)
-
-        assert result.configs is not None
-        assert len(result.configs.keep) == 1
-        assert len(result.configs.remove) == 1
-        assert len(result.configs.ask) == 1
-
-        assert result.configs.keep[0].path == "~/.config/nvim"
-        assert result.configs.keep[0].confidence == 0.95
-        assert result.configs.keep[0].category == "editor"
-
-        assert result.configs.remove[0].path == "~/.config/vlc"
-        assert result.configs.remove[0].reason == "VLC removed"
-
-        assert result.configs.ask[0].path == "~/.config/foo"
-        assert result.configs.ask[0].confidence == 0.50
-
-    def test_import_decisions_without_configs_backward_compat(self, tmp_path: Path) -> None:
-        """import_decisions backward compat: no [configs] yields None."""
-        decisions_toml = """
-[packages.apt]
-keep = []
-remove = []
-ask = []
-
-[packages.flatpak]
-keep = []
-remove = []
-ask = []
-
-[packages.snap]
-keep = []
-remove = []
-ask = []
-"""
-        decisions_path = tmp_path / "decisions.toml"
-        decisions_path.write_text(decisions_toml)
-
-        result = import_decisions(tmp_path)
-
-        assert result.configs is None
-
-    def test_import_decisions_configs_empty_lists(self, tmp_path: Path) -> None:
-        """import_decisions handles empty config lists."""
-        decisions_toml = """
-[packages.apt]
-keep = []
-remove = []
-ask = []
-
-[packages.flatpak]
-keep = []
-remove = []
-ask = []
-
-[packages.snap]
-keep = []
-remove = []
-ask = []
-
-[configs]
-keep = []
-remove = []
-ask = []
-"""
-        decisions_path = tmp_path / "decisions.toml"
-        decisions_path.write_text(decisions_toml)
-
-        result = import_decisions(tmp_path)
-
-        assert result.configs is not None
-        assert result.configs.keep == []
-        assert result.configs.remove == []
-        assert result.configs.ask == []
+class TestConfigDecisionsParsing:
+    """Tests for config-specific decisions parsing."""
 
     def test_config_decisions_parsing(self, tmp_path: Path) -> None:
         """ConfigDecisions parsed correctly from TOML with all field types."""
@@ -1925,7 +725,7 @@ ask = []
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
-        result = import_decisions(tmp_path)
+        result = import_decisions(tmp_path / "decisions.toml")
 
         assert result.configs is not None
         assert len(result.configs.keep) == 2
@@ -1937,101 +737,336 @@ ask = []
 
 
 # =============================================================================
-# Test _parse_config_decision_list
+# Test apply_decisions_to_manifest
 # =============================================================================
 
 
-class TestParseConfigDecisionList:
-    """Tests for _parse_config_decision_list helper function."""
+class TestApplyDecisionsToManifest:
+    """Tests for the apply_decisions_to_manifest shared function."""
 
-    def test_parse_config_decision_list_valid(self) -> None:
-        """_parse_config_decision_list parses valid input."""
-        from popctl.advisor.exchange import _parse_config_decision_list
+    @pytest.fixture
+    def empty_manifest(self) -> Manifest:
+        """Create an empty manifest for testing."""
+        from datetime import UTC, datetime
 
-        items = [
-            {
-                "path": "~/.config/nvim",
-                "reason": "User config",
-                "confidence": 0.95,
-                "category": "editor",
-            },
-            {
-                "path": "~/.config/vlc",
-                "reason": "Removed",
-                "confidence": 0.85,
-                "category": "media",
-            },
-        ]
+        from popctl.models.manifest import ManifestMeta, PackageConfig, SystemConfig
 
-        result = _parse_config_decision_list(items)
+        return Manifest(
+            meta=ManifestMeta(
+                created=datetime.now(UTC),
+                updated=datetime.now(UTC),
+            ),
+            system=SystemConfig(name="test", base="pop-os-24.04"),
+            packages=PackageConfig(keep={}, remove={}),
+        )
 
-        assert len(result) == 2
-        assert result[0].path == "~/.config/nvim"
-        assert result[0].category == "editor"
-        assert result[1].path == "~/.config/vlc"
-        assert result[1].category == "media"
+    def test_applies_keep_decisions(self, empty_manifest: Manifest) -> None:
+        """Keep decisions are added to manifest.packages.keep."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
 
-    def test_parse_config_decision_list_not_list(self) -> None:
-        """_parse_config_decision_list returns empty for non-list input."""
-        from popctl.advisor.exchange import _parse_config_decision_list
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    keep=[
+                        PackageDecision(
+                            name="firefox",
+                            reason="Web browser",
+                            confidence=0.95,
+                            category="desktop",
+                        ),
+                    ],
+                ),
+                "flatpak": SourceDecisions(),
+                "snap": SourceDecisions(),
+            }
+        )
 
-        assert _parse_config_decision_list("not a list") == []
-        assert _parse_config_decision_list(42) == []
-        assert _parse_config_decision_list(None) == []
+        stats, ask_packages = apply_decisions_to_manifest(empty_manifest, decisions)
 
-    def test_parse_config_decision_list_skips_non_dict(self) -> None:
-        """_parse_config_decision_list skips non-dict items."""
-        from popctl.advisor.exchange import _parse_config_decision_list
+        assert "firefox" in empty_manifest.packages.keep
+        assert empty_manifest.packages.keep["firefox"].source == "apt"
+        assert empty_manifest.packages.keep["firefox"].reason == "Web browser"
+        assert stats["apt"]["keep"] == 1
+        assert ask_packages == []
 
-        items = [
-            "not a dict",
-            {
-                "path": "~/.config/nvim",
-                "reason": "User config",
-                "confidence": 0.95,
-                "category": "editor",
-            },
-            42,
-        ]
+    def test_applies_remove_decisions(self, empty_manifest: Manifest) -> None:
+        """Remove decisions are added to manifest.packages.remove."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
 
-        result = _parse_config_decision_list(items)
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    remove=[
+                        PackageDecision(
+                            name="bloatware",
+                            reason="Unused telemetry",
+                            confidence=0.92,
+                            category="telemetry",
+                        ),
+                    ],
+                ),
+                "flatpak": SourceDecisions(),
+                "snap": SourceDecisions(),
+            }
+        )
 
-        assert len(result) == 1
-        assert result[0].path == "~/.config/nvim"
+        stats, ask_packages = apply_decisions_to_manifest(empty_manifest, decisions)
 
-    def test_parse_config_decision_list_empty(self) -> None:
-        """_parse_config_decision_list handles empty list."""
-        from popctl.advisor.exchange import _parse_config_decision_list
+        assert "bloatware" in empty_manifest.packages.remove
+        assert empty_manifest.packages.remove["bloatware"].source == "apt"
+        assert stats["apt"]["remove"] == 1
+        assert ask_packages == []
 
-        assert _parse_config_decision_list([]) == []
+    def test_collects_ask_decisions(self, empty_manifest: Manifest) -> None:
+        """Ask decisions are collected but NOT added to manifest."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
 
-    def test_parse_config_decision_list_defaults(self) -> None:
-        """_parse_config_decision_list uses defaults for missing fields."""
-        from popctl.advisor.exchange import _parse_config_decision_list
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    ask=[
+                        PackageDecision(
+                            name="gcc",
+                            reason="Dev tools",
+                            confidence=0.65,
+                            category="development",
+                        ),
+                    ],
+                ),
+                "flatpak": SourceDecisions(),
+                "snap": SourceDecisions(),
+            }
+        )
 
-        items: list[dict[str, str]] = [{}]
+        stats, ask_packages = apply_decisions_to_manifest(empty_manifest, decisions)
 
-        result = _parse_config_decision_list(items)
+        assert "gcc" not in empty_manifest.packages.keep
+        assert "gcc" not in empty_manifest.packages.remove
+        assert stats["apt"]["ask"] == 1
+        assert len(ask_packages) == 1
+        assert ask_packages[0] == ("gcc", "apt", "Dev tools", 0.65)
 
-        assert len(result) == 1
-        assert result[0].path == ""
-        assert result[0].reason == ""
-        assert result[0].confidence == 0.0
-        assert result[0].category is None
+    def test_handles_multiple_sources(self, empty_manifest: Manifest) -> None:
+        """Decisions from multiple sources are all applied."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
 
-    def test_parse_config_decision_list_optional_category(self) -> None:
-        """_parse_config_decision_list handles missing category as None."""
-        from popctl.advisor.exchange import _parse_config_decision_list
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    keep=[
+                        PackageDecision(
+                            name="firefox",
+                            reason="Browser",
+                            confidence=0.95,
+                            category="desktop",
+                        ),
+                    ],
+                ),
+                "flatpak": SourceDecisions(
+                    keep=[
+                        PackageDecision(
+                            name="com.spotify.Client",
+                            reason="Music",
+                            confidence=0.90,
+                            category="media",
+                        ),
+                    ],
+                ),
+                "snap": SourceDecisions(
+                    remove=[
+                        PackageDecision(
+                            name="telegram-desktop",
+                            reason="Use flatpak",
+                            confidence=0.88,
+                            category="desktop",
+                        ),
+                    ],
+                ),
+            }
+        )
 
-        items = [
-            {
-                "path": "~/.config/vlc",
-                "reason": "Removed",
-                "confidence": 0.85,
-            },
-        ]
+        stats, _ask = apply_decisions_to_manifest(empty_manifest, decisions)
 
-        result = _parse_config_decision_list(items)
+        assert "firefox" in empty_manifest.packages.keep
+        assert "com.spotify.Client" in empty_manifest.packages.keep
+        assert "telegram-desktop" in empty_manifest.packages.remove
+        assert stats["apt"]["keep"] == 1
+        assert stats["flatpak"]["keep"] == 1
+        assert stats["snap"]["remove"] == 1
 
-        assert len(result) == 1
-        assert result[0].category is None
+    def test_skips_missing_sources(self, empty_manifest: Manifest) -> None:
+        """Sources not present in decisions are skipped."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
+
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    keep=[
+                        PackageDecision(
+                            name="vim",
+                            reason="Editor",
+                            confidence=0.99,
+                            category="development",
+                        ),
+                    ],
+                ),
+            }
+        )
+
+        stats, ask_packages = apply_decisions_to_manifest(empty_manifest, decisions)
+
+        assert "vim" in empty_manifest.packages.keep
+        assert "apt" in stats
+        assert "flatpak" not in stats
+        assert "snap" not in stats
+        assert ask_packages == []
+
+    def test_empty_decisions_returns_empty_stats(self, empty_manifest: Manifest) -> None:
+        """Empty decisions produce empty stats and no ask packages."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
+
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(),
+                "flatpak": SourceDecisions(),
+                "snap": SourceDecisions(),
+            }
+        )
+
+        stats, ask_packages = apply_decisions_to_manifest(empty_manifest, decisions)
+
+        for source_stats in stats.values():
+            assert source_stats["keep"] == 0
+            assert source_stats["remove"] == 0
+            assert source_stats["ask"] == 0
+        assert ask_packages == []
+
+
+# =============================================================================
+# Test apply_domain_decisions_to_manifest
+# =============================================================================
+
+
+class TestApplyDomainDecisionsToManifest:
+    """Tests for the apply_domain_decisions_to_manifest function."""
+
+    @pytest.fixture
+    def empty_manifest(self) -> Manifest:
+        """Create an empty manifest for testing."""
+        from datetime import UTC, datetime
+
+        from popctl.models.manifest import ManifestMeta, PackageConfig, SystemConfig
+
+        return Manifest(
+            meta=ManifestMeta(
+                created=datetime.now(UTC),
+                updated=datetime.now(UTC),
+            ),
+            system=SystemConfig(name="test", base="pop-os-24.04"),
+            packages=PackageConfig(keep={}, remove={}),
+        )
+
+    def test_applies_keep_and_remove(self, empty_manifest: Manifest) -> None:
+        """Keep and remove decisions are placed into the correct sections."""
+        decisions = DomainDecisions(
+            keep=[
+                PathDecision(
+                    path="~/.config/nvim", reason="User config", confidence=0.95, category="editor"
+                ),
+            ],
+            remove=[
+                PathDecision(
+                    path="~/.config/vlc", reason="VLC removed", confidence=0.90, category="obsolete"
+                ),
+            ],
+        )
+
+        ask = apply_domain_decisions_to_manifest(empty_manifest, "filesystem", decisions)
+
+        assert empty_manifest.filesystem is not None
+        assert "~/.config/nvim" in empty_manifest.filesystem.keep
+        assert empty_manifest.filesystem.keep["~/.config/nvim"].reason == "User config"
+        assert "~/.config/vlc" in empty_manifest.filesystem.remove
+        assert empty_manifest.filesystem.remove["~/.config/vlc"].reason == "VLC removed"
+        assert ask == []
+
+    def test_preserves_existing_unreclassified(self, empty_manifest: Manifest) -> None:
+        """Existing entries not in new decisions are preserved."""
+        empty_manifest.filesystem = DomainConfig(
+            keep={"~/.config/old": DomainEntry(reason="Old entry")},
+            remove={"~/.cache/stale": DomainEntry(reason="Stale cache")},
+        )
+
+        decisions = DomainDecisions(
+            keep=[
+                PathDecision(path="~/.config/nvim", reason="User config", confidence=0.95),
+            ],
+        )
+
+        apply_domain_decisions_to_manifest(empty_manifest, "filesystem", decisions)
+
+        assert "~/.config/old" in empty_manifest.filesystem.keep
+        assert "~/.config/nvim" in empty_manifest.filesystem.keep
+        assert "~/.cache/stale" in empty_manifest.filesystem.remove
+
+    def test_new_decisions_override_existing(self, empty_manifest: Manifest) -> None:
+        """New decisions override existing entries for the same path."""
+        empty_manifest.filesystem = DomainConfig(
+            keep={"~/.config/vlc": DomainEntry(reason="Old reason")},
+            remove={},
+        )
+
+        decisions = DomainDecisions(
+            remove=[
+                PathDecision(path="~/.config/vlc", reason="VLC removed", confidence=0.90),
+            ],
+        )
+
+        apply_domain_decisions_to_manifest(empty_manifest, "filesystem", decisions)
+
+        assert "~/.config/vlc" not in empty_manifest.filesystem.keep
+        assert "~/.config/vlc" in empty_manifest.filesystem.remove
+        assert empty_manifest.filesystem.remove["~/.config/vlc"].reason == "VLC removed"
+
+    def test_returns_ask_decisions(self, empty_manifest: Manifest) -> None:
+        """Ask decisions are returned for manual handling."""
+        decisions = DomainDecisions(
+            ask=[
+                PathDecision(path="~/.local/share/foo", reason="Unknown", confidence=0.50),
+                PathDecision(path="~/.cache/bar", reason="Unclear", confidence=0.40),
+            ],
+        )
+
+        ask = apply_domain_decisions_to_manifest(empty_manifest, "filesystem", decisions)
+
+        assert len(ask) == 2
+        assert ask[0].path == "~/.local/share/foo"
+        assert ask[1].path == "~/.cache/bar"
+
+    def test_empty_decisions(self, empty_manifest: Manifest) -> None:
+        """Empty decisions produce no changes and no ask list."""
+        decisions = DomainDecisions()
+
+        ask = apply_domain_decisions_to_manifest(empty_manifest, "filesystem", decisions)
+
+        assert empty_manifest.filesystem is not None
+        assert empty_manifest.filesystem.keep == {}
+        assert empty_manifest.filesystem.remove == {}
+        assert ask == []
+
+    def test_works_for_both_domains(self, empty_manifest: Manifest) -> None:
+        """Function works for both 'filesystem' and 'configs' domains."""
+        fs_decisions = DomainDecisions(
+            keep=[PathDecision(path="~/.config/nvim", reason="Keep", confidence=0.95)],
+        )
+        cfg_decisions = DomainDecisions(
+            remove=[PathDecision(path="~/.config/vlc", reason="Remove", confidence=0.90)],
+        )
+
+        apply_domain_decisions_to_manifest(empty_manifest, "filesystem", fs_decisions)
+        apply_domain_decisions_to_manifest(empty_manifest, "configs", cfg_decisions)
+
+        assert empty_manifest.filesystem is not None
+        assert "~/.config/nvim" in empty_manifest.filesystem.keep
+        assert empty_manifest.configs is not None
+        assert "~/.config/vlc" in empty_manifest.configs.remove

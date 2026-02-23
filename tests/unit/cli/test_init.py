@@ -226,7 +226,6 @@ class TestInitManifestContent:
         assert "packages" in data
 
         # Check meta
-        assert data["meta"]["version"] == "1.0"
         assert "created" in data["meta"]
         assert "updated" in data["meta"]
 
