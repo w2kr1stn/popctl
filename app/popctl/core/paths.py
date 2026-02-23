@@ -81,18 +81,3 @@ def ensure_dir(path: Path, name: str) -> Path:
         msg = f"Cannot create {name} directory {path}: {e}"
         raise RuntimeError(msg) from e
     return path
-
-
-def ensure_config_backup_dir() -> Path:
-    """Create the config backup directory if it doesn't exist.
-
-    Config backups are stored under the state directory in a dedicated
-    subdirectory (``config-backups/``).
-
-    Returns:
-        Path to the config backup directory.
-
-    Raises:
-        RuntimeError: If the directory cannot be created.
-    """
-    return ensure_dir(get_state_dir() / "config-backups", "config backup")
