@@ -11,7 +11,9 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from popctl.core.baseline import is_protected
-from popctl.models.package import PackageStatus
+from popctl.models.package import PackageSource, PackageStatus
+
+_VALID_SOURCES: frozenset[str] = frozenset(s.value for s in PackageSource)
 
 if TYPE_CHECKING:
     from popctl.models.manifest import Manifest
@@ -198,7 +200,7 @@ class DiffEngine:
                 installed[pkg.name] = (source_name, pkg.version, pkg.description)
 
         # Validate source_filter
-        if source_filter is not None and source_filter not in ("apt", "flatpak"):
+        if source_filter is not None and source_filter not in _VALID_SOURCES:
             msg = f"Invalid source filter: {source_filter}"
             raise ValueError(msg)
 
