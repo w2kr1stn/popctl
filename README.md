@@ -29,8 +29,12 @@ uv sync
 ### Scan Installed Packages
 
 ```bash
-# Show all APT packages
+# Scan all sources (APT + Flatpak)
 popctl scan
+
+# Scan specific source
+popctl scan --source apt
+popctl scan --source flatpak
 
 # Show only manually installed packages
 popctl scan --manual-only
@@ -40,6 +44,15 @@ popctl scan --count
 
 # Limit output to first N packages
 popctl scan --limit 20
+
+# Export to JSON file
+popctl scan --export scan.json
+
+# Output as JSON (pipe-friendly)
+popctl scan --format json
+
+# Combined options
+popctl scan --source apt --manual-only --export ~/backup.json
 ```
 
 ### Command Line Options
@@ -81,11 +94,17 @@ app/popctl/
 │   ├── main.py          # Typer app and global options
 │   └── commands/
 │       └── scan.py      # Scan command implementation
+├── core/
+│   └── theme.py         # Theme management (TOML-based)
+├── data/
+│   └── theme.toml       # Default color theme
 ├── models/
-│   └── package.py       # PackageSource, PackageStatus, ScannedPackage
+│   ├── package.py       # PackageSource, PackageStatus, ScannedPackage
+│   └── scan_result.py   # ScanResult, ScanMetadata for JSON export
 ├── scanners/
 │   ├── base.py          # Scanner ABC
-│   └── apt.py           # AptScanner implementation
+│   ├── apt.py           # AptScanner implementation
+│   └── flatpak.py       # FlatpakScanner implementation
 └── utils/
     ├── shell.py         # Subprocess helpers
     └── formatting.py    # Rich console formatting
@@ -94,7 +113,7 @@ app/popctl/
 ## Roadmap
 
 - [x] PoC-1: Hello APT - Scan APT packages
-- [ ] PoC-2: Multi-Source - Flatpak scanner + export
+- [x] PoC-2: Multi-Source - Flatpak scanner + export
 - [ ] PoC-3: Manifest Birth - Generate manifest from scan
 - [ ] PoC-4: Diff Engine - Compare manifest vs system
 - [ ] MVP-1: First Apply - Install/remove packages
