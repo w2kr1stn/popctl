@@ -1,7 +1,7 @@
 """Integration tests for Claude Advisor.
 
 These tests verify the end-to-end workflow of the advisor feature,
-including file exchange, classification, and manifest updates.
+including workspace creation, classification, and manifest updates.
 """
 
 from datetime import UTC, datetime
@@ -171,38 +171,19 @@ class TestAdvisorIntegration:
         mock_decisions: DecisionsResult,
     ) -> None:
         """Test complete classify -> apply workflow with mocks."""
-        exchange_dir = tmp_path / "exchange"
-        exchange_dir.mkdir(parents=True)
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir(parents=True)
         manifest_path, manifest = sample_manifest
 
-        # Create decisions.toml in exchange dir
-        decisions_toml = exchange_dir / "decisions.toml"
-        decisions_toml.write_text("""
-[packages.apt]
-[[packages.apt.keep]]
-name = "firefox"
-reason = "Essential web browser"
-confidence = 0.95
-category = "desktop"
-
-[[packages.apt.remove]]
-name = "bloatware"
-reason = "Unused application"
-confidence = 0.88
-category = "other"
-
-[packages.flatpak]
-[[packages.flatpak.keep]]
-name = "com.spotify.Client"
-reason = "Music streaming"
-confidence = 0.90
-category = "media"
-""")
+        decisions_toml = workspace_dir / "output" / "decisions.toml"
+        decisions_toml.parent.mkdir(parents=True)
+        decisions_toml.touch()
 
         successful_result = AgentResult(
             success=True,
             output="Classification complete",
             decisions_path=decisions_toml,
+            workspace_path=workspace_dir,
         )
 
         with (
@@ -210,18 +191,18 @@ category = "media"
             patch("popctl.cli.commands.advisor.load_advisor_config", return_value=mock_config),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch(
-                "popctl.cli.commands.advisor.ensure_exchange_dir",
-                return_value=exchange_dir,
-            ),
             patch("popctl.cli.commands.advisor._scan_system", return_value=sample_scan_result),
             patch(
-                "popctl.cli.commands.advisor.export_scan_for_advisor",
-                return_value=exchange_dir / "scan.json",
+                "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
+                return_value=tmp_path / "sessions",
             ),
             patch(
-                "popctl.cli.commands.advisor.export_prompt_files",
-                return_value=(exchange_dir / "prompt.txt", None),
+                "popctl.cli.commands.advisor.get_manifest_path",
+                return_value=tmp_path / "nonexistent" / "manifest.toml",
+            ),
+            patch(
+                "popctl.cli.commands.advisor.create_session_workspace",
+                return_value=workspace_dir,
             ),
             patch.object(
                 __import__("popctl.advisor.runner", fromlist=["AgentRunner"]).AgentRunner,
@@ -229,8 +210,8 @@ category = "media"
                 return_value=successful_result,
             ),
         ):
-            # Step 1: Run classify in headless mode
-            classify_result = runner.invoke(app, ["advisor", "classify", "--auto"])
+            # Step 1: Run classify (always headless now)
+            classify_result = runner.invoke(app, ["advisor", "classify"])
             assert classify_result.exit_code == 0
             assert (
                 "successfully" in classify_result.stdout.lower()
@@ -240,8 +221,12 @@ category = "media"
         # Step 2: Apply the decisions
         with (
             patch(
-                "popctl.core.paths.get_exchange_dir",
-                return_value=exchange_dir,
+                "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
+                return_value=tmp_path / "sessions",
+            ),
+            patch(
+                "popctl.cli.commands.advisor.find_latest_decisions",
+                return_value=decisions_toml,
             ),
             patch(
                 "popctl.advisor.import_decisions",
@@ -276,15 +261,16 @@ category = "media"
         mock_config: AdvisorConfig,
     ) -> None:
         """Headless mode creates decisions.toml."""
-        exchange_dir = tmp_path / "exchange"
-        exchange_dir.mkdir(parents=True)
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir(parents=True)
 
-        decisions_path = exchange_dir / "decisions.toml"
+        decisions_path = workspace_dir / "output" / "decisions.toml"
 
         successful_result = AgentResult(
             success=True,
             output="Classification complete",
             decisions_path=decisions_path,
+            workspace_path=workspace_dir,
         )
 
         with (
@@ -292,18 +278,18 @@ category = "media"
             patch("popctl.cli.commands.advisor.load_advisor_config", return_value=mock_config),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch(
-                "popctl.cli.commands.advisor.ensure_exchange_dir",
-                return_value=exchange_dir,
-            ),
             patch("popctl.cli.commands.advisor._scan_system", return_value=sample_scan_result),
             patch(
-                "popctl.cli.commands.advisor.export_scan_for_advisor",
-                return_value=exchange_dir / "scan.json",
+                "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
+                return_value=tmp_path / "sessions",
             ),
             patch(
-                "popctl.cli.commands.advisor.export_prompt_files",
-                return_value=(exchange_dir / "prompt.txt", None),
+                "popctl.cli.commands.advisor.get_manifest_path",
+                return_value=tmp_path / "nonexistent" / "manifest.toml",
+            ),
+            patch(
+                "popctl.cli.commands.advisor.create_session_workspace",
+                return_value=workspace_dir,
             ),
             patch.object(
                 __import__("popctl.advisor.runner", fromlist=["AgentRunner"]).AgentRunner,
@@ -311,10 +297,9 @@ category = "media"
                 return_value=successful_result,
             ),
         ):
-            result = runner.invoke(app, ["advisor", "classify", "--auto"])
+            result = runner.invoke(app, ["advisor", "classify"])
 
         assert result.exit_code == 0
-        # Output should mention the decisions path
         assert "decisions" in result.stdout.lower() or "successfully" in result.stdout.lower()
 
     def test_apply_updates_manifest_correctly(
@@ -324,13 +309,11 @@ category = "media"
         mock_decisions: DecisionsResult,
     ) -> None:
         """Apply correctly updates manifest with decisions."""
-        exchange_dir = tmp_path / "exchange"
-        exchange_dir.mkdir(parents=True)
         manifest_path, manifest = sample_manifest
 
-        # Create a minimal decisions.toml
-        decisions_toml = exchange_dir / "decisions.toml"
-        decisions_toml.touch()
+        decisions_path = tmp_path / "session" / "output" / "decisions.toml"
+        decisions_path.parent.mkdir(parents=True)
+        decisions_path.touch()
 
         saved_manifest: Manifest | None = None
 
@@ -341,8 +324,12 @@ category = "media"
 
         with (
             patch(
-                "popctl.core.paths.get_exchange_dir",
-                return_value=exchange_dir,
+                "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
+                return_value=tmp_path / "sessions",
+            ),
+            patch(
+                "popctl.cli.commands.advisor.find_latest_decisions",
+                return_value=decisions_path,
             ),
             patch(
                 "popctl.advisor.import_decisions",
@@ -384,16 +371,14 @@ class TestAdvisorProviderSelection:
         sample_scan_result: ScanResult,
     ) -> None:
         """Classify uses Gemini provider when specified."""
-        exchange_dir = tmp_path / "exchange"
-        exchange_dir.mkdir(parents=True)
+        workspace_dir = tmp_path / "workspace"
 
-        # Track which provider config was used
-        captured_config: AdvisorConfig | None = None
-
-        def mock_prepare_interactive(self: Any, path: Path) -> str:
-            nonlocal captured_config
-            captured_config = self.config
-            return "Test instructions"
+        successful_result = AgentResult(
+            success=True,
+            output="",
+            decisions_path=workspace_dir / "output" / "decisions.toml",
+            workspace_path=workspace_dir,
+        )
 
         with (
             patch("popctl.cli.commands.advisor.is_running_in_container", return_value=False),
@@ -403,23 +388,23 @@ class TestAdvisorProviderSelection:
             ),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch(
-                "popctl.cli.commands.advisor.ensure_exchange_dir",
-                return_value=exchange_dir,
-            ),
             patch("popctl.cli.commands.advisor._scan_system", return_value=sample_scan_result),
             patch(
-                "popctl.cli.commands.advisor.export_scan_for_advisor",
-                return_value=exchange_dir / "scan.json",
+                "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
+                return_value=tmp_path / "sessions",
             ),
             patch(
-                "popctl.cli.commands.advisor.export_prompt_files",
-                return_value=(exchange_dir / "prompt.txt", None),
+                "popctl.cli.commands.advisor.get_manifest_path",
+                return_value=tmp_path / "nonexistent" / "manifest.toml",
+            ),
+            patch(
+                "popctl.cli.commands.advisor.create_session_workspace",
+                return_value=workspace_dir,
             ),
             patch.object(
                 __import__("popctl.advisor.runner", fromlist=["AgentRunner"]).AgentRunner,
-                "prepare_interactive",
-                mock_prepare_interactive,
+                "run_headless",
+                return_value=successful_result,
             ),
         ):
             result = runner.invoke(app, ["advisor", "classify", "--provider", "gemini"])
@@ -433,8 +418,14 @@ class TestAdvisorProviderSelection:
         sample_scan_result: ScanResult,
     ) -> None:
         """Classify uses custom model when specified."""
-        exchange_dir = tmp_path / "exchange"
-        exchange_dir.mkdir(parents=True)
+        workspace_dir = tmp_path / "workspace"
+
+        successful_result = AgentResult(
+            success=True,
+            output="",
+            decisions_path=workspace_dir / "output" / "decisions.toml",
+            workspace_path=workspace_dir,
+        )
 
         with (
             patch("popctl.cli.commands.advisor.is_running_in_container", return_value=False),
@@ -444,23 +435,23 @@ class TestAdvisorProviderSelection:
             ),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch(
-                "popctl.cli.commands.advisor.ensure_exchange_dir",
-                return_value=exchange_dir,
-            ),
             patch("popctl.cli.commands.advisor._scan_system", return_value=sample_scan_result),
             patch(
-                "popctl.cli.commands.advisor.export_scan_for_advisor",
-                return_value=exchange_dir / "scan.json",
+                "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
+                return_value=tmp_path / "sessions",
             ),
             patch(
-                "popctl.cli.commands.advisor.export_prompt_files",
-                return_value=(exchange_dir / "prompt.txt", None),
+                "popctl.cli.commands.advisor.get_manifest_path",
+                return_value=tmp_path / "nonexistent" / "manifest.toml",
+            ),
+            patch(
+                "popctl.cli.commands.advisor.create_session_workspace",
+                return_value=workspace_dir,
             ),
             patch.object(
                 __import__("popctl.advisor.runner", fromlist=["AgentRunner"]).AgentRunner,
-                "prepare_interactive",
-                return_value="Instructions",
+                "run_headless",
+                return_value=successful_result,
             ),
         ):
             result = runner.invoke(app, ["advisor", "classify", "--model", "opus"])
@@ -479,17 +470,20 @@ class TestAdvisorApplyDryRun:
         mock_decisions: DecisionsResult,
     ) -> None:
         """Apply --dry-run shows what would change without modifying manifest."""
-        exchange_dir = tmp_path / "exchange"
-        exchange_dir.mkdir(parents=True)
         manifest_path, manifest = sample_manifest
-
-        decisions_toml = exchange_dir / "decisions.toml"
-        decisions_toml.touch()
 
         with (
             patch(
+                "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
+                return_value=tmp_path / "sessions",
+            ),
+            patch(
+                "popctl.cli.commands.advisor.find_latest_decisions",
+                return_value=None,
+            ),
+            patch(
                 "popctl.core.paths.get_exchange_dir",
-                return_value=exchange_dir,
+                return_value=tmp_path,
             ),
             patch(
                 "popctl.advisor.import_decisions",
@@ -510,11 +504,8 @@ class TestAdvisorApplyDryRun:
             result = runner.invoke(app, ["advisor", "apply", "--dry-run"])
 
         assert result.exit_code == 0
-        # Should show summary table
         assert "keep" in result.stdout.lower() or "summary" in result.stdout.lower()
-        # Should NOT save manifest
         mock_save.assert_not_called()
-        # Should indicate dry-run mode
         assert "would" in result.stdout.lower() or "dry" in result.stdout.lower()
 
 
@@ -528,13 +519,13 @@ class TestAdvisorErrorHandling:
         mock_config: AdvisorConfig,
     ) -> None:
         """Classify reports error when AI agent fails."""
-        exchange_dir = tmp_path / "exchange"
-        exchange_dir.mkdir(parents=True)
+        workspace_dir = tmp_path / "workspace"
 
         failed_result = AgentResult(
             success=False,
             output="Agent failed to respond",
             error="Timeout after 600 seconds",
+            workspace_path=workspace_dir,
         )
 
         with (
@@ -542,18 +533,18 @@ class TestAdvisorErrorHandling:
             patch("popctl.cli.commands.advisor.load_advisor_config", return_value=mock_config),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch(
-                "popctl.cli.commands.advisor.ensure_exchange_dir",
-                return_value=exchange_dir,
-            ),
             patch("popctl.cli.commands.advisor._scan_system", return_value=sample_scan_result),
             patch(
-                "popctl.cli.commands.advisor.export_scan_for_advisor",
-                return_value=exchange_dir / "scan.json",
+                "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
+                return_value=tmp_path / "sessions",
             ),
             patch(
-                "popctl.cli.commands.advisor.export_prompt_files",
-                return_value=(exchange_dir / "prompt.txt", None),
+                "popctl.cli.commands.advisor.get_manifest_path",
+                return_value=tmp_path / "nonexistent" / "manifest.toml",
+            ),
+            patch(
+                "popctl.cli.commands.advisor.create_session_workspace",
+                return_value=workspace_dir,
             ),
             patch.object(
                 __import__("popctl.advisor.runner", fromlist=["AgentRunner"]).AgentRunner,
@@ -561,7 +552,7 @@ class TestAdvisorErrorHandling:
                 return_value=failed_result,
             ),
         ):
-            result = runner.invoke(app, ["advisor", "classify", "--auto"])
+            result = runner.invoke(app, ["advisor", "classify"])
 
         assert result.exit_code == 1
         combined = result.stdout + (result.stderr or "")
@@ -575,9 +566,6 @@ class TestAdvisorErrorHandling:
         """Apply fails gracefully when no manifest exists."""
         from popctl.core.manifest import ManifestNotFoundError
 
-        exchange_dir = tmp_path / "exchange"
-        exchange_dir.mkdir(parents=True)
-
         mock_decisions = DecisionsResult(
             packages={
                 "apt": SourceDecisions(keep=[], remove=[], ask=[]),
@@ -587,8 +575,16 @@ class TestAdvisorErrorHandling:
 
         with (
             patch(
+                "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
+                return_value=tmp_path / "sessions",
+            ),
+            patch(
+                "popctl.cli.commands.advisor.find_latest_decisions",
+                return_value=None,
+            ),
+            patch(
                 "popctl.core.paths.get_exchange_dir",
-                return_value=exchange_dir,
+                return_value=tmp_path,
             ),
             patch(
                 "popctl.advisor.import_decisions",

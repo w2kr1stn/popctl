@@ -205,3 +205,51 @@ def get_advisor_config_path() -> Path:
         Path to ~/.config/popctl/advisor.toml.
     """
     return get_config_dir() / "advisor.toml"
+
+
+def get_advisor_sessions_dir() -> Path:
+    """Get the advisor sessions directory path.
+
+    Each interactive advisor session creates a timestamped subdirectory
+    containing the workspace files (CLAUDE.md, scan.json, output/).
+
+    Returns:
+        Path to ~/.local/state/popctl/advisor-sessions/.
+    """
+    return get_state_dir() / "advisor-sessions"
+
+
+def ensure_advisor_sessions_dir() -> Path:
+    """Create the advisor sessions directory if it doesn't exist.
+
+    Returns:
+        Path to the advisor sessions directory.
+
+    Raises:
+        RuntimeError: If the directory cannot be created.
+    """
+    return _ensure_dir(get_advisor_sessions_dir(), "advisor sessions")
+
+
+def get_advisor_memory_path() -> Path:
+    """Get the persistent advisor memory file path.
+
+    The memory file stores learned user preferences and past classification
+    decisions that chain across advisor sessions.
+
+    Returns:
+        Path to ~/.local/state/popctl/advisor/memory.md.
+    """
+    return get_state_dir() / "advisor" / "memory.md"
+
+
+def ensure_advisor_memory_dir() -> Path:
+    """Create the advisor memory directory if it doesn't exist.
+
+    Returns:
+        Path to ~/.local/state/popctl/advisor/.
+
+    Raises:
+        RuntimeError: If the directory cannot be created.
+    """
+    return _ensure_dir(get_state_dir() / "advisor", "advisor memory")
