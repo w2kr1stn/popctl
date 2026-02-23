@@ -68,7 +68,8 @@ def save_manifest(manifest: Manifest, path: Path | None = None) -> Path:
     """Save a manifest to a TOML file.
 
     The file is written atomically by first writing to a temporary file
-    and then renaming to ensure consistency.
+    in the same directory and then using os.replace() for atomic rename.
+    The temporary file is cleaned up on failure.
 
     Args:
         manifest: The Manifest object to save.
@@ -80,6 +81,9 @@ def save_manifest(manifest: Manifest, path: Path | None = None) -> Path:
     Raises:
         ManifestError: If the file cannot be written.
     """
+    import os
+    from tempfile import NamedTemporaryFile
+
     manifest_path = path or get_manifest_path()
 
     # Ensure parent directory exists
@@ -88,13 +92,23 @@ def save_manifest(manifest: Manifest, path: Path | None = None) -> Path:
     # Convert manifest to dictionary with proper serialization
     data = _manifest_to_dict(manifest)
 
+    tmp_path: Path | None = None
     try:
-        # Write atomically using a temporary file
-        tmp_path = manifest_path.with_suffix(".toml.tmp")
-        with open(tmp_path, "wb") as f:
+        # Write atomically using a temporary file in the same directory
+        with NamedTemporaryFile(
+            mode="wb",
+            dir=manifest_path.parent,
+            delete=False,
+            suffix=".tmp",
+        ) as f:
+            tmp_path = Path(f.name)
             tomli_w.dump(data, f)
-        tmp_path.rename(manifest_path)
+        # os.replace() is atomic on POSIX and handles cross-filesystem moves
+        os.replace(str(tmp_path), str(manifest_path))
     except OSError as e:
+        # Cleanup temp file on failure
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink()
         raise ManifestError(f"Failed to write manifest: {e}") from e
 
     return manifest_path

@@ -19,14 +19,14 @@ class ScanMetadata:
         timestamp: ISO format timestamp when the scan was performed.
         hostname: Name of the machine that was scanned.
         popctl_version: Version of popctl that performed the scan.
-        sources: List of package sources that were scanned.
+        sources: Tuple of package sources that were scanned (immutable).
         manual_only: Whether only manually installed packages were included.
     """
 
     timestamp: str
     hostname: str
     popctl_version: str
-    sources: list[str]
+    sources: tuple[str, ...]
     manual_only: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -35,7 +35,7 @@ class ScanMetadata:
             "timestamp": self.timestamp,
             "hostname": self.hostname,
             "popctl_version": self.popctl_version,
-            "sources": self.sources,
+            "sources": list(self.sources),  # Convert back to list for JSON
             "manual_only": self.manual_only,
         }
 
@@ -104,7 +104,7 @@ class ScanResult:
             timestamp=datetime.now(UTC).isoformat(),
             hostname=socket.gethostname(),
             popctl_version=__version__,
-            sources=sources,
+            sources=tuple(sources),
             manual_only=manual_only,
         )
 
