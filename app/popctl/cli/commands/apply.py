@@ -7,28 +7,17 @@ and removing extra packages.
 from typing import Annotated
 
 import typer
-from rich.table import Table
 
+from popctl.cli.display import (
+    create_actions_table,
+    create_results_table,
+    print_actions_summary,
+    print_results_summary,
+)
 from popctl.cli.types import SourceChoice, get_scanners
-from popctl.core.baseline import is_protected
-from popctl.core.diff import DiffEngine, DiffResult
-from popctl.core.state import StateManager
-from popctl.models.action import (
-    Action,
-    ActionResult,
-    ActionType,
-    create_install_action,
-    create_remove_action,
-)
-from popctl.models.history import (
-    HistoryActionType,
-    HistoryItem,
-    create_history_entry,
-)
-from popctl.models.package import PackageSource
-from popctl.operators.apt import AptOperator
-from popctl.operators.base import Operator
-from popctl.operators.flatpak import FlatpakOperator
+from popctl.core.actions import diff_to_actions
+from popctl.core.diff import DiffEngine
+from popctl.core.executor import execute_actions, get_available_operators, record_actions_to_history
 from popctl.scanners.base import Scanner
 from popctl.utils.formatting import (
     console,
@@ -44,254 +33,6 @@ app = typer.Typer(
 )
 
 
-def _get_operators(source: SourceChoice, dry_run: bool) -> list[Operator]:
-    """Get operator instances based on source selection.
-
-    Args:
-        source: The source choice (apt, flatpak, or all).
-        dry_run: Whether to run in dry-run mode.
-
-    Returns:
-        List of operator instances.
-    """
-    operators: list[Operator] = []
-
-    if source in (SourceChoice.APT, SourceChoice.ALL):
-        operators.append(AptOperator(dry_run=dry_run))
-
-    if source in (SourceChoice.FLATPAK, SourceChoice.ALL):
-        operators.append(FlatpakOperator(dry_run=dry_run))
-
-    return operators
-
-
-def _source_to_package_source(source_str: str) -> PackageSource:
-    """Convert source string to PackageSource enum.
-
-    Args:
-        source_str: Source string ("apt" or "flatpak").
-
-    Returns:
-        Corresponding PackageSource enum value.
-    """
-    source_map = {
-        "apt": PackageSource.APT,
-        "flatpak": PackageSource.FLATPAK,
-    }
-    return source_map[source_str]
-
-
-def _diff_to_actions(diff_result: DiffResult, purge: bool = False) -> list[Action]:
-    """Convert diff result to list of actions.
-
-    Only MISSING and EXTRA diffs are converted to actions:
-    - MISSING: Package in manifest but not installed -> INSTALL
-    - EXTRA: Package marked for removal but still installed -> REMOVE/PURGE
-
-    NEW packages (installed but not in manifest) are ignored - the user
-    must explicitly add them to the remove list in the manifest.
-
-    Protected packages are excluded from removal actions.
-
-    Args:
-        diff_result: Result from DiffEngine.compute_diff().
-        purge: If True, use PURGE instead of REMOVE for APT packages.
-
-    Returns:
-        List of Action objects to execute.
-    """
-    actions: list[Action] = []
-
-    # MISSING -> INSTALL
-    for entry in diff_result.missing:
-        pkg_source = _source_to_package_source(entry.source)
-        action = create_install_action(
-            package=entry.name,
-            source=pkg_source,
-            reason="Package in manifest but not installed",
-        )
-        actions.append(action)
-
-    # EXTRA -> REMOVE/PURGE
-    for entry in diff_result.extra:
-        # Skip protected packages (should not happen as DiffEngine filters them,
-        # but defense in depth)
-        if is_protected(entry.name):
-            continue
-
-        pkg_source = _source_to_package_source(entry.source)
-
-        # Purge only applies to APT packages
-        use_purge = purge and pkg_source == PackageSource.APT
-
-        action = create_remove_action(
-            package=entry.name,
-            source=pkg_source,
-            reason="Package marked for removal in manifest",
-            purge=use_purge,
-        )
-        actions.append(action)
-
-    return actions
-
-
-def _create_actions_table(actions: list[Action], dry_run: bool) -> Table:
-    """Create a Rich table displaying planned actions.
-
-    Args:
-        actions: List of actions to display.
-        dry_run: Whether this is a dry-run.
-
-    Returns:
-        Rich Table configured for action display.
-    """
-    title = "Planned Actions (Dry Run)" if dry_run else "Planned Actions"
-
-    table = Table(
-        title=title,
-        show_header=True,
-        header_style="bold_header",
-        border_style="border",
-    )
-    table.add_column("Action", width=8, justify="center")
-    table.add_column("Source", width=8)
-    table.add_column("Package", no_wrap=True)
-    table.add_column("Reason")
-
-    for action in actions:
-        # Style based on action type
-        if action.is_install:
-            action_text = "[added]+install[/added]"
-            pkg_style = "added"
-        elif action.is_purge:
-            action_text = "[removed]-purge[/removed]"
-            pkg_style = "removed"
-        else:  # REMOVE
-            action_text = "[warning]-remove[/warning]"
-            pkg_style = "warning"
-
-        table.add_row(
-            action_text,
-            action.source.value,
-            f"[{pkg_style}]{action.package}[/{pkg_style}]",
-            f"[muted]{action.reason or ''}[/muted]",
-        )
-
-    return table
-
-
-def _create_results_table(results: list[ActionResult]) -> Table:
-    """Create a Rich table displaying action results.
-
-    Args:
-        results: List of action results to display.
-
-    Returns:
-        Rich Table configured for results display.
-    """
-    table = Table(
-        title="Results",
-        show_header=True,
-        header_style="bold_header",
-        border_style="border",
-    )
-    table.add_column("Status", width=8, justify="center")
-    table.add_column("Action", width=8)
-    table.add_column("Package", no_wrap=True)
-    table.add_column("Message")
-
-    for result in results:
-        if result.success:
-            status = "[success]OK[/success]"
-            message = result.message or ""
-        else:
-            status = "[error]FAIL[/error]"
-            message = result.error or "Unknown error"
-
-        action_type = result.action.action_type.value
-
-        table.add_row(
-            status,
-            action_type,
-            result.action.package,
-            f"[muted]{message}[/muted]",
-        )
-
-    return table
-
-
-def _print_actions_summary(actions: list[Action]) -> None:
-    """Print a summary of planned actions.
-
-    Args:
-        actions: List of planned actions.
-    """
-    install_count = sum(1 for a in actions if a.is_install)
-    remove_count = sum(1 for a in actions if a.is_remove)
-    purge_count = sum(1 for a in actions if a.is_purge)
-
-    parts: list[str] = []
-    if install_count:
-        parts.append(f"[added]{install_count} to install[/added]")
-    if remove_count:
-        parts.append(f"[warning]{remove_count} to remove[/warning]")
-    if purge_count:
-        parts.append(f"[removed]{purge_count} to purge[/removed]")
-
-    if parts:
-        summary = ", ".join(parts)
-        console.print(f"\nSummary: {summary}")
-
-
-def _print_results_summary(results: list[ActionResult]) -> None:
-    """Print a summary of action results.
-
-    Args:
-        results: List of action results.
-    """
-    success_count = sum(1 for r in results if r.success)
-    fail_count = sum(1 for r in results if r.failed)
-
-    if fail_count == 0:
-        print_success(f"All {success_count} action(s) completed successfully.")
-    else:
-        console.print(
-            f"\n[success]{success_count} succeeded[/success], [error]{fail_count} failed[/error]"
-        )
-
-
-def _execute_actions(
-    actions: list[Action],
-    operators: list[Operator],
-) -> list[ActionResult]:
-    """Execute actions using the appropriate operators.
-
-    Args:
-        actions: List of actions to execute.
-        operators: List of available operators.
-
-    Returns:
-        List of ActionResult for all actions.
-    """
-    results: list[ActionResult] = []
-
-    # Group actions by source
-    actions_by_source: dict[PackageSource, list[Action]] = {}
-    for action in actions:
-        if action.source not in actions_by_source:
-            actions_by_source[action.source] = []
-        actions_by_source[action.source].append(action)
-
-    # Execute actions for each source
-    for operator in operators:
-        source_actions = actions_by_source.get(operator.source, [])
-        if source_actions:
-            source_results = operator.execute(source_actions)
-            results.extend(source_results)
-
-    return results
-
-
 def _confirm_actions(action_count: int) -> bool:
     """Prompt user to confirm action execution.
 
@@ -305,72 +46,6 @@ def _confirm_actions(action_count: int) -> bool:
         f"\nProceed with {action_count} action(s)?",
         default=False,
     )
-
-
-def _map_action_type_to_history(action_type: ActionType) -> HistoryActionType:
-    """Map ActionType to HistoryActionType.
-
-    Args:
-        action_type: The action type from the action model.
-
-    Returns:
-        Corresponding HistoryActionType.
-    """
-    mapping = {
-        ActionType.INSTALL: HistoryActionType.INSTALL,
-        ActionType.REMOVE: HistoryActionType.REMOVE,
-        ActionType.PURGE: HistoryActionType.PURGE,
-    }
-    return mapping[action_type]
-
-
-def _record_actions_to_history(results: list[ActionResult]) -> None:
-    """Record successful actions to history.
-
-    Groups results by action type and records separate history entries
-    for each type. Only successful actions are recorded.
-
-    Errors during history recording are logged but do not interrupt
-    the main apply flow.
-
-    Args:
-        results: List of action results from execution.
-    """
-    import logging
-
-    logger = logging.getLogger(__name__)
-
-    try:
-        state = StateManager()
-
-        # Group successful results by action type
-        for action_type in [ActionType.INSTALL, ActionType.REMOVE, ActionType.PURGE]:
-            successful_items = [
-                HistoryItem(
-                    name=r.action.package,
-                    source=r.action.source,
-                )
-                for r in results
-                if r.success and r.action.action_type == action_type
-            ]
-
-            if successful_items:
-                entry = create_history_entry(
-                    action_type=_map_action_type_to_history(action_type),
-                    items=successful_items,
-                    metadata={"command": "popctl apply"},
-                )
-                state.record_action(entry)
-                logger.debug(
-                    "Recorded %d %s action(s) to history",
-                    len(successful_items),
-                    action_type.value,
-                )
-
-    except (OSError, RuntimeError) as e:
-        # Log and inform user, but don't interrupt the main flow
-        logger.warning("Failed to record actions to history: %s", str(e))
-        print_warning(f"Could not record actions to history: {e}")
 
 
 @app.callback(invoke_without_command=True)
@@ -464,7 +139,7 @@ def apply_manifest(
         raise typer.Exit(code=1) from e
 
     # Convert diff to actions
-    actions = _diff_to_actions(diff_result, purge=purge)
+    actions = diff_to_actions(diff_result, purge=purge)
 
     # Check if there's anything to do
     if not actions:
@@ -472,9 +147,9 @@ def apply_manifest(
         return
 
     # Show planned actions
-    table = _create_actions_table(actions, dry_run)
+    table = create_actions_table(actions, dry_run)
     console.print(table)
-    _print_actions_summary(actions)
+    print_actions_summary(actions)
 
     # If dry-run, stop here
     if dry_run:
@@ -486,28 +161,23 @@ def apply_manifest(
         print_info("Aborted.")
         raise typer.Exit(code=0)
 
-    # Get operators and check availability
-    operators = _get_operators(source, dry_run=False)
-    available_operators: list[Operator] = []
-
-    for operator in operators:
-        if operator.is_available():
-            available_operators.append(operator)
+    # Get available operators (filters out unavailable package managers)
+    available_operators = get_available_operators(source)
 
     # Execute actions
     console.print("\n[bold]Executing actions...[/bold]\n")
 
-    results = _execute_actions(actions, available_operators)
+    results = execute_actions(actions, available_operators)
 
     # Record successful actions to history
     if results:
-        _record_actions_to_history(results)
+        record_actions_to_history(results)
         print_info("Actions recorded to history.")
 
     # Show results
-    results_table = _create_results_table(results)
+    results_table = create_results_table(results)
     console.print(results_table)
-    _print_results_summary(results)
+    print_results_summary(results)
 
     # Exit with error code if any action failed
     if any(r.failed for r in results):
