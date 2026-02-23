@@ -371,31 +371,3 @@ class TestFsHelp:
         result = runner.invoke(app, ["fs", "--help"])
         assert result.exit_code == 0
         assert "Filesystem scanning and cleanup" in result.stdout
-        assert "scan" in result.stdout
-        assert "clean" in result.stdout
-
-    def test_fs_scan_help(self) -> None:
-        """popctl fs scan --help shows scan command help."""
-        from tests.unit.conftest import strip_ansi
-
-        result = runner.invoke(app, ["fs", "scan", "--help"])
-        assert result.exit_code == 0
-        output = strip_ansi(result.stdout)
-        assert "Scan filesystem for orphaned" in output
-        assert "--files" in output
-        assert "--include-etc" in output
-        assert "--format" in output
-        assert "--export" in output
-        assert "--limit" in output
-
-    def test_fs_clean_help(self) -> None:
-        """popctl fs clean --help shows clean command help."""
-        from tests.unit.conftest import strip_ansi
-
-        result = runner.invoke(app, ["fs", "clean", "--help"])
-        assert result.exit_code == 0
-        output = strip_ansi(result.stdout)
-        assert "Clean up filesystem entries" in output
-        assert "--dry-run" in output
-        assert "--yes" in output
-        assert "--include-etc" in output

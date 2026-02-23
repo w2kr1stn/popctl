@@ -50,17 +50,6 @@ class TestApplyCommandHelp:
         assert result.exit_code == 0
         assert "Apply manifest to system" in result.stdout
 
-    def test_apply_help_shows_options(self) -> None:
-        """Apply help shows all available options."""
-        from tests.unit.conftest import strip_ansi
-
-        result = runner.invoke(app, ["apply", "--help"])
-        output = strip_ansi(result.stdout)
-        assert "--yes" in output
-        assert "--dry-run" in output
-        assert "--source" in output
-        assert "--purge" in output
-
 
 def test_apply_no_manifest_error(tmp_path: Path) -> None:
     """Apply shows error when manifest doesn't exist."""

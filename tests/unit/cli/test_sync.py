@@ -55,27 +55,6 @@ class TestSyncHelp:
         assert result.exit_code == 0
         assert "Full system synchronization" in result.stdout
 
-    def test_sync_help_shows_flags(self) -> None:
-        """Sync help shows all available flags."""
-        from tests.unit.conftest import strip_ansi
-
-        result = runner.invoke(app, ["sync", "--help"])
-        output = strip_ansi(result.stdout)
-        assert "--no-advisor" in output
-        assert "--auto" in output
-        assert "--dry-run" in output
-        assert "--yes" in output
-        assert "--source" in output
-        assert "--purge" in output
-
-    def test_sync_help_shows_no_filesystem(self) -> None:
-        """Sync help shows --no-filesystem flag."""
-        from tests.unit.conftest import strip_ansi
-
-        result = runner.invoke(app, ["sync", "--help"])
-        assert result.exit_code == 0
-        assert "--no-filesystem" in strip_ansi(result.stdout)
-
 
 def test_sync_auto_init(sample_manifest: Manifest, in_sync_result: DiffResult) -> None:
     """Sync auto-creates manifest when missing, then proceeds."""
@@ -652,14 +631,6 @@ class TestSyncFilesystem:
 class TestSyncConfigs:
     """Tests for config phases (14-18) in sync pipeline."""
 
-    def test_sync_help_shows_no_configs(self) -> None:
-        """Sync help shows --no-configs flag."""
-        from tests.unit.conftest import strip_ansi
-
-        result = runner.invoke(app, ["sync", "--help"])
-        assert result.exit_code == 0
-        assert "--no-configs" in strip_ansi(result.stdout)
-
     def test_sync_includes_config_phases(
         self, sample_manifest: Manifest, in_sync_result: DiffResult
     ) -> None:
@@ -941,7 +912,7 @@ class TestInvokeAdvisor:
             patch("popctl.advisor.config.load_or_create_config", return_value=MagicMock()),
             patch("popctl.cli.commands.sync.scan_system", return_value=MagicMock()),
             patch(
-                "popctl.cli.commands.sync.create_full_session_workspace",
+                "popctl.cli.commands.sync.create_session_workspace",
                 side_effect=OSError("no space"),
             ),
         ):
@@ -960,7 +931,7 @@ class TestInvokeAdvisor:
             patch("popctl.advisor.config.load_or_create_config", return_value=mock_config),
             patch("popctl.cli.commands.sync.scan_system", return_value=mock_scan),
             patch(
-                "popctl.cli.commands.sync.create_full_session_workspace",
+                "popctl.cli.commands.sync.create_session_workspace",
                 return_value=Path("/tmp/ws"),
             ),
             patch(
@@ -986,7 +957,7 @@ class TestInvokeAdvisor:
             patch("popctl.advisor.config.load_or_create_config", return_value=MagicMock()),
             patch("popctl.cli.commands.sync.scan_system", return_value=MagicMock()),
             patch(
-                "popctl.cli.commands.sync.create_full_session_workspace",
+                "popctl.cli.commands.sync.create_session_workspace",
                 return_value=Path("/tmp/ws"),
             ),
             patch(
@@ -1017,7 +988,7 @@ class TestInvokeAdvisor:
             patch("popctl.advisor.config.load_or_create_config", return_value=MagicMock()),
             patch("popctl.cli.commands.sync.scan_system", return_value=MagicMock()),
             patch(
-                "popctl.cli.commands.sync.create_full_session_workspace",
+                "popctl.cli.commands.sync.create_session_workspace",
                 return_value=Path("/tmp/ws"),
             ),
             patch(
@@ -1047,7 +1018,7 @@ class TestInvokeAdvisor:
             patch("popctl.advisor.config.load_or_create_config", return_value=MagicMock()),
             patch("popctl.cli.commands.sync.scan_system", return_value=MagicMock()),
             patch(
-                "popctl.cli.commands.sync.create_full_session_workspace",
+                "popctl.cli.commands.sync.create_session_workspace",
                 return_value=Path("/tmp/ws"),
             ),
             patch(

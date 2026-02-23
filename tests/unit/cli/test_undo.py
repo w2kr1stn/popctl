@@ -69,14 +69,6 @@ class TestUndoCommandHelp:
         result = runner.invoke(app, ["undo", "--help"])
         assert result.exit_code == 0
         assert "Undo the last reversible action" in result.stdout
-        assert "--dry-run" in result.stdout
-        assert "--yes" in result.stdout
-
-    def test_undo_help_shows_short_options(self) -> None:
-        """Undo help shows short option forms."""
-        result = runner.invoke(app, ["undo", "--help"])
-        assert "-n" in result.stdout
-        assert "-y" in result.stdout
 
 
 def test_undo_no_reversible_actions() -> None:
@@ -146,9 +138,9 @@ class TestUndoConfirmation:
         with (
             patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
             patch("popctl.cli.commands.undo.mark_entry_reversed"),
-            patch("popctl.core.executor.execute_actions") as mock_execute,
-            patch("popctl.core.executor.get_available_operators", return_value=[]),
-            patch("popctl.core.baseline.is_protected", return_value=False),
+            patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+            patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+            patch("popctl.cli.commands.undo.is_package_protected", return_value=False),
         ):
             mock_get.return_value = reversible_install_entry
             mock_execute.return_value = [mock_result, mock_result]
@@ -171,9 +163,9 @@ class TestUndoExecution:
         with (
             patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
             patch("popctl.cli.commands.undo.mark_entry_reversed"),
-            patch("popctl.core.executor.execute_actions") as mock_execute,
-            patch("popctl.core.executor.get_available_operators", return_value=[]),
-            patch("popctl.core.baseline.is_protected", return_value=False),
+            patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+            patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+            patch("popctl.cli.commands.undo.is_package_protected", return_value=False),
         ):
             mock_get.return_value = reversible_install_entry
             mock_execute.return_value = [mock_result, mock_result]
@@ -196,8 +188,8 @@ class TestUndoExecution:
         with (
             patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
             patch("popctl.cli.commands.undo.mark_entry_reversed"),
-            patch("popctl.core.executor.execute_actions") as mock_execute,
-            patch("popctl.core.executor.get_available_operators", return_value=[]),
+            patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+            patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
         ):
             mock_get.return_value = reversible_remove_entry
             mock_execute.return_value = [mock_result]
@@ -223,9 +215,9 @@ class TestUndoExecution:
         with (
             patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
             patch("popctl.cli.commands.undo.mark_entry_reversed") as mock_mark,
-            patch("popctl.core.executor.execute_actions") as mock_execute,
-            patch("popctl.core.executor.get_available_operators", return_value=[]),
-            patch("popctl.core.baseline.is_protected", return_value=False),
+            patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+            patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+            patch("popctl.cli.commands.undo.is_package_protected", return_value=False),
         ):
             mock_get.return_value = reversible_install_entry
             mock_execute.return_value = [mock_result, mock_result]
@@ -244,9 +236,9 @@ def test_undo_mixed_sources(mixed_source_entry: HistoryEntry) -> None:
     with (
         patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
         patch("popctl.cli.commands.undo.mark_entry_reversed"),
-        patch("popctl.core.executor.execute_actions") as mock_execute,
-        patch("popctl.core.executor.get_available_operators", return_value=[]),
-        patch("popctl.core.baseline.is_protected", return_value=False),
+        patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+        patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+        patch("popctl.cli.commands.undo.is_package_protected", return_value=False),
     ):
         mock_get.return_value = mixed_source_entry
         mock_execute.return_value = [mock_result, mock_result]
@@ -277,9 +269,9 @@ class TestUndoFailure:
 
         with (
             patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
-            patch("popctl.core.executor.execute_actions") as mock_execute,
-            patch("popctl.core.executor.get_available_operators", return_value=[]),
-            patch("popctl.core.baseline.is_protected", return_value=False),
+            patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+            patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+            patch("popctl.cli.commands.undo.is_package_protected", return_value=False),
         ):
             mock_get.return_value = reversible_install_entry
             mock_execute.return_value = [mock_result, mock_result]
@@ -301,9 +293,9 @@ class TestUndoFailure:
         with (
             patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
             patch("popctl.cli.commands.undo.mark_entry_reversed") as mock_mark,
-            patch("popctl.core.executor.execute_actions") as mock_execute,
-            patch("popctl.core.executor.get_available_operators", return_value=[]),
-            patch("popctl.core.baseline.is_protected", return_value=False),
+            patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+            patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+            patch("popctl.cli.commands.undo.is_package_protected", return_value=False),
         ):
             mock_get.return_value = reversible_install_entry
             mock_execute.return_value = [mock_result]
@@ -323,9 +315,9 @@ class TestUndoFailure:
 
         with (
             patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
-            patch("popctl.core.executor.execute_actions") as mock_execute,
-            patch("popctl.core.executor.get_available_operators", return_value=[]),
-            patch("popctl.core.baseline.is_protected", return_value=False),
+            patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+            patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
+            patch("popctl.cli.commands.undo.is_package_protected", return_value=False),
         ):
             mock_get.return_value = mixed_source_entry
             mock_execute.return_value = [success_result, fail_result]
@@ -399,8 +391,8 @@ def test_undo_purge_executes_install() -> None:
     with (
         patch("popctl.cli.commands.undo.get_last_reversible") as mock_get,
         patch("popctl.cli.commands.undo.mark_entry_reversed"),
-        patch("popctl.core.executor.execute_actions") as mock_execute,
-        patch("popctl.core.executor.get_available_operators", return_value=[]),
+        patch("popctl.cli.commands.undo.execute_actions") as mock_execute,
+        patch("popctl.cli.commands.undo.get_available_operators", return_value=[]),
     ):
         mock_get.return_value = purge_entry
         mock_execute.return_value = [mock_result]

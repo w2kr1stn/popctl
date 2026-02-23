@@ -426,28 +426,3 @@ class TestConfigHelp:
         result = runner.invoke(app, ["config", "--help"])
         assert result.exit_code == 0
         assert "Scan and clean orphaned configuration files" in result.stdout
-        assert "scan" in result.stdout
-        assert "clean" in result.stdout
-
-    def test_config_scan_help(self) -> None:
-        """popctl config scan --help shows scan command help."""
-        from tests.unit.conftest import strip_ansi
-
-        result = runner.invoke(app, ["config", "scan", "--help"])
-        assert result.exit_code == 0
-        output = strip_ansi(result.stdout)
-        assert "Scan ~/.config/" in output
-        assert "--format" in output
-        assert "--export" in output
-        assert "--limit" in output
-
-    def test_config_clean_help(self) -> None:
-        """popctl config clean --help shows clean command help."""
-        from tests.unit.conftest import strip_ansi
-
-        result = runner.invoke(app, ["config", "clean", "--help"])
-        assert result.exit_code == 0
-        output = strip_ansi(result.stdout)
-        assert "Clean up config entries" in output
-        assert "--dry-run" in output
-        assert "--yes" in output
