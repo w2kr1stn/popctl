@@ -87,6 +87,25 @@ popctl diff --source apt
 popctl diff --json
 ```
 
+### Apply Manifest Changes
+
+```bash
+# Preview changes (dry-run, default behavior)
+popctl apply --dry-run
+
+# Apply changes with confirmation prompt
+popctl apply
+
+# Apply without confirmation
+popctl apply --yes
+
+# Apply only APT packages
+popctl apply --source apt
+
+# Use purge instead of remove for APT
+popctl apply --purge
+```
+
 ### Command Line Options
 
 ```
@@ -95,6 +114,7 @@ popctl --version        # Show version
 popctl scan --help      # Show scan command help
 popctl init --help      # Show init command help
 popctl diff --help      # Show diff command help
+popctl apply --help     # Show apply command help
 ```
 
 ## Development
@@ -129,7 +149,8 @@ app/popctl/
 │   └── commands/
 │       ├── scan.py      # Scan command implementation
 │       ├── init.py      # Init command implementation
-│       └── diff.py      # Diff command implementation
+│       ├── diff.py      # Diff command implementation
+│       └── apply.py     # Apply command implementation
 ├── core/
 │   ├── theme.py         # Theme management (TOML-based)
 │   ├── paths.py         # XDG-compliant path helpers
@@ -141,7 +162,12 @@ app/popctl/
 ├── models/
 │   ├── package.py       # PackageSource, PackageStatus, ScannedPackage
 │   ├── scan_result.py   # ScanResult, ScanMetadata for JSON export
-│   └── manifest.py      # Manifest schema (Pydantic)
+│   ├── manifest.py      # Manifest schema (Pydantic)
+│   └── action.py        # Action, ActionResult, ActionType
+├── operators/
+│   ├── base.py          # Operator ABC
+│   ├── apt.py           # AptOperator implementation
+│   └── flatpak.py       # FlatpakOperator implementation
 ├── scanners/
 │   ├── base.py          # Scanner ABC
 │   ├── apt.py           # AptScanner implementation
@@ -160,7 +186,7 @@ app/popctl/
 - [x] PoC-4: Diff Engine - Compare manifest vs system
 
 ### MVP Phase
-- [ ] MVP-1: First Apply - Install/remove packages
+- [x] MVP-1: First Apply - Install/remove packages
 - [ ] MVP-2: Claude Advisor - AI-assisted classification
 - [ ] MVP-3: Safety Net - History and undo
 
