@@ -18,6 +18,7 @@ import typer
 from popctl.advisor import (
     AdvisorConfig,
     AgentRunner,
+    DecisionsResult,
     export_prompt_files,
     export_scan_for_advisor,
     is_running_in_container,
@@ -30,6 +31,7 @@ from popctl.advisor.config import (
     save_advisor_config,
 )
 from popctl.core.paths import ensure_exchange_dir, get_manifest_path
+from popctl.models.package import PackageSource
 from popctl.models.scan_result import ScanResult
 from popctl.scanners.apt import AptScanner
 from popctl.scanners.flatpak import FlatpakScanner
@@ -118,7 +120,7 @@ def _scan_system(input_file: Path | None = None) -> ScanResult:
     Raises:
         typer.Exit: If scanning fails or input file is invalid.
     """
-    from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
+    from popctl.models.package import PackageStatus, ScannedPackage
     from popctl.scanners.base import Scanner
 
     if input_file is not None:
@@ -200,6 +202,60 @@ def _show_interactive_instructions(exchange_dir: Path, config: AdvisorConfig) ->
     console.print("[bold]Interactive Mode[/bold]")
     console.print()
     console.print(instructions)
+
+
+def _record_advisor_apply_to_history(
+    decisions: DecisionsResult,  # noqa: F821 - imported locally in apply()
+) -> None:
+    """Record advisor apply decisions to history.
+
+    Creates a single history entry for all classifications applied.
+    Errors during recording are logged but do not interrupt the flow.
+
+    Args:
+        decisions: The decisions result that was applied.
+    """
+    import logging
+
+    from popctl.core.state import StateManager
+    from popctl.models.history import (
+        HistoryActionType,
+        HistoryItem,
+        create_history_entry,
+    )
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Collect all items from decisions
+        items: list[HistoryItem] = []
+
+        for source_str in ("apt", "flatpak"):
+            source_decisions = decisions.packages.get(source_str)
+            if source_decisions is None:
+                continue
+
+            pkg_source = PackageSource(source_str)
+
+            # Add keep decisions
+            for decision in source_decisions.keep:
+                items.append(HistoryItem(name=decision.name, source=pkg_source))
+
+            # Add remove decisions
+            for decision in source_decisions.remove:
+                items.append(HistoryItem(name=decision.name, source=pkg_source))
+
+        if items:
+            entry = create_history_entry(
+                action_type=HistoryActionType.ADVISOR_APPLY,
+                items=items,
+                metadata={"command": "popctl advisor apply"},
+            )
+            StateManager().record_action(entry)
+            logger.debug("Recorded %d advisor apply item(s) to history", len(items))
+
+    except Exception as e:
+        logger.warning("Failed to record advisor apply to history: %s", str(e))
 
 
 @app.command()
@@ -477,6 +533,10 @@ def apply(
         except ManifestError as e:
             print_error(f"Failed to save manifest: {e}")
             raise typer.Exit(code=1) from e
+
+        # Record to history
+        _record_advisor_apply_to_history(decisions)
+        print_info("Classifications recorded to history.")
 
 
 @app.callback(invoke_without_command=True)

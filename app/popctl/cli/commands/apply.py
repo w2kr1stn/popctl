@@ -18,11 +18,18 @@ from popctl.core.manifest import (
     load_manifest,
 )
 from popctl.core.paths import get_manifest_path
+from popctl.core.state import StateManager
 from popctl.models.action import (
     Action,
     ActionResult,
+    ActionType,
     create_install_action,
     create_remove_action,
+)
+from popctl.models.history import (
+    HistoryActionType,
+    HistoryItem,
+    create_history_entry,
 )
 from popctl.models.package import PackageSource
 from popctl.operators.apt import AptOperator
@@ -336,6 +343,71 @@ def _confirm_actions(action_count: int) -> bool:
     )
 
 
+def _map_action_type_to_history(action_type: ActionType) -> HistoryActionType:
+    """Map ActionType to HistoryActionType.
+
+    Args:
+        action_type: The action type from the action model.
+
+    Returns:
+        Corresponding HistoryActionType.
+    """
+    mapping = {
+        ActionType.INSTALL: HistoryActionType.INSTALL,
+        ActionType.REMOVE: HistoryActionType.REMOVE,
+        ActionType.PURGE: HistoryActionType.PURGE,
+    }
+    return mapping[action_type]
+
+
+def _record_actions_to_history(results: list[ActionResult]) -> None:
+    """Record successful actions to history.
+
+    Groups results by action type and records separate history entries
+    for each type. Only successful actions are recorded.
+
+    Errors during history recording are logged but do not interrupt
+    the main apply flow.
+
+    Args:
+        results: List of action results from execution.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        state = StateManager()
+
+        # Group successful results by action type
+        for action_type in [ActionType.INSTALL, ActionType.REMOVE, ActionType.PURGE]:
+            successful_items = [
+                HistoryItem(
+                    name=r.action.package,
+                    source=r.action.source,
+                )
+                for r in results
+                if r.success and r.action.action_type == action_type
+            ]
+
+            if successful_items:
+                entry = create_history_entry(
+                    action_type=_map_action_type_to_history(action_type),
+                    items=successful_items,
+                    metadata={"command": "popctl apply"},
+                )
+                state.record_action(entry)
+                logger.debug(
+                    "Recorded %d %s action(s) to history",
+                    len(successful_items),
+                    action_type.value,
+                )
+
+    except Exception as e:
+        # Log error but don't interrupt the main flow
+        logger.warning("Failed to record actions to history: %s", str(e))
+
+
 @app.callback(invoke_without_command=True)
 def apply_manifest(
     ctx: typer.Context,
@@ -467,6 +539,11 @@ def apply_manifest(
     console.print("\n[bold]Executing actions...[/bold]\n")
 
     results = _execute_actions(actions, available_operators)
+
+    # Record successful actions to history
+    if results:
+        _record_actions_to_history(results)
+        print_info("Actions recorded to history.")
 
     # Show results
     results_table = _create_results_table(results)
