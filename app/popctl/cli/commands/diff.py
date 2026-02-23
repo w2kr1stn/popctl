@@ -9,11 +9,10 @@ from typing import Annotated
 import typer
 from rich.table import Table
 
-from popctl.cli.types import SourceChoice, get_checked_scanners, require_manifest
-from popctl.core.diff import DiffResult, DiffType, compute_diff
+from popctl.cli.types import SourceChoice, compute_system_diff
+from popctl.core.diff import DiffResult, DiffType
 from popctl.utils.formatting import (
     console,
-    print_error,
     print_success,
 )
 
@@ -74,19 +73,7 @@ def diff_packages(
         popctl diff --source apt       # Filter to APT packages
         popctl diff --json             # JSON output for scripting
     """
-    # Load manifest (exits with helpful message if not found)
-    manifest = require_manifest()
-
-    # Get scanners
-    available_scanners = get_checked_scanners(source, silent=json_output)
-
-    # Compute diff
-    source_filter = source.to_source_filter()
-    try:
-        result = compute_diff(manifest, available_scanners, source_filter)
-    except RuntimeError as e:
-        print_error(f"Scan failed: {e}")
-        raise typer.Exit(code=1) from e
+    result = compute_system_diff(source, silent_warnings=json_output)
 
     # JSON output
     if json_output:

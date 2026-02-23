@@ -55,6 +55,18 @@ class DiffEntry:
     version: str | None = None
     description: str | None = None
 
+    def to_dict(self) -> dict[str, str]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, str] = {
+            "name": self.name,
+            "source": self.source,
+        }
+        if self.version is not None:
+            result["version"] = self.version
+        if self.description is not None:
+            result["description"] = self.description
+        return result
+
 
 @dataclass(frozen=True, slots=True)
 class DiffResult:
@@ -104,23 +116,10 @@ class DiffResult:
                 "extra": len(self.extra),
                 "total": self.total_changes,
             },
-            "new": [self._entry_to_dict(e) for e in self.new],
-            "missing": [self._entry_to_dict(e) for e in self.missing],
-            "extra": [self._entry_to_dict(e) for e in self.extra],
+            "new": [e.to_dict() for e in self.new],
+            "missing": [e.to_dict() for e in self.missing],
+            "extra": [e.to_dict() for e in self.extra],
         }
-
-    @staticmethod
-    def _entry_to_dict(entry: DiffEntry) -> dict[str, str]:
-        """Convert a DiffEntry to a dictionary."""
-        result: dict[str, str] = {
-            "name": entry.name,
-            "source": entry.source,
-        }
-        if entry.version is not None:
-            result["version"] = entry.version
-        if entry.description is not None:
-            result["description"] = entry.description
-        return result
 
 
 def compute_diff(

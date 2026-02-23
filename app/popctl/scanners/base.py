@@ -1,13 +1,59 @@
 """Abstract base class for package scanners.
 
 This module defines the Scanner interface that all package source
-scanners must implement.
+scanners must implement, and shared parsing helpers.
 """
 
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 
 from popctl.models.package import PackageSource, ScannedPackage
+
+logger = logging.getLogger(__name__)
+
+
+def parse_tab_fields(
+    line: str,
+    source_label: str,
+    min_fields: int = 2,
+) -> tuple[str, str, list[str]] | None:
+    """Parse a tab-separated line into (name, version, remaining_parts).
+
+    Shared guard-clause logic for APT and Flatpak scanners that both
+    split on tabs, check minimum field count, and validate name/version.
+
+    Args:
+        line: Raw tab-separated line from a package manager.
+        source_label: Label for debug messages (e.g., "dpkg", "flatpak").
+        min_fields: Minimum number of tab-separated fields required.
+
+    Returns:
+        Tuple of (name, version, remaining_parts) on success, None on
+        malformed input.
+    """
+    parts = line.split("\t")
+    if len(parts) < min_fields:
+        logger.debug(
+            "Skipping malformed %s line (parts=%d): %r",
+            source_label,
+            len(parts),
+            line[:100],
+        )
+        return None
+
+    name = parts[0].strip()
+    version = parts[1].strip()
+
+    if not name or not version:
+        logger.debug(
+            "Skipping %s line with empty name/version: %r",
+            source_label,
+            line[:100],
+        )
+        return None
+
+    return name, version, parts
 
 
 class Scanner(ABC):
@@ -23,14 +69,7 @@ class Scanner(ABC):
         ...         print(f"{pkg.name}: {pkg.version}")
     """
 
-    @property
-    @abstractmethod
-    def source(self) -> PackageSource:
-        """Return the package source this scanner handles.
-
-        Returns:
-            PackageSource enum value (APT, FLATPAK, or SNAP)
-        """
+    source: PackageSource
 
     @abstractmethod
     def scan(self) -> Iterator[ScannedPackage]:

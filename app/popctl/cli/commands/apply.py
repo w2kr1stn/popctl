@@ -14,13 +14,12 @@ from popctl.cli.display import (
     print_actions_summary,
     print_results_summary,
 )
-from popctl.cli.types import SourceChoice, get_checked_scanners, require_manifest
-from popctl.core.actions import diff_to_actions
-from popctl.core.diff import compute_diff
-from popctl.core.executor import execute_actions, get_available_operators, record_actions_to_history
+from popctl.cli.types import SourceChoice, compute_system_diff
+from popctl.core.diff import diff_to_actions
+from popctl.core.executor import execute_actions, record_actions_to_history
+from popctl.operators import get_available_operators
 from popctl.utils.formatting import (
     console,
-    print_error,
     print_info,
     print_success,
 )
@@ -87,19 +86,8 @@ def apply_manifest(
         popctl apply --source apt       # Only APT packages
         popctl apply --purge            # Remove APT packages with configs
     """
-    # Load manifest (exits with helpful message if not found)
-    manifest = require_manifest()
-
-    # Get scanners and check availability
-    available_scanners = get_checked_scanners(source)
-
-    # Compute diff
-    source_filter = source.to_source_filter()
-    try:
-        diff_result = compute_diff(manifest, available_scanners, source_filter)
-    except RuntimeError as e:
-        print_error(f"Scan failed: {e}")
-        raise typer.Exit(code=1) from e
+    # Compute diff (exits on failure)
+    diff_result = compute_system_diff(source)
 
     # Convert diff to actions
     actions = diff_to_actions(diff_result, purge=purge)

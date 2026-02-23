@@ -11,7 +11,6 @@ Commands:
 """
 
 from datetime import UTC, datetime
-from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
@@ -19,36 +18,31 @@ import typer
 from rich.table import Table
 
 from popctl.advisor import (
-    AdvisorConfig,
     AgentRunner,
-    create_session_workspace,
     find_latest_decisions,
     import_decisions,
 )
 from popctl.advisor.config import (
-    AdvisorConfigError,
-    load_advisor_config,
-    save_advisor_config,
+    load_or_create_config,
 )
-from popctl.advisor.exchange import EXCHANGE_DIR, apply_decisions_to_manifest
-from popctl.advisor.history import record_advisor_apply_to_history
+from popctl.advisor.exchange import (
+    apply_decisions_to_manifest,
+    record_advisor_apply_to_history,
+)
 from popctl.advisor.runner import MANUAL_MODE_SENTINEL
 from popctl.advisor.scanning import scan_system
-from popctl.advisor.workspace import ensure_advisor_sessions_dir
+from popctl.advisor.workspace import create_session_workspace, ensure_advisor_sessions_dir
+from popctl.cli.types import ProviderChoice, require_manifest
 from popctl.core.manifest import (
     ManifestError,
-    ManifestNotFoundError,
-    load_manifest,
     save_manifest,
 )
 from popctl.core.paths import get_manifest_path, get_state_dir
-from popctl.models.scan_result import ScanResult
 from popctl.utils.formatting import (
     console,
     print_error,
     print_info,
     print_success,
-    print_warning,
 )
 
 app = typer.Typer(
@@ -59,70 +53,43 @@ app = typer.Typer(
 )
 
 
-class ProviderChoice(str, Enum):
-    """Available AI providers."""
-
-    CLAUDE = "claude"
-    GEMINI = "gemini"
-
-
-def load_or_create_config(
-    provider: ProviderChoice | None = None,
-    model: str | None = None,
-) -> AdvisorConfig:
-    """Load existing config or create default with CLI overrides.
+def _prepare_session(
+    provider: ProviderChoice | None,
+    model: str | None,
+    input_file: Path | None,
+) -> tuple[AgentRunner, Path]:
+    """Load config, scan system, and create session workspace.
 
     Args:
-        provider: Optional provider override from CLI.
-        model: Optional model override from CLI.
+        provider: AI provider choice (or None for default).
+        model: Model override (or None for default).
+        input_file: Existing scan.json to use instead of scanning.
 
     Returns:
-        AdvisorConfig with applied overrides.
+        Tuple of (configured AgentRunner, workspace directory path).
+
+    Raises:
+        typer.Exit: If scanning fails.
     """
+    config = load_or_create_config(provider.value if provider else None, model)
+    print_info(f"Using provider: {config.provider}, model: {config.effective_model}")
+
     try:
-        config = load_advisor_config()
-    except AdvisorConfigError:
-        config = AdvisorConfig()
-        try:
-            save_advisor_config(config)
-            print_info("Created default advisor configuration.")
-        except AdvisorConfigError as e:
-            print_warning(f"Could not save default config: {e}")
+        scan_result = scan_system(input_file)
+    except RuntimeError as e:
+        print_error(str(e))
+        raise typer.Exit(code=1) from None
 
-    # Apply CLI overrides
-    if provider is not None or model is not None:
-        updates: dict[str, str] = {}
-        if provider is not None:
-            updates["provider"] = provider.value
-        if model is not None:
-            updates["model"] = model
-        config = config.model_copy(update=updates)
-
-    return config
-
-
-def _create_workspace(scan_result: ScanResult) -> Path:
-    """Create a session workspace for the scan result.
-
-    Args:
-        scan_result: Scan result with package data.
-
-    Returns:
-        Path to the created workspace directory.
-    """
     sessions_dir = ensure_advisor_sessions_dir()
     manifest_path = get_manifest_path()
-    manifest_for_workspace = manifest_path if manifest_path.exists() else None
-
     memory_path = get_state_dir() / "advisor" / "memory.md"
-    memory_for_workspace = memory_path if memory_path.exists() else None
-
-    return create_session_workspace(
+    workspace_dir = create_session_workspace(
         scan_result,
         sessions_dir,
-        manifest_path=manifest_for_workspace,
-        memory_path=memory_for_workspace,
+        manifest_path=manifest_path if manifest_path.exists() else None,
+        memory_path=memory_path if memory_path.exists() else None,
     )
+    return AgentRunner(config), workspace_dir
 
 
 @app.command()
@@ -162,23 +129,13 @@ def classify(
         popctl advisor classify -p gemini    # Use Gemini
         popctl advisor classify -m opus      # Use Claude Opus
     """
-    config = load_or_create_config(provider, model)
-    print_info(f"Using provider: {config.provider}, model: {config.effective_model}")
-
-    try:
-        scan_result = scan_system(input_file)
-    except RuntimeError as e:
-        print_error(str(e))
-        raise typer.Exit(code=1) from None
-
-    workspace_dir = _create_workspace(scan_result)
+    agent_runner, workspace_dir = _prepare_session(provider, model, input_file)
     print_info(f"Workspace: {workspace_dir}")
 
     print_info("Running AI agent in headless mode...")
     console.print()
 
-    runner = AgentRunner(config)
-    result = runner.run_headless(workspace_dir)
+    result = agent_runner.run_headless(workspace_dir)
 
     if result.success:
         print_success("Classification completed successfully.")
@@ -235,20 +192,10 @@ def session(
         popctl advisor session               # Interactive session
         popctl advisor session -p gemini     # Use Gemini
     """
-    config = load_or_create_config(provider, model)
-    print_info(f"Using provider: {config.provider}, model: {config.effective_model}")
-
-    try:
-        scan_result = scan_system(input_file)
-    except RuntimeError as e:
-        print_error(str(e))
-        raise typer.Exit(code=1) from None
-
-    workspace_dir = _create_workspace(scan_result)
+    agent_runner, workspace_dir = _prepare_session(provider, model, input_file)
     print_info(f"Session workspace: {workspace_dir}")
 
-    runner = AgentRunner(config)
-    result = runner.launch_interactive(workspace_dir)
+    result = agent_runner.launch_interactive(workspace_dir)
 
     if result.success:
         print_success("Session completed.")
@@ -296,17 +243,18 @@ def apply(
     if input_file is not None:
         decisions_path = input_file
     else:
-        # Try latest session workspace first, then legacy exchange dir
         sessions_dir = ensure_advisor_sessions_dir()
         latest = find_latest_decisions(sessions_dir)
-        decisions_path = latest if latest is not None else EXCHANGE_DIR / "decisions.toml"
+        if latest is None:
+            print_error("No advisor decisions found. Run 'popctl advisor classify' first.")
+            raise typer.Exit(code=1)
+        decisions_path = latest
 
     print_info(f"Decisions from: {decisions_path}")
 
     # Step 2: Load decisions
-    # import_decisions expects the directory containing decisions.toml
     try:
-        decisions = import_decisions(decisions_path.parent)
+        decisions = import_decisions(decisions_path)
     except FileNotFoundError as err:
         print_error(f"decisions.toml not found at {decisions_path}")
         print_info("Run 'popctl advisor classify' first to generate classifications.")
@@ -316,14 +264,7 @@ def apply(
         raise typer.Exit(code=1) from e
 
     # Step 3: Load current manifest
-    try:
-        manifest = load_manifest()
-    except ManifestNotFoundError as err:
-        print_error("No manifest found. Run 'popctl init' first to create a manifest.")
-        raise typer.Exit(code=1) from err
-    except ManifestError as e:
-        print_error(f"Failed to load manifest: {e}")
-        raise typer.Exit(code=1) from e
+    manifest = require_manifest()
 
     # Step 4: Apply decisions and collect statistics
     stats, ask_packages = apply_decisions_to_manifest(manifest, decisions)

@@ -9,19 +9,17 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.table import Table
 
-from popctl.cli.display import export_orphan_results, print_deletion_plan
-from popctl.cli.manifest import require_manifest
-from popctl.cli.types import OutputFormat
-from popctl.configs import (
-    ConfigActionResult,
-    ConfigOperator,
-    ConfigScanner,
-    is_protected_config,
+from popctl.cli.display import (
+    export_orphan_results,
+    print_deletion_plan,
+    print_deletion_results,
+    print_orphan_table,
 )
-from popctl.configs.models import ConfigStatus, ScannedConfig
-from popctl.domain.history import record_domain_deletions
+from popctl.cli.types import OutputFormat, collect_domain_orphans, require_manifest
+from popctl.configs import ConfigOperator
+from popctl.core.state import record_domain_deletions
+from popctl.domain.protected import is_protected
 from popctl.utils.formatting import (
     console,
     format_size,
@@ -66,47 +64,26 @@ def scan(
     ] = None,
 ) -> None:
     """Scan ~/.config/ and shell dotfiles for orphaned configurations."""
-    scanner = ConfigScanner()
-
-    # Collect orphans only (ORPHAN status -- scanner already filters, but be explicit)
-    orphans: list[ScannedConfig] = []
-    for config in scanner.scan():
-        if config.status == ConfigStatus.ORPHAN:
-            orphans.append(config)
+    orphans = collect_domain_orphans("configs")
 
     if not orphans:
         print_success("Configs are clean. No orphaned configurations found.")
         return
-
-    # Sort by confidence descending (most confident orphans first)
-    orphans.sort(key=lambda c: c.confidence, reverse=True)
 
     # Apply limit
     display_orphans = orphans[:limit] if limit else orphans
 
     # Handle export
     if export_path is not None:
-        data = [
-            {
-                "path": c.path,
-                "config_type": c.config_type.value,
-                "status": c.status.value,
-                "size_bytes": c.size_bytes,
-                "mtime": c.mtime,
-                "orphan_reason": c.orphan_reason.value if c.orphan_reason else None,
-                "confidence": c.confidence,
-            }
-            for c in orphans
-        ]
-        export_orphan_results(data, export_path)  # Export ALL, not limited
+        export_orphan_results([c.to_dict() for c in orphans], export_path)
 
     # JSON output
     if output_format == OutputFormat.JSON:
-        _print_json(display_orphans)
+        console.print_json(json.dumps([c.to_dict() for c in display_orphans]))
         return
 
     # Table output (default)
-    _print_table(display_orphans)
+    print_orphan_table("Orphaned Configuration Entries", display_orphans)
 
     # Summary
     total_size = sum(c.size_bytes or 0 for c in orphans)
@@ -140,7 +117,7 @@ def clean(
     # Check for protected configs
     paths_to_delete: list[str] = []
     for path_str in remove_paths:
-        if is_protected_config(path_str):
+        if is_protected(path_str, "configs"):
             print_warning(f"Skipping protected config: {path_str}")
             continue
         paths_to_delete.append(path_str)
@@ -167,7 +144,7 @@ def clean(
     results = operator.delete(paths_to_delete)
 
     # Display results
-    _print_deletion_results(results)
+    print_deletion_results(results, show_backup=True)
 
     # Record to history (only actual deletions, not dry-run)
     if not dry_run:
@@ -182,74 +159,3 @@ def clean(
     # Exit with error if any deletion failed
     if any(not r.success for r in results):
         raise typer.Exit(code=1)
-
-
-# === Private helper functions ===
-
-
-def _print_table(orphans: list[ScannedConfig]) -> None:
-    """Display orphans as a Rich table."""
-    table = Table(title="Orphaned Configuration Entries", show_lines=False)
-    table.add_column("Path", style="bold")
-    table.add_column("Type", width=10)
-    table.add_column("Size", justify="right", width=10)
-    table.add_column("Confidence", justify="right", width=10)
-    table.add_column("Reason", style="dim")
-
-    for c in orphans:
-        size_str = format_size(c.size_bytes) if c.size_bytes else "-"
-        conf_str = f"{c.confidence:.0%}"
-        reason = c.orphan_reason.value if c.orphan_reason else "-"
-        table.add_row(c.path, c.config_type.value, size_str, conf_str, reason)
-
-    console.print(table)
-
-
-def _print_json(orphans: list[ScannedConfig]) -> None:
-    """Display orphans as JSON."""
-    data = [
-        {
-            "path": c.path,
-            "config_type": c.config_type.value,
-            "status": c.status.value,
-            "size_bytes": c.size_bytes,
-            "mtime": c.mtime,
-            "orphan_reason": c.orphan_reason.value if c.orphan_reason else None,
-            "confidence": c.confidence,
-        }
-        for c in orphans
-    ]
-    console.print_json(json.dumps(data))
-
-
-def _print_deletion_results(results: list[ConfigActionResult]) -> None:
-    """Display deletion results with backup paths."""
-    table = Table(title="Deletion Results", show_lines=False)
-    table.add_column("Path", style="bold")
-    table.add_column("Status", width=10)
-    table.add_column("Backup", style="dim")
-
-    for r in results:
-        if r.dry_run:
-            status = "[info]dry-run[/]"
-            backup = "-"
-        elif r.success:
-            status = "[success]deleted[/]"
-            backup = r.backup_path or "no backup"
-        else:
-            status = "[error]failed[/]"
-            backup = r.error or "Unknown error"
-        table.add_row(r.path, status, backup)
-
-    console.print(table)
-
-    success_count = sum(1 for r in results if r.success)
-    fail_count = sum(1 for r in results if not r.success and not r.dry_run)
-    dry_count = sum(1 for r in results if r.dry_run)
-
-    if dry_count:
-        print_info(f"Dry-run: {dry_count} config(s) would be deleted.")
-    elif fail_count:
-        print_warning(f"{success_count} succeeded, {fail_count} failed")
-    else:
-        print_success(f"All {success_count} config(s) processed successfully.")

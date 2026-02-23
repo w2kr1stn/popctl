@@ -1,116 +1,39 @@
-"""File exchange for AI-assisted package classification.
+"""Exchange models and import logic for AI-assisted classification.
 
-This module handles the file-based communication protocol between popctl
-and AI advisors (Claude Code / Gemini CLI). It provides functions to:
+This module defines the Pydantic models for the file-based communication
+protocol between popctl and AI advisors, and provides import/validation
+of advisor decisions.
 
-- Import and validate decisions.toml from the AI agent
-- Clean up exchange directory after processing
-
-File Exchange Protocol:
-    popctl writes:
-      - /tmp/popctl-exchange/scan.json       (package data)
-      - /tmp/popctl-exchange/prompt.txt      (headless mode prompt)
-
-    AI agent writes:
-      - /tmp/popctl-exchange/decisions.toml  (classification results)
+The primary workflow uses workspace-based sessions (see advisor/workspace.py).
 """
 
 from __future__ import annotations
 
+import logging
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from popctl.advisor.prompts import CATEGORIES
-from popctl.models.manifest import Manifest, PackageEntry, PackageSourceType
-from popctl.models.package import PACKAGE_SOURCE_KEYS
+from popctl.core.state import record_action
+from popctl.models.history import (
+    HistoryActionType,
+    HistoryItem,
+    create_history_entry,
+)
+from popctl.models.manifest import (
+    DomainConfig,
+    DomainEntry,
+    Manifest,
+    PackageEntry,
+    PackageSourceType,
+)
+from popctl.models.package import PACKAGE_SOURCE_KEYS, PackageSource
+from popctl.utils.formatting import print_warning
 
-# Exchange directory for file-based communication with AI advisors
-EXCHANGE_DIR = Path("/tmp/popctl-exchange")  # noqa: S108
-
-# =============================================================================
-# Export Models
-# =============================================================================
-
-
-class PackageScanEntry(BaseModel):
-    """Single package entry in scan export.
-
-    Represents a package in the scan.json export format, containing
-    the essential information needed for AI classification.
-
-    Attributes:
-        name: Package name (e.g., "firefox", "com.spotify.Client").
-        source: Package source ("apt" or "flatpak").
-        version: Installed version string.
-        status: Installation status ("manual" or "auto").
-        description: Human-readable package description.
-        size_bytes: Installed size in bytes.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    name: str
-    source: str  # "apt" | "flatpak"
-    version: str
-    status: str  # "manual" | "auto"
-    description: str | None = None
-    size_bytes: int | None = None
-
-
-class OrphanEntry(BaseModel):
-    """Single orphan entry in scan export (filesystem or config).
-
-    Represents an orphaned path in the scan.json export format,
-    containing the information needed for AI classification.
-
-    Attributes:
-        path: Path (tilde-prefixed, e.g., "~/.config/vlc").
-        path_type: Type of path ("directory", "file", "symlink", "dead_symlink").
-        size_bytes: Size in bytes (None if unavailable).
-        mtime: Last modification time in ISO 8601 format (None if unavailable).
-        parent_target: Scan target root directory (filesystem only, None for configs).
-        orphan_reason: Reason for orphan classification.
-        confidence: Orphan confidence score (0.0 to 1.0).
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    path: str
-    path_type: str
-    size_bytes: int | None = None
-    mtime: str | None = None
-    parent_target: str | None = None
-    orphan_reason: str
-    confidence: float
-
-
-class ScanExport(BaseModel):
-    """Complete scan export for AI agent.
-
-    This model defines the structure of scan.json that is written to
-    the exchange directory for the AI agent to read.
-
-    Attributes:
-        scan_date: ISO format timestamp of the scan.
-        system: System information (hostname, os, manifest_path).
-        summary: Package count summary.
-        packages: Packages grouped by classification status.
-        filesystem: Optional filesystem orphan data for classification.
-        configs: Optional config orphan data for classification.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    scan_date: str  # ISO format
-    system: dict[str, str]  # hostname, os, manifest_path
-    summary: dict[str, int]  # total_packages, manual_apt, etc.
-    packages: dict[str, list[PackageScanEntry]]  # "unknown"
-    filesystem_orphans: list[OrphanEntry] = Field(default_factory=lambda: [])
-    config_orphans: list[OrphanEntry] = Field(default_factory=lambda: [])
-
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # Import Models (decisions.toml)
@@ -226,14 +149,14 @@ class DecisionsResult(BaseModel):
 # =============================================================================
 
 
-def import_decisions(exchange_dir: Path) -> DecisionsResult:
-    """Import and validate decisions.toml from exchange directory.
+def import_decisions(decisions_path: Path) -> DecisionsResult:
+    """Import and validate a decisions.toml file.
 
     Reads the decisions.toml file created by the AI agent and validates
     it against the expected schema using Pydantic.
 
     Args:
-        exchange_dir: Directory containing the decisions.toml file.
+        decisions_path: Path to the decisions.toml file.
 
     Returns:
         Validated DecisionsResult containing all package decisions.
@@ -243,13 +166,10 @@ def import_decisions(exchange_dir: Path) -> DecisionsResult:
         ValueError: If TOML is invalid or doesn't match schema.
 
     Example:
-        >>> from popctl.advisor.exchange import EXCHANGE_DIR
-        >>> decisions = import_decisions(EXCHANGE_DIR)
+        >>> decisions = import_decisions(Path("/tmp/decisions.toml"))
         >>> for pkg in decisions.packages["apt"].keep:
         ...     print(f"Keep: {pkg.name} ({pkg.reason})")
     """
-    decisions_path = exchange_dir / "decisions.toml"
-
     # Check if file exists
     if not decisions_path.exists():
         msg = f"decisions.toml not found at {decisions_path}"
@@ -319,7 +239,6 @@ def apply_decisions_to_manifest(
         for decision in source_decisions.keep:
             manifest.packages.keep[decision.name] = PackageEntry(
                 source=source,  # type: ignore[arg-type]
-                status="keep",
                 reason=decision.reason,
             )
             stats[source]["keep"] += 1
@@ -327,7 +246,6 @@ def apply_decisions_to_manifest(
         for decision in source_decisions.remove:
             manifest.packages.remove[decision.name] = PackageEntry(
                 source=source,  # type: ignore[arg-type]
-                status="remove",
                 reason=decision.reason,
             )
             stats[source]["remove"] += 1
@@ -337,3 +255,89 @@ def apply_decisions_to_manifest(
             stats[source]["ask"] += 1
 
     return stats, ask_packages
+
+
+def apply_domain_decisions_to_manifest(
+    manifest: Manifest,
+    domain: Literal["filesystem", "configs"],
+    decisions: DomainDecisions,
+) -> list[PathDecision]:
+    """Apply domain advisor decisions to a manifest.
+
+    Merges keep/remove classifications into the manifest's domain section,
+    preserving existing entries not reclassified by the advisor.
+
+    Args:
+        manifest: Manifest to update in place.
+        domain: Which domain section to update.
+        decisions: Domain decisions from the advisor.
+
+    Returns:
+        List of "ask" decisions requiring manual user input.
+    """
+    keep_entries: dict[str, DomainEntry] = {}
+    remove_entries: dict[str, DomainEntry] = {}
+
+    for decision in decisions.keep:
+        keep_entries[decision.path] = DomainEntry(
+            reason=decision.reason,
+            category=decision.category,
+        )
+    for decision in decisions.remove:
+        remove_entries[decision.path] = DomainEntry(
+            reason=decision.reason,
+            category=decision.category,
+        )
+
+    existing = getattr(manifest, domain)
+    if existing:
+        for path, entry in existing.keep.items():
+            if path not in keep_entries and path not in remove_entries:
+                keep_entries[path] = entry
+        for path, entry in existing.remove.items():
+            if path not in keep_entries and path not in remove_entries:
+                remove_entries[path] = entry
+
+    setattr(manifest, domain, DomainConfig(keep=keep_entries, remove=remove_entries))
+    return list(decisions.ask)
+
+
+def record_advisor_apply_to_history(
+    decisions: DecisionsResult,
+) -> None:
+    """Record advisor apply decisions to history.
+
+    Creates a single history entry for all classifications applied.
+    Errors during recording are logged but do not interrupt the flow.
+
+    Args:
+        decisions: The decisions result that was applied.
+    """
+    try:
+        items: list[HistoryItem] = []
+
+        for source_str in PACKAGE_SOURCE_KEYS:
+            source_decisions = decisions.packages.get(source_str)  # type: ignore[arg-type]
+            if source_decisions is None:
+                continue
+
+            pkg_source = PackageSource(source_str)
+
+            for decision in source_decisions.keep:
+                items.append(HistoryItem(name=decision.name, source=pkg_source))
+
+            for decision in source_decisions.remove:
+                items.append(HistoryItem(name=decision.name, source=pkg_source))
+
+        if items:
+            entry = create_history_entry(
+                action_type=HistoryActionType.ADVISOR_APPLY,
+                items=items,
+                metadata={"command": "popctl advisor apply"},
+            )
+            record_action(entry)
+            logger.debug("Recorded %d advisor apply item(s) to history", len(items))
+
+    except (OSError, RuntimeError) as e:
+        logger.warning("Failed to record advisor apply to history: %s", str(e))
+        print_warning(f"Could not record classifications to history: {e}")

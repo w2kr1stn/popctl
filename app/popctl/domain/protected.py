@@ -9,35 +9,42 @@ import fnmatch
 from pathlib import Path
 from typing import Literal
 
+_COMMON_PATTERNS: tuple[str, ...] = (
+    # Desktop environment
+    "~/.config/cosmic*",
+    "~/.config/dconf",
+    "~/.config/gtk-*",
+    "~/.config/systemd",
+    # XDG essentials
+    "~/.config/autostart",
+    "~/.config/mimeapps.list",
+    # Security
+    "~/.ssh/*",
+    "~/.gnupg/*",
+    "~/.gpg/*",
+    # popctl itself
+    "~/.config/popctl",
+    # Container runtime
+    "~/.config/docker",
+)
+
 PROTECTED_PATTERNS: dict[str, tuple[str, ...]] = {
     "filesystem": (
-        # SSH and security
-        "~/.ssh/*",
-        "~/.gnupg/*",
-        "~/.gpg/*",
+        *_COMMON_PATTERNS,
         # Shell config
         "~/.config/zsh",
         "~/.config/bash",
         # XDG directories
-        "~/.config/autostart",
-        "~/.config/mimeapps.list",
         "~/.local/share/applications",
         "~/.local/share/icons",
         "~/.local/share/fonts",
-        # Desktop environment
-        "~/.config/cosmic*",
-        "~/.config/dconf",
-        "~/.config/gtk-*",
-        "~/.config/systemd",
-        # popctl itself
-        "~/.config/popctl",
+        # popctl state
         "~/.local/share/popctl",
         "~/.local/state/popctl",
         # Package manager data
         "~/.local/share/flatpak",
         "~/.local/share/snap",
-        # Container runtime
-        "~/.config/docker",
+        # Container runtime data
         "~/.local/share/docker",
         "~/.local/share/containers",
         # Keyrings
@@ -61,31 +68,17 @@ PROTECTED_PATTERNS: dict[str, tuple[str, ...]] = {
         "/etc/pam.d/*",
     ),
     "configs": (
-        # Desktop environment
-        "~/.config/cosmic*",
-        "~/.config/dconf",
-        "~/.config/gtk-*",
-        "~/.config/systemd",
-        # XDG essentials
-        "~/.config/autostart",
-        "~/.config/mimeapps.list",
-        # Security
+        *_COMMON_PATTERNS,
+        # Security directories (in addition to globs from _COMMON_PATTERNS)
         "~/.ssh",
-        "~/.ssh/*",
         "~/.gnupg",
-        "~/.gnupg/*",
         "~/.gpg",
-        "~/.gpg/*",
         # Shell configs
         "~/.bashrc",
         "~/.bash_profile",
         "~/.profile",
         "~/.zshrc",
         "~/.zprofile",
-        # popctl itself
-        "~/.config/popctl",
-        # Container runtime
-        "~/.config/docker",
         # Package managers
         "~/.config/flatpak",
     ),

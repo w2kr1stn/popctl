@@ -4,14 +4,11 @@ Scans installed packages using dpkg-query and determines
 installation status using apt-mark.
 """
 
-import logging
 from collections.abc import Iterator
 
 from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
-from popctl.scanners.base import Scanner
+from popctl.scanners.base import Scanner, parse_tab_fields
 from popctl.utils.shell import command_exists, run_command
-
-logger = logging.getLogger(__name__)
 
 
 class AptScanner(Scanner):
@@ -24,10 +21,7 @@ class AptScanner(Scanner):
     # dpkg-query format string: Package, Version, Installed-Size (KB), Description
     _DPKG_FORMAT = "${Package}\\t${Version}\\t${Installed-Size}\\t${binary:Summary}\\n"
 
-    @property
-    def source(self) -> PackageSource:
-        """Return APT as the package source."""
-        return PackageSource.APT
+    source = PackageSource.APT
 
     def is_available(self) -> bool:
         """Check if dpkg and apt-mark are available."""
@@ -97,17 +91,11 @@ class AptScanner(Scanner):
         Returns:
             ScannedPackage if parsing succeeds, None otherwise.
         """
-        parts = line.split("\t")
-        if len(parts) < 2:
-            logger.debug("Skipping malformed dpkg line (parts=%d): %r", len(parts), line[:100])
+        parsed = parse_tab_fields(line, "dpkg")
+        if parsed is None:
             return None
 
-        name = parts[0].strip()
-        version = parts[1].strip()
-
-        if not name or not version:
-            logger.debug("Skipping dpkg line with empty name/version: %r", line[:100])
-            return None
+        name, version, parts = parsed
 
         # Parse optional fields
         size_bytes: int | None = None

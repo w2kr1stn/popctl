@@ -4,21 +4,19 @@ Lists installed packages from various package managers.
 """
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from popctl.cli.types import OutputFormat, SourceChoice, get_scanners
+from popctl.cli.display import create_package_table, format_package_row
+from popctl.cli.types import OutputFormat, SourceChoice, get_checked_scanners
 from popctl.models.package import PackageStatus, ScannedPackage
-from popctl.models.scan_result import ScanResult
 from popctl.utils.formatting import (
     console,
-    create_package_table,
-    format_package_row,
     print_error,
     print_info,
-    print_warning,
 )
 
 app = typer.Typer(
@@ -27,26 +25,8 @@ app = typer.Typer(
 )
 
 
-def _get_source_title(source: SourceChoice, manual_only: bool) -> str:
-    """Generate table title based on source and filter options.
-
-    Args:
-        source: The source choice.
-        manual_only: Whether only manual packages are shown.
-
-    Returns:
-        Title string for the table.
-    """
-    prefix = "Manually Installed Packages" if manual_only else "Installed Packages"
-
-    if source == SourceChoice.ALL:
-        return prefix
-    return f"{prefix} ({source.value.upper()})"
-
-
 @app.callback(invoke_without_command=True)
 def scan_packages(
-    ctx: typer.Context,
     source: Annotated[
         SourceChoice,
         typer.Option(
@@ -111,23 +91,8 @@ def scan_packages(
         popctl scan --export scan.json      # Export to JSON file
         popctl scan --limit 20              # Show first 20 packages
     """
-    # Skip if a subcommand is being invoked
-    if ctx.invoked_subcommand is not None:
-        return
-
-    scanners = get_scanners(source)
-    available_sources: list[str] = []
-
-    # Check availability of requested scanners
-    for scanner in scanners:
-        if scanner.is_available():
-            available_sources.append(scanner.source.value)
-        else:
-            print_warning(f"{scanner.source.value.upper()} package manager is not available.")
-
-    if not available_sources:
-        print_error("No package managers are available on this system.")
-        raise typer.Exit(code=1)
+    scanners = get_checked_scanners(source)
+    available_sources = [s.source.value for s in scanners]
 
     # Collect packages from all available sources
     packages: list[ScannedPackage] = []
@@ -137,9 +102,6 @@ def scan_packages(
     counts_by_source: dict[str, dict[str, int]] = {}
 
     for scanner in scanners:
-        if not scanner.is_available():
-            continue
-
         source_name = scanner.source.value
         counts_by_source[source_name] = {"total": 0, "manual": 0, "auto": 0}
 
@@ -175,14 +137,10 @@ def scan_packages(
             print_error(f"Export path is a directory: {export_path}")
             raise typer.Exit(code=1)
 
-        scan_result = ScanResult.create(
-            packages=packages,
-            sources=available_sources,
-            manual_only=manual_only,
-        )
         try:
+            export_data = _packages_to_json(packages, available_sources, manual_only)
             export_path.parent.mkdir(parents=True, exist_ok=True)
-            export_path.write_text(json.dumps(scan_result.to_dict(), indent=2))
+            export_path.write_text(json.dumps(export_data, indent=2))
             print_info(f"Scan results exported to {export_path}")
         except OSError as e:
             print_error(f"Failed to export: {e}")
@@ -205,18 +163,17 @@ def scan_packages(
 
     # JSON output format
     if output_format == OutputFormat.JSON:
-        scan_result = ScanResult.create(
-            packages=packages[:limit] if limit else packages,
-            sources=available_sources,
-            manual_only=manual_only,
+        display_pkgs = packages[:limit] if limit else packages
+        console.print_json(
+            json.dumps(_packages_to_json(display_pkgs, available_sources, manual_only))
         )
-        console.print_json(json.dumps(scan_result.to_dict()))
         return
 
     # Table output format (default)
     display_packages = packages[:limit] if limit else packages
 
-    title = _get_source_title(source, manual_only)
+    prefix = "Manually Installed Packages" if manual_only else "Installed Packages"
+    title = prefix if source == SourceChoice.ALL else f"{prefix} ({source.value.upper()})"
     table = create_package_table(title)
 
     for pkg in display_packages:
@@ -246,3 +203,29 @@ def scan_packages(
         summary_parts.append(f"[{', '.join(source_parts)}]")
 
     console.print(f"\n[dim]{' '.join(summary_parts)}[/]")
+
+
+def _packages_to_json(
+    packages: list[ScannedPackage],
+    sources: list[str],
+    manual_only: bool,
+) -> dict[str, object]:
+    """Convert packages to JSON-serializable dict for export."""
+    return {
+        "metadata": {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "sources": sources,
+            "manual_only": manual_only,
+        },
+        "packages": [
+            {
+                "name": p.name,
+                "source": p.source.value,
+                "version": p.version,
+                "status": p.status.value,
+                "description": p.description,
+                "size_bytes": p.size_bytes,
+            }
+            for p in packages
+        ],
+    }

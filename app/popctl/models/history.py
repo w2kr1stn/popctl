@@ -189,7 +189,7 @@ def create_history_entry(
     action_type: HistoryActionType,
     items: list[HistoryItem],
     reversible: bool = True,
-    metadata: dict[str, Any] | None = None,
+    metadata: dict[str, str] | None = None,
 ) -> HistoryEntry:
     """Factory function to create a new HistoryEntry.
 
@@ -205,17 +205,13 @@ def create_history_entry(
         New HistoryEntry with auto-generated ID and timestamp.
 
     Raises:
-        ValueError: If items list is empty.
+        ValueError: If items list is empty (via HistoryEntry validation).
     """
-    if not items:
-        msg = "Cannot create history entry with no items"
-        raise ValueError(msg)
-
     return HistoryEntry(
         id=uuid.uuid4().hex[:12],
         timestamp=datetime.now(UTC).isoformat(),
         action_type=action_type,
         items=tuple(items),
         reversible=reversible,
-        metadata=metadata or {},
+        metadata=dict(metadata) if metadata else {},
     )

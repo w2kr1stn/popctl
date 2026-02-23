@@ -3,6 +3,7 @@
 Provides safe subprocess execution with proper error handling.
 """
 
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -31,7 +32,6 @@ class CommandResult:
 def run_command(
     args: list[str],
     *,
-    check: bool = False,
     timeout: float | None = 60.0,
     cwd: str | None = None,
 ) -> CommandResult:
@@ -39,7 +39,6 @@ def run_command(
 
     Args:
         args: Command and arguments to execute.
-        check: If True, raise CalledProcessError on non-zero exit.
         timeout: Maximum time in seconds to wait for command.
         cwd: Working directory for the command. If None, uses current directory.
 
@@ -47,7 +46,6 @@ def run_command(
         CommandResult with stdout, stderr, and returncode.
 
     Raises:
-        subprocess.CalledProcessError: If check=True and command fails.
         subprocess.TimeoutExpired: If command exceeds timeout.
         FileNotFoundError: If command executable is not found.
     """
@@ -55,7 +53,7 @@ def run_command(
         args,
         capture_output=True,
         text=True,
-        check=check,
+        check=False,
         timeout=timeout,
         cwd=cwd,
     )
@@ -102,8 +100,6 @@ def run_interactive(
         FileNotFoundError: If command executable is not found.
         OSError: If command cannot be executed.
     """
-    import os
-
     full_env = {**os.environ, **(env or {})}
     result = subprocess.run(
         args,

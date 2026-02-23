@@ -23,7 +23,7 @@ from popctl.advisor.exchange import (
 )
 from popctl.advisor.runner import MANUAL_MODE_SENTINEL
 from popctl.advisor.scanning import scan_system
-from popctl.advisor.workspace import create_full_session_workspace
+from popctl.advisor.workspace import create_session_workspace, ensure_advisor_sessions_dir
 from popctl.cli.display import (
     create_actions_table,
     create_results_table,
@@ -46,6 +46,7 @@ from popctl.core.manifest import (
     save_manifest,
     scan_and_create_manifest,
 )
+from popctl.core.paths import get_manifest_path, get_state_dir
 from popctl.core.state import record_domain_deletions
 from popctl.domain.models import ScannedEntry
 from popctl.domain.protected import is_protected
@@ -140,8 +141,14 @@ def _invoke_advisor(
         return None
 
     try:
-        workspace_dir = create_full_session_workspace(
+        sessions_dir = ensure_advisor_sessions_dir()
+        manifest_path = get_manifest_path()
+        memory_path = get_state_dir() / "advisor" / "memory.md"
+        workspace_dir = create_session_workspace(
             scan_result,
+            sessions_dir,
+            manifest_path=manifest_path if manifest_path.exists() else None,
+            memory_path=memory_path if memory_path.exists() else None,
             filesystem_orphans=filesystem_orphans,
             config_orphans=config_orphans,
         )
@@ -246,6 +253,110 @@ def _run_both_orphan_phases(
         _run_orphan_phases("filesystem", dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto)
     if not no_configs:
         _run_orphan_phases("configs", dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto)
+
+
+def _sync_packages(
+    *,
+    source: SourceChoice,
+    yes: bool,
+    dry_run: bool,
+    purge: bool,
+    no_advisor: bool,
+    auto: bool,
+) -> bool:
+    """Run the package synchronization pipeline.
+
+    Encapsulates diff, advisor, action execution, and history recording.
+    Domain orphan phases are intentionally NOT called here; the caller
+    (``sync()``) runs them once after this function returns.
+
+    Args:
+        source: Package source filter (apt, flatpak, or all).
+        yes: If True, skip confirmation prompts.
+        dry_run: If True, show diff only without executing.
+        purge: If True, use purge instead of remove for APT packages.
+        no_advisor: If True, skip AI advisor classification.
+        auto: If True, use headless advisor instead of interactive.
+
+    Returns:
+        True if any executed action failed, False otherwise.
+
+    Raises:
+        typer.Exit: If the user aborts at the confirmation prompt (code=0).
+    """
+    # Phase 2: Compute diff
+    diff_result = compute_system_diff(source)
+
+    # Check if system is already in sync
+    if diff_result.is_in_sync:
+        print_success("System is already in sync with manifest. Nothing to do.")
+        return False
+
+    # Show diff summary
+    console.print()
+    console.print(
+        f"[bold]Diff summary:[/bold] "
+        f"[info]{len(diff_result.new)} NEW[/info], "
+        f"[warning]{len(diff_result.missing)} MISSING[/warning], "
+        f"[error]{len(diff_result.extra)} EXTRA[/error]"
+    )
+
+    # Phase 2b: Dry-run stops here (for packages)
+    if dry_run:
+        print_info("\nDry-run mode: No package changes were made.")
+        return False
+
+    # Phase 3-5: Advisor (unless --no-advisor or no NEW packages)
+    if not no_advisor and diff_result.new:
+        _run_advisor(diff_result, auto)
+
+        # Phase 5: Re-diff after advisor changes
+        diff_result = compute_system_diff(source)
+
+        if diff_result.is_in_sync:
+            print_success(
+                "System is already in sync with manifest after advisor changes. Nothing to do."
+            )
+            return False
+
+    # Phase 6: Convert to actions and display
+    actions = diff_to_actions(diff_result, purge=purge)
+
+    if not actions:
+        print_success("No actionable changes. System is in sync with manifest.")
+        return False
+
+    table = create_actions_table(actions)
+    console.print(table)
+    print_actions_summary(actions)
+
+    # Confirm unless --yes
+    if not yes:
+        confirmed = typer.confirm(
+            f"\nProceed with {len(actions)} action(s)?",
+            default=False,
+        )
+        if not confirmed:
+            print_info("Aborted.")
+            raise typer.Exit(code=0)
+
+    # Phase 7: Execute actions
+    available_operators = get_available_operators(source.to_package_source())
+
+    console.print("\n[bold]Executing actions...[/bold]\n")
+    results = execute_actions(actions, available_operators)
+
+    # Phase 8: Record history
+    if results:
+        record_actions_to_history(results, command="popctl sync")
+        print_info("Actions recorded to history.")
+
+    # Display results
+    results_table = create_results_table(results)
+    console.print(results_table)
+    print_results_summary(results)
+
+    return any(r.failed for r in results)
 
 
 @app.callback(invoke_without_command=True)
@@ -353,111 +464,17 @@ def sync(
     # Phase 1: Ensure manifest exists
     _ensure_manifest()
 
-    # Phase 2: Compute diff
-    diff_result = compute_system_diff(source)
-
-    # Check if system is already in sync
-    if diff_result.is_in_sync:
-        print_success("System is already in sync with manifest. Nothing to do.")
-        _run_both_orphan_phases(
-            dry_run=dry_run,
-            yes=yes,
-            no_advisor=no_advisor,
-            auto=auto,
-            no_filesystem=no_filesystem,
-            no_configs=no_configs,
-        )
-        return
-
-    # Show diff summary
-    console.print()
-    console.print(
-        f"[bold]Diff summary:[/bold] "
-        f"[info]{len(diff_result.new)} NEW[/info], "
-        f"[warning]{len(diff_result.missing)} MISSING[/warning], "
-        f"[error]{len(diff_result.extra)} EXTRA[/error]"
+    # Package sync phases
+    any_failed = _sync_packages(
+        source=source,
+        yes=yes,
+        dry_run=dry_run,
+        purge=purge,
+        no_advisor=no_advisor,
+        auto=auto,
     )
 
-    # Phase 2b: Dry-run stops here (for packages)
-    if dry_run:
-        print_info("\nDry-run mode: No package changes were made.")
-        _run_both_orphan_phases(
-            dry_run=True,
-            yes=yes,
-            no_advisor=no_advisor,
-            auto=auto,
-            no_filesystem=no_filesystem,
-            no_configs=no_configs,
-        )
-        return
-
-    # Phase 3-5: Advisor (unless --no-advisor or no NEW packages)
-    if not no_advisor and diff_result.new:
-        _run_advisor(diff_result, auto)
-
-        # Phase 5: Re-diff after advisor changes
-        diff_result = compute_system_diff(source)
-
-        if diff_result.is_in_sync:
-            print_success(
-                "System is already in sync with manifest after advisor changes. Nothing to do."
-            )
-            _run_both_orphan_phases(
-                dry_run=dry_run,
-                yes=yes,
-                no_advisor=no_advisor,
-                auto=auto,
-                no_filesystem=no_filesystem,
-                no_configs=no_configs,
-            )
-            return
-
-    # Phase 6: Convert to actions and display
-    actions = diff_to_actions(diff_result, purge=purge)
-
-    if not actions:
-        print_success("No actionable changes. System is in sync with manifest.")
-        _run_both_orphan_phases(
-            dry_run=dry_run,
-            yes=yes,
-            no_advisor=no_advisor,
-            auto=auto,
-            no_filesystem=no_filesystem,
-            no_configs=no_configs,
-        )
-        return
-
-    table = create_actions_table(actions)
-    console.print(table)
-    print_actions_summary(actions)
-
-    # Confirm unless --yes
-    if not yes:
-        confirmed = typer.confirm(
-            f"\nProceed with {len(actions)} action(s)?",
-            default=False,
-        )
-        if not confirmed:
-            print_info("Aborted.")
-            raise typer.Exit(code=0)
-
-    # Phase 7: Execute actions
-    available_operators = get_available_operators(source.to_package_source())
-
-    console.print("\n[bold]Executing actions...[/bold]\n")
-    results = execute_actions(actions, available_operators)
-
-    # Phase 8: Record history
-    if results:
-        record_actions_to_history(results, command="popctl sync")
-        print_info("Actions recorded to history.")
-
-    # Display results
-    results_table = create_results_table(results)
-    console.print(results_table)
-    print_results_summary(results)
-
-    # Domain orphan phases
+    # Domain orphan phases (always run after package sync)
     _run_both_orphan_phases(
         dry_run=dry_run,
         yes=yes,
@@ -467,8 +484,7 @@ def sync(
         no_configs=no_configs,
     )
 
-    # Exit with error if any action failed
-    if any(r.failed for r in results):
+    if any_failed:
         raise typer.Exit(code=1)
 
 

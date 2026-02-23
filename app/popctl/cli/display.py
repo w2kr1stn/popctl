@@ -5,21 +5,41 @@ planned actions and execution results across CLI commands (apply, sync).
 """
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.table import Table
 
-from popctl.domain.manifest import DomainEntry
-from popctl.models.action import Action, ActionResult
-from popctl.utils.formatting import console, print_error, print_info, print_success
+from popctl.domain.models import DomainActionResult, ScannedEntry
+from popctl.models.action import Action, ActionResult, ActionType
+from popctl.models.manifest import DomainEntry
+from popctl.models.package import PackageSource
+from popctl.utils.formatting import (
+    console,
+    format_size,
+    print_error,
+    print_info,
+    print_success,
+    print_warning,
+)
+
+if TYPE_CHECKING:
+    from popctl.models.package import ScannedPackage
+
+# Source icons for package display
+SOURCE_ICONS: dict[PackageSource, str] = {
+    PackageSource.APT: "📦",
+    PackageSource.FLATPAK: "📀",
+    PackageSource.SNAP: "📥",
+}
 
 
 def create_actions_table(actions: list[Action], dry_run: bool = False) -> Table:
     """Create a Rich table displaying planned actions.
 
-    Builds a formatted table with Action, Source, Package, and Reason columns.
+    Builds a formatted table with Action, Source, and Package columns.
     Each action type is styled distinctly: install (added), remove (warning),
     and purge (removed).
 
@@ -41,14 +61,13 @@ def create_actions_table(actions: list[Action], dry_run: bool = False) -> Table:
     table.add_column("Action", width=8, justify="center")
     table.add_column("Source", width=8)
     table.add_column("Package", no_wrap=True)
-    table.add_column("Reason")
 
     for action in actions:
         # Style based on action type
-        if action.is_install:
+        if action.action_type == ActionType.INSTALL:
             action_text = "[added]+install[/added]"
             pkg_style = "added"
-        elif action.is_purge:
+        elif action.action_type == ActionType.PURGE:
             action_text = "[removed]-purge[/removed]"
             pkg_style = "removed"
         else:  # REMOVE
@@ -59,7 +78,6 @@ def create_actions_table(actions: list[Action], dry_run: bool = False) -> Table:
             action_text,
             action.source.value,
             f"[{pkg_style}]{action.package}[/{pkg_style}]",
-            f"[muted]{action.reason or ''}[/muted]",
         )
 
     return table
@@ -92,10 +110,10 @@ def create_results_table(results: list[ActionResult]) -> Table:
     for result in results:
         if result.success:
             status = "[success]OK[/success]"
-            message = result.message or ""
+            message = result.detail or ""
         else:
             status = "[error]FAIL[/error]"
-            message = result.error or "Unknown error"
+            message = result.detail or "Unknown error"
 
         action_type = result.action.action_type.value
 
@@ -118,9 +136,9 @@ def print_actions_summary(actions: list[Action]) -> None:
     Args:
         actions: List of planned actions.
     """
-    install_count = sum(1 for a in actions if a.is_install)
-    remove_count = sum(1 for a in actions if a.is_remove)
-    purge_count = sum(1 for a in actions if a.is_purge)
+    install_count = sum(1 for a in actions if a.action_type == ActionType.INSTALL)
+    remove_count = sum(1 for a in actions if a.action_type == ActionType.REMOVE)
+    purge_count = sum(1 for a in actions if a.action_type == ActionType.PURGE)
 
     parts: list[str] = []
     if install_count:
@@ -155,6 +173,46 @@ def print_results_summary(results: list[ActionResult]) -> None:
         )
 
 
+def print_orphan_table(
+    title: str,
+    orphans: Sequence[ScannedEntry],
+    *,
+    limit: int | None = None,
+    hint_cmd: str | None = None,
+) -> None:
+    """Display orphaned entries as a Rich table.
+
+    Generic table builder for both filesystem and config orphan scans.
+
+    Args:
+        title: Table title (e.g. "Orphaned Filesystem Entries").
+        orphans: Sequence of scanned orphan entries.
+        limit: Maximum number of entries to display. None means all.
+        hint_cmd: CLI command to show when results are truncated.
+    """
+    display = orphans[:limit] if limit else orphans
+
+    table = Table(title=title, show_lines=False)
+    table.add_column("Path", style="bold")
+    table.add_column("Type", width=10)
+    table.add_column("Size", justify="right", width=10)
+    table.add_column("Confidence", justify="right", width=10)
+    table.add_column("Reason", style="dim")
+
+    for item in display:
+        size_str = format_size(item.size_bytes) if item.size_bytes else "-"
+        conf_str = f"{item.confidence:.0%}"
+        reason = item.orphan_reason.value if item.orphan_reason else "-"
+        table.add_row(item.path, item.path_type.value, size_str, conf_str, reason)
+
+    console.print(table)
+
+    if limit and len(orphans) > limit and hint_cmd:
+        console.print(
+            f"[dim]... and {len(orphans) - limit} more. Use '{hint_cmd}' for full list.[/dim]"
+        )
+
+
 def print_deletion_plan(
     paths: list[str],
     entries: dict[str, DomainEntry],
@@ -177,7 +235,7 @@ def print_deletion_plan(
     for path_str in paths:
         entry = entries.get(path_str)
         reason = "-"
-        if isinstance(entry, DomainEntry) and entry.reason:
+        if entry is not None and entry.reason:
             reason = entry.reason
         table.add_row(path_str, reason)
 
@@ -209,3 +267,110 @@ def export_orphan_results(data: list[dict[str, Any]], export_path: Path) -> None
     except OSError as e:
         print_error(f"Failed to export: {e}")
         raise typer.Exit(code=1) from e
+
+
+def print_deletion_results(
+    results: Sequence[DomainActionResult],
+    show_backup: bool = False,
+) -> None:
+    """Display deletion results as a Rich table.
+
+    Used by both filesystem and config clean commands. The third column
+    shows backup paths when ``show_backup=True`` (configs), otherwise
+    shows error details (filesystem).
+
+    Args:
+        results: Sequence of DomainActionResult (or ConfigActionResult subclass).
+        show_backup: If True, show "Backup" column with ``backup_path``
+            attribute (ConfigActionResult only). Otherwise show "Details" column.
+    """
+    third_col = "Backup" if show_backup else "Details"
+    table = Table(title="Deletion Results", show_lines=False)
+    table.add_column("Path", style="bold")
+    table.add_column("Status", width=10)
+    table.add_column(third_col, style="dim")
+
+    for r in results:
+        backup = getattr(r, "backup_path", None)
+        if r.dry_run:
+            status = "[info]dry-run[/]"
+            detail = (backup or "-") if show_backup else "Would delete"
+        elif r.success:
+            status = "[success]deleted[/]"
+            detail = (backup or "no backup") if show_backup else ""
+        else:
+            status = "[error]failed[/]"
+            detail = r.error or "Unknown error"
+        table.add_row(r.path, status, detail)
+
+    console.print(table)
+
+    success_count = sum(1 for r in results if r.success)
+    fail_count = sum(1 for r in results if not r.success and not r.dry_run)
+    dry_count = sum(1 for r in results if r.dry_run)
+
+    if dry_count:
+        print_info(f"Dry-run: {dry_count} path(s) would be deleted.")
+    elif fail_count:
+        print_warning(f"{success_count} succeeded, {fail_count} failed")
+    else:
+        print_success(f"All {success_count} path(s) processed successfully.")
+
+
+def create_package_table(title: str = "Installed Packages") -> Table:
+    """Create a pre-configured table for displaying packages.
+
+    The table uses zebra striping for improved readability and a minimal
+    status icon column.
+
+    Args:
+        title: Table title.
+
+    Returns:
+        Rich Table configured for package display.
+    """
+    table = Table(
+        title=title,
+        show_header=True,
+        header_style="bold_header",
+        border_style="border",
+        row_styles=["", "on grey7"],  # Zebra striping for readability
+    )
+    # Status column: minimal width, icon only, no header text
+    table.add_column("", width=2, justify="center")
+    # Source column: emoji icon for package source
+    table.add_column("", width=2, justify="center")
+    table.add_column("Package", no_wrap=True)  # Style set per row
+    table.add_column("Version", style="muted")
+    table.add_column("Size", style="info", justify="right")
+    table.add_column("Description", style="text", overflow="ellipsis")
+    return table
+
+
+def format_package_row(pkg: ScannedPackage) -> tuple[str, str, str, str, str, str]:
+    """Format a package as a table row with proper styling.
+
+    Manual packages are highlighted with a filled circle icon and mint color,
+    while auto-installed packages use an empty circle and muted styling.
+
+    Args:
+        pkg: The scanned package to format.
+
+    Returns:
+        Tuple of (status_icon, source_icon, name, version, size, description) with Rich markup.
+    """
+    if pkg.is_manual:
+        status_icon = "[package_manual]\u25cf[/]"  # Filled circle
+        name = f"[package_manual]{pkg.name}[/]"  # bold is in the style
+    else:
+        status_icon = "[package_auto]\u25cb[/]"  # Empty circle
+        name = f"[package_auto]{pkg.name}[/]"
+
+    source_icon = SOURCE_ICONS.get(pkg.source, "?")
+
+    version = f"[muted]{pkg.version}[/]"
+    size_str = format_size(pkg.size_bytes) if pkg.size_bytes is not None else "unknown"
+    size = f"[info]{size_str}[/]"
+    desc = f"[text]{pkg.description or '-'}[/]"
+
+    return (status_icon, source_icon, name, version, size, desc)

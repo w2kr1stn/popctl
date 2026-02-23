@@ -3,7 +3,9 @@
 Provides color theming via TOML configuration files with user override support.
 """
 
+import functools
 import logging
+import sys
 import tomllib
 from importlib import resources
 from pathlib import Path
@@ -11,6 +13,8 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator
 from rich.theme import Theme
+
+from popctl.core.paths import get_config_dir
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +42,6 @@ class ThemeColors(BaseModel):
     # Diff/Action colors
     added: str = "#c1ff62"
     removed: str = "#f53263"
-    changed: str = "#0e8ac8"
-
-    # Confidence levels
-    confidence_high: str = "#03b971"
-    confidence_medium: str = "#faf870"
-    confidence_low: str = "#d44ebc"
 
     # Package status
     package_manual: str = "#69B9A1"
@@ -72,26 +70,6 @@ class ThemeColors(BaseModel):
         return color
 
 
-def get_user_theme_path() -> Path:
-    """Get the user theme configuration path.
-
-    Returns:
-        Path to ~/.config/popctl/theme.toml
-    """
-    from popctl.core.paths import get_config_dir
-
-    return get_config_dir() / "theme.toml"
-
-
-def get_bundled_theme_path() -> Path:
-    """Get the bundled default theme path.
-
-    Returns:
-        Path to the bundled data/theme.toml
-    """
-    return resources.files("popctl.data").joinpath("theme.toml")  # type: ignore[return-value]
-
-
 def _load_toml_colors(path: Path) -> dict[str, str] | None:
     """Load colors section from a TOML file.
 
@@ -118,8 +96,7 @@ def _load_toml_colors(path: Path) -> dict[str, str] | None:
         return None
     except tomllib.TOMLDecodeError as e:
         logger.warning("Failed to parse TOML file %s: %s", path, e)
-        import sys
-
+        # Use raw stderr — print_warning depends on formatting.py which imports this module
         print(f"Warning: Failed to parse {path}: {e}", file=sys.stderr)
         return None
     except OSError as e:
@@ -138,13 +115,12 @@ def load_theme() -> ThemeColors:
         ThemeColors instance with merged configuration.
     """
     # Start with bundled defaults
-    bundled_path = get_bundled_theme_path()
-    bundled_colors = _load_toml_colors(Path(bundled_path))
+    bundled_path = resources.files("popctl.data").joinpath("theme.toml")
+    bundled_colors = _load_toml_colors(Path(bundled_path))  # type: ignore[arg-type]
 
     if bundled_colors is None:
         logger.error("Failed to load bundled theme - installation may be corrupted")
-        import sys
-
+        # Use raw stderr — print_warning depends on formatting.py which imports this module
         print(
             "Error: Could not load default theme. Installation may be corrupted.",
             file=sys.stderr,
@@ -152,7 +128,7 @@ def load_theme() -> ThemeColors:
         bundled_colors = {}
 
     # Try to load user overrides
-    user_path = get_user_theme_path()
+    user_path = get_config_dir() / "theme.toml"
     user_colors = _load_toml_colors(user_path)
 
     if user_colors is not None:
@@ -167,30 +143,22 @@ def load_theme() -> ThemeColors:
         return ThemeColors(**merged_colors)
     except ValueError as e:
         logger.warning("Theme validation failed, using defaults: %s", e)
-        # Also print to stderr so user sees it without debug logging
-        import sys
-
+        # Use raw stderr — print_warning depends on formatting.py which imports this module
         print(f"Warning: Invalid theme configuration: {e}", file=sys.stderr)
         return ThemeColors()
 
 
-def get_rich_theme(colors: ThemeColors | None = None) -> Theme:
-    """Convert ThemeColors to a Rich Theme.
+@functools.cache
+def get_theme() -> Theme:
+    """Get the Rich theme, loading and caching it if necessary.
 
-    Creates style mappings for Rich console output including:
-    - All base color names directly as styles
-    - Convenience styles for common patterns
-
-    Args:
-        colors: ThemeColors instance to convert. If None, loads theme automatically.
+    This is the primary entry point for getting the theme.
+    The theme is loaded once and cached for performance.
 
     Returns:
-        Rich Theme instance configured with the color scheme.
+        Cached Rich Theme instance.
     """
-    if colors is None:
-        colors = load_theme()
-
-    # Build style dictionary
+    colors = load_theme()
     styles: dict[str, str] = {
         # Direct color mappings
         "text": colors.text,
@@ -203,40 +171,10 @@ def get_rich_theme(colors: ThemeColors | None = None) -> Theme:
         "info": colors.info,
         "added": colors.added,
         "removed": colors.removed,
-        "changed": colors.changed,
-        "confidence_high": colors.confidence_high,
-        "confidence_medium": colors.confidence_medium,
-        "confidence_low": colors.confidence_low,
         "package_manual": f"bold {colors.package_manual}",
         "package_auto": colors.package_auto,
         # Convenience styles
         "bold_header": f"bold {colors.header}",
         "dim": colors.muted,
-        "package.name": f"bold {colors.text}",
-        "package.version": colors.muted,
-        "package.size": colors.info,
-        # Legacy compatibility styles
-        "package.manual": f"bold {colors.package_manual}",
-        "package.auto": colors.package_auto,
     }
-
     return Theme(styles)
-
-
-# Module-level cached theme instance
-_cached_theme: Theme | None = None
-
-
-def get_theme() -> Theme:
-    """Get the Rich theme, loading and caching it if necessary.
-
-    This is the primary entry point for getting the theme.
-    The theme is loaded once and cached for performance.
-
-    Returns:
-        Cached Rich Theme instance.
-    """
-    global _cached_theme
-    if _cached_theme is None:
-        _cached_theme = get_rich_theme()
-    return _cached_theme

@@ -10,12 +10,14 @@ Raises RuntimeError on failures so callers can decide how to handle errors
 """
 
 import json
+import logging
 from pathlib import Path
+from typing import Any, cast
 
-from popctl.cli.types import get_available_scanners
-from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
-from popctl.models.scan_result import ScanResult
-from popctl.utils.formatting import print_info
+from popctl.models.package import PackageSource, PackageStatus, ScannedPackage, ScanResult
+from popctl.scanners import get_available_scanners
+
+logger = logging.getLogger(__name__)
 
 
 def scan_system(input_file: Path | None = None) -> ScanResult:
@@ -53,10 +55,16 @@ def _load_from_file(input_file: Path) -> ScanResult:
         raise RuntimeError(msg)
 
     try:
-        data = json.loads(input_file.read_text())
+        data: dict[str, Any] = json.loads(input_file.read_text())
         packages: list[ScannedPackage] = []
 
-        for pkg_data in data.get("packages", []):
+        # Support both nested format {"unknown": [...]} from workspace
+        # and flat list format [...] for backward compatibility
+        raw_packages: Any = data.get("packages", [])
+        if isinstance(raw_packages, dict):
+            raw_packages = cast("dict[str, Any]", raw_packages).get("unknown", [])
+
+        for pkg_data in raw_packages:
             pkg = ScannedPackage(
                 name=pkg_data["name"],
                 source=PackageSource(pkg_data["source"]),
@@ -67,7 +75,7 @@ def _load_from_file(input_file: Path) -> ScanResult:
             )
             packages.append(pkg)
 
-        return ScanResult(packages=tuple(packages))
+        return tuple(packages)
     except (json.JSONDecodeError, KeyError, ValueError) as e:
         msg = f"Invalid scan file format: {e}"
         raise RuntimeError(msg) from e
@@ -92,12 +100,8 @@ def _scan_live() -> ScanResult:
 
     for scanner in scanners:
         sources.append(scanner.source.value)
-        try:
-            for pkg in scanner.scan():
-                packages.append(pkg)
-        except RuntimeError as e:
-            msg = f"Scan failed: {e}"
-            raise RuntimeError(msg) from e
+        for pkg in scanner.scan():
+            packages.append(pkg)
 
-    print_info(f"Scanned {len(packages)} packages from {len(sources)} source(s).")
-    return ScanResult(packages=tuple(packages))
+    logger.info("Scanned %d packages from %d source(s).", len(packages), len(sources))
+    return tuple(packages)

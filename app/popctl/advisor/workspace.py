@@ -25,14 +25,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from popctl.advisor.exchange import PackageScanEntry, ScanExport
 from popctl.advisor.prompts import build_session_claude_md
 from popctl.core.paths import ensure_dir, get_state_dir
 
 if TYPE_CHECKING:
-    from popctl.advisor.exchange import OrphanEntry
-    from popctl.models.package import ScannedPackage
-    from popctl.models.scan_result import ScanResult
+    from typing import Any
+
+    from popctl.models.package import ScannedPackage, ScanResult
 
 
 def ensure_advisor_sessions_dir() -> Path:
@@ -53,8 +52,8 @@ def create_session_workspace(
     manifest_path: Path | None = None,
     system_info: dict[str, str] | None = None,
     memory_path: Path | None = None,
-    filesystem_orphans: list[OrphanEntry] | None = None,
-    config_orphans: list[OrphanEntry] | None = None,
+    filesystem_orphans: list[dict[str, Any]] | None = None,
+    config_orphans: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Create an ephemeral workspace directory for a classification session.
 
@@ -100,7 +99,7 @@ def create_session_workspace(
         }
 
     # Build summary from packages
-    summary = _build_summary(scan_result.packages)
+    summary = _build_summary(scan_result)
 
     # Write CLAUDE.md
     claude_md_content = build_session_claude_md(
@@ -142,42 +141,48 @@ def _build_scan_data(
     scan_result: ScanResult,
     system_info: dict[str, str],
     summary: dict[str, int],
-    filesystem_orphans: list[OrphanEntry] | None,
-    config_orphans: list[OrphanEntry] | None,
+    filesystem_orphans: list[dict[str, Any]] | None,
+    config_orphans: list[dict[str, Any]] | None,
 ) -> dict[str, object]:
-    """Build scan.json data using ScanExport format.
+    """Build scan.json data as a plain dictionary.
 
     Args:
         scan_result: Package scan data.
         system_info: System context dict.
         summary: Pre-computed package count summary.
-        filesystem_orphans: Optional FS orphan entries.
-        config_orphans: Optional config orphan entries.
+        filesystem_orphans: Optional FS orphan entry dicts.
+        config_orphans: Optional config orphan entry dicts.
 
     Returns:
         Dictionary ready for JSON serialization.
     """
     pkg_entries = [
-        PackageScanEntry(
-            name=p.name,
-            source=p.source.value,
-            version=p.version,
-            status=p.status.value,
-            description=p.description,
-            size_bytes=p.size_bytes,
-        )
-        for p in scan_result.packages
+        {
+            k: v
+            for k, v in {
+                "name": p.name,
+                "source": p.source.value,
+                "version": p.version,
+                "status": p.status.value,
+                "description": p.description,
+                "size_bytes": p.size_bytes,
+            }.items()
+            if v is not None
+        }
+        for p in scan_result
     ]
 
-    scan_export = ScanExport(
-        scan_date=datetime.now(UTC).isoformat(),
-        system=system_info,
-        summary=summary,
-        packages={"unknown": pkg_entries},
-        filesystem_orphans=filesystem_orphans or [],
-        config_orphans=config_orphans or [],
-    )
-    return scan_export.model_dump(mode="json", exclude_none=True)
+    data: dict[str, object] = {
+        "scan_date": datetime.now(UTC).isoformat(),
+        "system": system_info,
+        "summary": summary,
+        "packages": {"unknown": pkg_entries},
+    }
+    if filesystem_orphans:
+        data["filesystem_orphans"] = filesystem_orphans
+    if config_orphans:
+        data["config_orphans"] = config_orphans
+    return data
 
 
 def _build_summary(packages: tuple[ScannedPackage, ...]) -> dict[str, int]:

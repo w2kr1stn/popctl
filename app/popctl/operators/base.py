@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 
 from popctl.models.action import Action, ActionResult
 from popctl.models.package import PackageSource
-from popctl.utils.shell import CommandResult
+from popctl.utils.shell import CommandResult, run_command
 
 
 class Operator(ABC):
@@ -16,6 +16,14 @@ class Operator(ABC):
 
     Operators are responsible for executing package management actions
     (install, remove, purge) for a specific package manager.
+
+    Two execution strategies exist:
+    - **Batch** (APT): Passes all packages to a single command invocation
+      via custom ``install``/``remove`` implementations. APT's transactional
+      semantics make this the correct approach.
+    - **Single-action** (Flatpak, Snap): Iterates packages one-by-one using
+      the ``_run_single`` / ``_dry_run_result`` / ``_create_result`` helpers
+      provided by this base class.
 
     Attributes:
         dry_run: If True, only simulate actions without executing them.
@@ -27,6 +35,8 @@ class Operator(ABC):
         ...     for result in results:
         ...         print(f"{result.action.package}: {result.success}")
     """
+
+    _TIMEOUT: float = 300.0
 
     def __init__(self, dry_run: bool = False) -> None:
         """Initialize the operator.
@@ -41,14 +51,7 @@ class Operator(ABC):
         """Check if operator is in dry-run mode."""
         return self._dry_run
 
-    @property
-    @abstractmethod
-    def source(self) -> PackageSource:
-        """Return the package source this operator handles.
-
-        Returns:
-            PackageSource enum value (APT, FLATPAK, or SNAP).
-        """
+    source: PackageSource
 
     @abstractmethod
     def install(self, packages: list[str]) -> list[ActionResult]:
@@ -87,60 +90,38 @@ class Operator(ABC):
             True if the package manager can be used, False otherwise.
         """
 
-    def execute(self, actions: list[Action]) -> list[ActionResult]:
-        """Execute a list of actions.
+    def _run_single(self, action: Action, args: list[str]) -> ActionResult:
+        """Execute a single action or return a dry-run result.
 
-        This is a convenience method that dispatches actions to the
-        appropriate install/remove method based on action type.
+        Convenience helper for single-action operators (Flatpak, Snap).
+        Batch operators like APT implement their own execution strategy.
 
         Args:
-            actions: List of Action objects to execute.
+            action: The action to execute.
+            args: Command-line arguments for the package manager.
 
         Returns:
-            List of ActionResult for each action.
-
-        Raises:
-            RuntimeError: If the package manager is not available.
-            ValueError: If an action's source doesn't match this operator.
+            ActionResult from command execution or dry-run simulation.
         """
-        if not self.is_available():
-            msg = f"{self.source.value.upper()} package manager is not available"
-            raise RuntimeError(msg)
+        if self.dry_run:
+            return self._dry_run_result(action)
+        result = run_command(args, timeout=self._TIMEOUT)
+        return self._create_result(action, result)
 
-        # Validate all actions belong to this operator
-        for action in actions:
-            if action.source != self.source:
-                msg = (
-                    f"Action source {action.source.value} doesn't match "
-                    f"operator source {self.source.value}"
-                )
-                raise ValueError(msg)
+    def _dry_run_result(self, action: Action) -> ActionResult:
+        """Create a success result for dry-run mode.
 
-        # Group actions by type for batch processing
-        install_packages: list[str] = []
-        remove_packages: list[str] = []
-        purge_packages: list[str] = []
+        Args:
+            action: The action that would be executed.
 
-        for action in actions:
-            if action.is_install:
-                install_packages.append(action.package)
-            elif action.is_purge:
-                purge_packages.append(action.package)
-            elif action.is_remove:
-                remove_packages.append(action.package)
-
-        results: list[ActionResult] = []
-
-        if install_packages:
-            results.extend(self.install(install_packages))
-
-        if remove_packages:
-            results.extend(self.remove(remove_packages, purge=False))
-
-        if purge_packages:
-            results.extend(self.remove(purge_packages, purge=True))
-
-        return results
+        Returns:
+            ActionResult indicating dry-run success.
+        """
+        return ActionResult(
+            action=action,
+            success=True,
+            detail=f"Dry-run: would {action.action_type.value}",
+        )
 
     def _create_result(self, action: Action, result: CommandResult) -> ActionResult:
         """Create an ActionResult from a CommandResult.
@@ -150,12 +131,12 @@ class Operator(ABC):
             result: The command execution result.
 
         Returns:
-            ActionResult with appropriate success/error info.
+            ActionResult with appropriate success/detail info.
         """
         if result.success:
-            return ActionResult(action=action, success=True, message="Operation completed")
+            return ActionResult(action=action, success=True, detail="Operation completed")
 
         error_msg = (
             result.stderr.strip() or result.stdout.strip() or f"{self.source.value} command failed"
         )
-        return ActionResult(action=action, success=False, error=error_msg)
+        return ActionResult(action=action, success=False, detail=error_msg)

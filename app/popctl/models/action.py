@@ -16,7 +16,7 @@ class ActionType(Enum):
     Attributes:
         INSTALL: Install a package that is not currently installed.
         REMOVE: Remove a package but keep configuration files.
-        PURGE: Remove a package including all configuration files (APT only).
+        PURGE: Remove a package including all configuration files (APT and SNAP).
     """
 
     INSTALL = "install"
@@ -38,13 +38,11 @@ class Action:
         action_type: The type of action (install, remove, or purge).
         package: Name of the package to operate on.
         source: Package manager that handles this package.
-        reason: Optional explanation for why this action is being taken.
     """
 
     action_type: ActionType
     package: str
     source: PackageSource
-    reason: str | None = None
 
     def __post_init__(self) -> None:
         """Validate action data after initialization."""
@@ -55,40 +53,23 @@ class Action:
             msg = "PURGE action is only valid for APT and SNAP packages"
             raise ValueError(msg)
 
-    @property
-    def is_install(self) -> bool:
-        """Check if this is an install action."""
-        return self.action_type == ActionType.INSTALL
-
-    @property
-    def is_remove(self) -> bool:
-        """Check if this is a remove action."""
-        return self.action_type == ActionType.REMOVE
-
-    @property
-    def is_purge(self) -> bool:
-        """Check if this is a purge action."""
-        return self.action_type == ActionType.PURGE
-
 
 @dataclass(frozen=True, slots=True)
 class ActionResult:
     """Result of executing a package management action.
 
     This immutable data structure captures the outcome of an action,
-    including success status and any error information.
+    including success status and any detail information.
 
     Attributes:
         action: The action that was executed.
         success: Whether the action completed successfully.
-        message: Optional success message or additional information.
-        error: Optional error message if the action failed.
+        detail: Optional detail message (success info or error description).
     """
 
     action: Action
     success: bool
-    message: str | None = None
-    error: str | None = None
+    detail: str | None = None
 
     @property
     def failed(self) -> bool:

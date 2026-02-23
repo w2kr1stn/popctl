@@ -10,12 +10,11 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
 
 import tomli_w
 from pydantic import ValidationError
 
-from popctl.core.baseline import is_protected
+from popctl.core.baseline import is_package_protected
 from popctl.core.paths import get_manifest_path
 from popctl.models.manifest import (
     Manifest,
@@ -100,7 +99,7 @@ def save_manifest(manifest: Manifest, path: Path | None = None) -> Path:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Convert manifest to dictionary with proper serialization
-    data = _manifest_to_dict(manifest)
+    data = manifest.model_dump(mode="json", exclude_none=True)
 
     tmp_path: Path | None = None
     try:
@@ -137,100 +136,6 @@ def manifest_exists(path: Path | None = None) -> bool:
     return manifest_path.exists()
 
 
-def _manifest_to_dict(manifest: Manifest) -> dict[str, Any]:
-    """Convert a Manifest to a dictionary suitable for TOML serialization.
-
-    Handles datetime conversion and nested structures properly.
-
-    Args:
-        manifest: The Manifest object to convert.
-
-    Returns:
-        Dictionary ready for TOML serialization.
-    """
-    result: dict[str, Any] = {
-        "meta": {
-            "created": manifest.meta.created.isoformat(),
-            "updated": manifest.meta.updated.isoformat(),
-        },
-        "system": {
-            "name": manifest.system.name,
-            "base": manifest.system.base,
-        },
-        "packages": {
-            "keep": {
-                name: _package_entry_to_dict(entry)
-                for name, entry in manifest.packages.keep.items()
-            },
-            "remove": {
-                name: _package_entry_to_dict(entry)
-                for name, entry in manifest.packages.remove.items()
-            },
-        },
-    }
-
-    if manifest.filesystem is not None:
-        result["filesystem"] = {
-            "keep": {
-                path: _domain_entry_to_dict(entry)
-                for path, entry in manifest.filesystem.keep.items()
-            },
-            "remove": {
-                path: _domain_entry_to_dict(entry)
-                for path, entry in manifest.filesystem.remove.items()
-            },
-        }
-
-    if manifest.configs is not None:
-        result["configs"] = {
-            "keep": {
-                path: _domain_entry_to_dict(entry) for path, entry in manifest.configs.keep.items()
-            },
-            "remove": {
-                path: _domain_entry_to_dict(entry)
-                for path, entry in manifest.configs.remove.items()
-            },
-        }
-
-    return result
-
-
-def _package_entry_to_dict(entry: Any) -> dict[str, Any]:
-    """Convert a PackageEntry to a dictionary for TOML serialization.
-
-    Args:
-        entry: The PackageEntry object to convert.
-
-    Returns:
-        Dictionary with source and optional reason.
-    """
-    result: dict[str, Any] = {"source": entry.source}
-    if entry.status != "keep":
-        result["status"] = entry.status
-    if entry.reason:
-        result["reason"] = entry.reason
-    return result
-
-
-def _domain_entry_to_dict(entry: Any) -> dict[str, Any]:
-    """Convert a domain entry (filesystem or config) to a dictionary for TOML serialization.
-
-    Only includes fields that have non-None values to keep TOML output clean.
-
-    Args:
-        entry: The DomainEntry object to convert.
-
-    Returns:
-        Dictionary with optional reason and category fields.
-    """
-    result: dict[str, Any] = {}
-    if entry.reason:
-        result["reason"] = entry.reason
-    if entry.category:
-        result["category"] = entry.category
-    return result
-
-
 # ---------------------------------------------------------------------------
 # Manifest creation helpers
 # ---------------------------------------------------------------------------
@@ -261,16 +166,36 @@ def collect_manual_packages(
                 continue
 
             # Skip protected system packages (but track them)
-            if is_protected(pkg.name):
+            if is_package_protected(pkg.name):
                 skipped_protected.append(pkg.name)
                 continue
 
             packages[pkg.name] = PackageEntry(
                 source=source_name,  # type: ignore[arg-type]
-                status="keep",
             )
 
     return packages, skipped_protected
+
+
+def scan_and_create_manifest(
+    scanners: list[Scanner],
+) -> tuple[Manifest, dict[str, PackageEntry], list[str]]:
+    """Scan system and create a new manifest from manually installed packages.
+
+    Combines collect_manual_packages and create_manifest into a single call.
+
+    Args:
+        scanners: List of Scanner instances to use.
+
+    Returns:
+        Tuple of (manifest, packages dict, list of skipped protected names).
+
+    Raises:
+        RuntimeError: If scanning fails.
+    """
+    packages, skipped = collect_manual_packages(scanners)
+    manifest = create_manifest(packages)
+    return manifest, packages, skipped
 
 
 def create_manifest(packages: dict[str, PackageEntry]) -> Manifest:

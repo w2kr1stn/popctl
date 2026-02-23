@@ -6,30 +6,13 @@ support, protected path checking, and sudo escalation for system paths.
 
 import logging
 import shutil
-from dataclasses import dataclass
 from pathlib import Path
 
+from popctl.domain.models import DomainActionResult
 from popctl.domain.protected import is_protected
 from popctl.utils.shell import run_command
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True, slots=True)
-class FilesystemActionResult:
-    """Result of a single filesystem deletion operation.
-
-    Attributes:
-        path: Absolute path that was operated on.
-        success: Whether the operation completed successfully.
-        error: Error message if the operation failed, None otherwise.
-        dry_run: Whether this was a dry-run (no actual deletion).
-    """
-
-    path: str
-    success: bool
-    error: str | None = None
-    dry_run: bool = False
 
 
 class FilesystemOperator:
@@ -42,7 +25,7 @@ class FilesystemOperator:
         _dry_run: If True, simulate deletions without modifying the filesystem.
     """
 
-    def __init__(self, dry_run: bool = False) -> None:
+    def __init__(self, *, dry_run: bool = False) -> None:
         """Initialize the FilesystemOperator.
 
         Args:
@@ -50,7 +33,7 @@ class FilesystemOperator:
         """
         self._dry_run = dry_run
 
-    def delete(self, paths: list[str]) -> list[FilesystemActionResult]:
+    def delete(self, paths: list[str]) -> list[DomainActionResult]:
         """Delete multiple filesystem paths and return results.
 
         Each path is checked against protected patterns before deletion.
@@ -61,14 +44,14 @@ class FilesystemOperator:
             paths: List of absolute filesystem paths to delete.
 
         Returns:
-            List of FilesystemActionResult, one per input path.
+            List of DomainActionResult, one per input path.
         """
-        results: list[FilesystemActionResult] = []
+        results: list[DomainActionResult] = []
 
         for path in paths:
             if is_protected(path, "filesystem"):
                 results.append(
-                    FilesystemActionResult(
+                    DomainActionResult(
                         path=path,
                         success=False,
                         error=f"Protected path cannot be deleted: {path}",
@@ -80,7 +63,7 @@ class FilesystemOperator:
 
         return results
 
-    def _delete_single(self, path: str) -> FilesystemActionResult:
+    def _delete_single(self, path: str) -> DomainActionResult:
         """Delete a single filesystem path.
 
         Dispatches to the appropriate deletion strategy based on
@@ -93,11 +76,11 @@ class FilesystemOperator:
             path: Absolute filesystem path to delete.
 
         Returns:
-            FilesystemActionResult indicating success or failure.
+            DomainActionResult indicating success or failure.
         """
         if self._dry_run:
             logger.info("Dry-run: would delete %s", path)
-            return FilesystemActionResult(
+            return DomainActionResult(
                 path=path,
                 success=True,
                 dry_run=True,
@@ -110,32 +93,32 @@ class FilesystemOperator:
             if path.startswith("/etc/"):
                 result = run_command(["sudo", "rm", "-rf", path])
                 if not result.success:
-                    return FilesystemActionResult(
+                    return DomainActionResult(
                         path=path,
                         success=False,
                         error=result.stderr.strip() or "sudo rm failed",
                     )
-                return FilesystemActionResult(path=path, success=True)
+                return DomainActionResult(path=path, success=True)
 
             # Directories (but not symlinks to directories)
             if target.is_dir() and not target.is_symlink():
                 shutil.rmtree(path)
-                return FilesystemActionResult(path=path, success=True)
+                return DomainActionResult(path=path, success=True)
 
             # Files, symlinks, and dead symlinks
             if target.exists() or target.is_symlink():
                 target.unlink()
-                return FilesystemActionResult(path=path, success=True)
+                return DomainActionResult(path=path, success=True)
 
             # Path does not exist
-            return FilesystemActionResult(
+            return DomainActionResult(
                 path=path,
                 success=False,
                 error=f"Path does not exist: {path}",
             )
 
         except OSError as e:
-            return FilesystemActionResult(
+            return DomainActionResult(
                 path=path,
                 success=False,
                 error=str(e),

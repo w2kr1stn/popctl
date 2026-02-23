@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 HISTORY_FILENAME = "history.jsonl"
 
-_INVERSE_ACTION_TYPES: dict[HistoryActionType, HistoryActionType] = {
+INVERSE_ACTION_TYPES: dict[HistoryActionType, HistoryActionType] = {
     HistoryActionType.INSTALL: HistoryActionType.REMOVE,
     HistoryActionType.REMOVE: HistoryActionType.INSTALL,
     HistoryActionType.PURGE: HistoryActionType.INSTALL,
@@ -166,7 +166,7 @@ def mark_entry_reversed(entry: HistoryEntry, state_dir: Path | None = None) -> N
     """
     # Create a reversal marker entry
     reversal_entry = create_history_entry(
-        action_type=_INVERSE_ACTION_TYPES[entry.action_type],
+        action_type=INVERSE_ACTION_TYPES[entry.action_type],
         items=list(entry.items),
         reversible=False,  # Reversal entries are not reversible
         metadata={

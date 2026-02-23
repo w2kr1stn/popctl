@@ -8,7 +8,7 @@ import fnmatch
 
 # Protected package name patterns (glob-style)
 # These patterns match critical system packages that should never be removed
-PROTECTED_PATTERNS: list[str] = [
+PROTECTED_PACKAGE_PATTERNS: list[str] = [
     # Kernel and boot
     "linux-*",
     "grub-*",
@@ -40,9 +40,6 @@ PROTECTED_PATTERNS: list[str] = [
     # Display and session
     "gdm*",
     "plymouth*",
-    # Recovery
-    "pop-upgrade*",
-    "system76-firmware*",
 ]
 
 
@@ -73,7 +70,7 @@ PROTECTED_PACKAGES: set[str] = {
 }
 
 
-def is_protected(package_name: str) -> bool:
+def is_package_protected(package_name: str) -> bool:
     """Check if a package is protected and should not be removed.
 
     A package is protected if it matches any of the protected patterns
@@ -85,13 +82,11 @@ def is_protected(package_name: str) -> bool:
     Returns:
         True if the package is protected, False otherwise.
     """
-    # Check exact matches first (faster)
-    if package_name in PROTECTED_PACKAGES:
+    # Check exact matches first (faster, case-insensitive)
+    if package_name.lower() in PROTECTED_PACKAGES:
         return True
 
     # Check pattern matches
-    for pattern in PROTECTED_PATTERNS:
-        if fnmatch.fnmatch(package_name.lower(), pattern.lower()):
-            return True
-
-    return False
+    return any(
+        fnmatch.fnmatch(package_name.lower(), pattern) for pattern in PROTECTED_PACKAGE_PATTERNS
+    )
