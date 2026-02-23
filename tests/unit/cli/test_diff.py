@@ -82,13 +82,11 @@ class TestDiffNoManifest:
         """Diff shows error when manifest doesn't exist."""
         from popctl.core.manifest import ManifestNotFoundError
 
-        with patch("popctl.cli.commands.diff.get_manifest_path") as mock_path:
-            mock_path.return_value = tmp_path / "nonexistent.toml"
-            with patch(
-                "popctl.cli.commands.diff.load_manifest",
-                side_effect=ManifestNotFoundError("Manifest not found"),
-            ):
-                result = runner.invoke(app, ["diff"])
+        with patch(
+            "popctl.core.manifest.load_manifest",
+            side_effect=ManifestNotFoundError("Manifest not found"),
+        ):
+            result = runner.invoke(app, ["diff"])
 
         assert result.exit_code == 1
         assert "Manifest not found" in (result.stdout + result.stderr)
@@ -103,7 +101,7 @@ class TestDiffInSync:
     ) -> None:
         """Diff shows success message when in sync."""
         with (
-            patch("popctl.cli.commands.diff.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch.object(
@@ -126,7 +124,7 @@ class TestDiffWithChanges:
     ) -> None:
         """Diff shows table with changes."""
         with (
-            patch("popctl.cli.commands.diff.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch.object(
@@ -147,7 +145,7 @@ class TestDiffWithChanges:
     ) -> None:
         """Diff shows summary line."""
         with (
-            patch("popctl.cli.commands.diff.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch.object(
@@ -171,7 +169,7 @@ class TestDiffBrief:
     ) -> None:
         """Brief diff shows success message when in sync."""
         with (
-            patch("popctl.cli.commands.diff.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch.object(
@@ -190,7 +188,7 @@ class TestDiffBrief:
     ) -> None:
         """Brief diff shows counts only."""
         with (
-            patch("popctl.cli.commands.diff.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch.object(
@@ -216,7 +214,7 @@ class TestDiffJson:
     ) -> None:
         """JSON output is valid JSON."""
         with (
-            patch("popctl.cli.commands.diff.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch.object(
@@ -241,7 +239,7 @@ class TestDiffJson:
     ) -> None:
         """JSON output has expected structure."""
         with (
-            patch("popctl.cli.commands.diff.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch.object(
@@ -262,7 +260,7 @@ class TestDiffJson:
     def test_diff_json_in_sync(self, sample_manifest: Manifest, in_sync_result: DiffResult) -> None:
         """JSON output shows in_sync true when system matches."""
         with (
-            patch("popctl.cli.commands.diff.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch.object(
@@ -290,7 +288,7 @@ class TestDiffSourceFilter:
         )
 
         with (
-            patch("popctl.cli.commands.diff.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=True),
             patch.object(
@@ -314,7 +312,7 @@ class TestDiffScannerAvailability:
     def test_diff_no_scanners_available(self, sample_manifest: Manifest) -> None:
         """Diff fails gracefully when no scanners available."""
         with (
-            patch("popctl.cli.commands.diff.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=False),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
         ):
@@ -328,7 +326,7 @@ class TestDiffScannerAvailability:
     ) -> None:
         """Diff warns when Flatpak is unavailable but continues with APT."""
         with (
-            patch("popctl.cli.commands.diff.load_manifest", return_value=sample_manifest),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch.object(

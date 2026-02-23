@@ -4,20 +4,14 @@ Applies the manifest to the system by installing missing packages
 and removing extra packages.
 """
 
-from enum import Enum
 from typing import Annotated
 
 import typer
 from rich.table import Table
 
+from popctl.cli.types import SourceChoice, get_scanners
 from popctl.core.baseline import is_protected
 from popctl.core.diff import DiffEngine, DiffResult
-from popctl.core.manifest import (
-    ManifestError,
-    ManifestNotFoundError,
-    load_manifest,
-)
-from popctl.core.paths import get_manifest_path
 from popctl.core.state import StateManager
 from popctl.models.action import (
     Action,
@@ -35,9 +29,7 @@ from popctl.models.package import PackageSource
 from popctl.operators.apt import AptOperator
 from popctl.operators.base import Operator
 from popctl.operators.flatpak import FlatpakOperator
-from popctl.scanners.apt import AptScanner
 from popctl.scanners.base import Scanner
-from popctl.scanners.flatpak import FlatpakScanner
 from popctl.utils.formatting import (
     console,
     print_error,
@@ -50,34 +42,6 @@ app = typer.Typer(
     help="Apply manifest to system.",
     invoke_without_command=True,
 )
-
-
-class SourceChoice(str, Enum):
-    """Available package sources for apply filtering."""
-
-    APT = "apt"
-    FLATPAK = "flatpak"
-    ALL = "all"
-
-
-def _get_scanners(source: SourceChoice) -> list[Scanner]:
-    """Get scanner instances based on source selection.
-
-    Args:
-        source: The source choice (apt, flatpak, or all).
-
-    Returns:
-        List of scanner instances.
-    """
-    scanners: list[Scanner] = []
-
-    if source in (SourceChoice.APT, SourceChoice.ALL):
-        scanners.append(AptScanner())
-
-    if source in (SourceChoice.FLATPAK, SourceChoice.ALL):
-        scanners.append(FlatpakScanner())
-
-    return scanners
 
 
 def _get_operators(source: SourceChoice, dry_run: bool) -> list[Operator]:
@@ -403,9 +367,10 @@ def _record_actions_to_history(results: list[ActionResult]) -> None:
                     action_type.value,
                 )
 
-    except Exception as e:
-        # Log error but don't interrupt the main flow
+    except (OSError, RuntimeError) as e:
+        # Log and inform user, but don't interrupt the main flow
         logger.warning("Failed to record actions to history: %s", str(e))
+        print_warning(f"Could not record actions to history: {e}")
 
 
 @app.callback(invoke_without_command=True)
@@ -469,19 +434,13 @@ def apply_manifest(
     if ctx.invoked_subcommand is not None:
         return
 
-    # Load manifest
-    try:
-        manifest = load_manifest()
-    except ManifestNotFoundError as e:
-        print_error(f"Manifest not found: {get_manifest_path()}")
-        print_info("Run 'popctl init' to create a manifest from your current system.")
-        raise typer.Exit(code=1) from e
-    except ManifestError as e:
-        print_error(f"Failed to load manifest: {e}")
-        raise typer.Exit(code=1) from e
+    # Load manifest (exits with helpful message if not found)
+    from popctl.core.manifest import require_manifest
+
+    manifest = require_manifest()
 
     # Get scanners and check availability
-    scanners = _get_scanners(source)
+    scanners = get_scanners(source)
     available_scanners: list[Scanner] = []
 
     for scanner in scanners:

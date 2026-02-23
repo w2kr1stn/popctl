@@ -18,10 +18,6 @@ class TestPackageSource:
         """FLATPAK source has correct value."""
         assert PackageSource.FLATPAK.value == "flatpak"
 
-    def test_snap_value(self) -> None:
-        """SNAP source has correct value."""
-        assert PackageSource.SNAP.value == "snap"
-
     def test_all_sources_are_unique(self) -> None:
         """All source values are unique."""
         values = [s.value for s in PackageSource]

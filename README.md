@@ -1,4 +1,4 @@
- --# popctl
+# popctl
 
 Declarative system configuration for Pop!_OS.
 
@@ -23,6 +23,177 @@ cd popctl
 # Install with uv (recommended)
 uv sync
 ```
+
+## Workflow
+
+The complete popctl workflow consists of six stages:
+
+```
+┌──────────┐     ┌──────────┐     ┌──────────┐
+│   init   │────>│   scan   │────>│   diff   │
+│          │     │ (optional│     │          │
+│ Creates  │     │  for     │     │ Compares │
+│ manifest │     │  debug)  │     │ manifest │
+└──────────┘     └──────────┘     │ vs system│
+                                  └────┬─────┘
+                                       │
+                                       v
+┌──────────┐     ┌──────────┐     ┌──────────┐
+│  apply   │<────│ advisor  │<────│ advisor  │
+│          │     │  apply   │     │ classify │
+│ Executes │     │          │     │          │
+│ install/ │     │ Updates  │     │ AI       │
+│ remove   │     │ manifest │     │ classifies│
+└──────────┘     └──────────┘     └──────────┘
+```
+
+### Stage 1: `popctl init`
+
+**Purpose:** Creates a `manifest.toml` from the current system state.
+
+**What happens:**
+
+1. Checks if `manifest.toml` already exists (error unless `--force`)
+2. Loads available scanners (APT, Flatpak)
+3. Scans all packages from each scanner:
+   - Filters: Only `PackageStatus.MANUAL` (no auto-installed dependencies)
+   - Filters: Excludes protected packages (kernel, systemd, Pop!_OS core, etc.)
+4. Creates manifest structure:
+   - `meta`: version, created, updated timestamps
+   - `system`: hostname, base distribution
+   - `packages.keep`: all manually installed packages
+   - `packages.remove`: empty (nothing marked for removal yet)
+5. Saves to `~/.config/popctl/manifest.toml`
+
+**Output:** `~/.config/popctl/manifest.toml`
+
+### Stage 2: `popctl scan`
+
+**Purpose:** Displays currently installed packages (read-only, no changes).
+
+**What happens:**
+
+1. Loads scanners based on `--source` (apt/flatpak/all)
+2. Iterates over all available scanners, calling `scanner.scan()`
+3. For each package:
+   - Counts total/manual/auto
+   - Collects in list
+   - Optional: Filter with `--manual-only`
+4. Sorts by (source, name)
+5. Outputs based on flags:
+   - `--format table`: Rich table (default)
+   - `--format json`: JSON to stdout
+   - `--export path`: JSON file
+   - `--count`: Summary counts only
+
+**Output:** Terminal table or JSON (read-only, no state changes)
+
+### Stage 3: `popctl diff`
+
+**Purpose:** Compares manifest with current system state.
+
+**What happens:**
+
+1. Loads `manifest.toml` via `require_manifest()` (error if not found)
+2. Loads scanners and scans current system
+3. `DiffEngine.compute_diff()` calculates three categories:
+
+| DiffType | Symbol | Meaning | Action on `apply` |
+|----------|--------|---------|-------------------|
+| `NEW` | `[+]` | Installed but NOT in manifest | None (user decides) |
+| `MISSING` | `[-]` | In manifest (keep) but NOT installed | INSTALL |
+| `EXTRA` | `[x]` | In manifest (remove) but still installed | REMOVE |
+
+4. Outputs table with Status, Source, Package, Note
+
+**Output:** `DiffResult` with `new`, `missing`, `extra` tuples
+
+### Stage 4: `popctl advisor classify`
+
+**Purpose:** AI classifies packages into keep/remove/ask categories.
+
+**What happens:**
+
+1. Container warning if running in Docker/Podman
+2. Loads/creates `AdvisorConfig`:
+   - `provider`: "claude" or "gemini"
+   - `model`: "sonnet", "opus", etc.
+   - `timeout_seconds`: 600 (default)
+3. Scans system (APT + Flatpak) or loads from `--input scan.json`
+4. Creates exchange directory: `/tmp/popctl-exchange/`
+5. Exports files:
+   - `scan.json`: All packages with metadata (name, source, version, status, description, size)
+   - `prompt.md`: System prompt for AI
+   - `instructions.md`: Instructions for user (interactive mode)
+6. Execution mode:
+   - **Interactive (default):** Shows instructions for manual AI agent execution
+   - **Headless (`--auto`):** AgentRunner starts AI process automatically
+
+**AI Classification Logic:**
+
+| Decision | Confidence | Criteria |
+|----------|------------|----------|
+| KEEP | >= 0.9 | System-critical, libraries, hardware support |
+| REMOVE | >= 0.9 | Orphaned dependencies, obsolete, telemetry |
+| ASK | < 0.9 | Uncertain, requires user decision |
+
+**Output:** `/tmp/popctl-exchange/decisions.toml`
+
+```toml
+[apt.keep]
+build-essential = { reason = "Development toolchain", confidence = 0.95 }
+
+[apt.remove]
+telemetry-pkg = { reason = "Telemetry/tracking", confidence = 0.92 }
+
+[apt.ask]
+some-tool = { reason = "Purpose unclear", confidence = 0.6 }
+```
+
+### Stage 5: `popctl advisor apply`
+
+**Purpose:** Transfers AI decisions into the manifest.
+
+**What happens:**
+
+1. Loads `decisions.toml` from exchange directory (or `--input path`)
+2. Loads current `manifest.toml`
+3. For each source (apt, flatpak):
+   - **KEEP decisions** -> `manifest.packages.keep[name]` with `PackageEntry(source, status="keep", reason=...)`
+   - **REMOVE decisions** -> `manifest.packages.remove[name]` with `PackageEntry(source, status="remove", reason=...)`
+   - **ASK decisions** -> Skipped (displayed for manual user decision)
+4. Displays summary table (Keep/Remove/Ask counts per source)
+5. Saves updated manifest (updates `meta.updated` timestamp)
+6. Writes history entry (`ADVISOR_APPLY`)
+
+**Output:** Updated `manifest.toml` with AI classifications
+
+### Stage 6: `popctl apply`
+
+**Purpose:** Executes the manifest (installs/removes packages).
+
+**What happens:**
+
+1. Loads `manifest.toml`
+2. Loads scanners and computes diff
+3. Converts diff to actions:
+   - `MISSING` -> `Action(INSTALL, package, source)`
+   - `EXTRA` -> `Action(REMOVE/PURGE, package, source)`
+   - `NEW` -> **IGNORED** (user must explicitly handle)
+4. Protected-check for all REMOVE actions (`is_protected()` -> action skipped)
+5. Displays actions table + summary
+6. Confirmation prompt (unless `--yes`)
+7. Loads operators (`AptOperator`, `FlatpakOperator`)
+8. Executes actions:
+   - `AptOperator`: `apt-get install/remove/purge`
+   - `FlatpakOperator`: `flatpak install/uninstall`
+9. Displays results table (OK/FAIL per action)
+10. Writes history entries (enables later `popctl undo`):
+    - `INSTALL`: All installed packages
+    - `REMOVE`: All removed packages
+    - `PURGE`: All purged packages
+
+**Output:** System changes + history in `~/.local/state/popctl/history.jsonl`
 
 ## Usage
 
@@ -106,7 +277,7 @@ popctl apply --source apt
 popctl apply --purge
 ```
 
-### History and Undo (MVP-3)
+### History and Undo
 
 ```bash
 # View history of package changes
@@ -131,7 +302,7 @@ popctl undo --dry-run
 popctl undo --yes
 ```
 
-### AI-Assisted Classification (MVP-2)
+### AI-Assisted Classification
 
 The advisor feature uses AI agents (Claude Code or Gemini CLI) to classify packages as keep, remove, or ask.
 
@@ -169,6 +340,58 @@ popctl history --help      # Show history command help
 popctl undo --help         # Show undo command help
 ```
 
+## Configuration
+
+### Advisor Configuration
+
+The advisor can be configured via `~/.config/popctl/advisor.toml`:
+
+```toml
+# AI provider: "claude" or "gemini"
+provider = "claude"
+
+# Model to use (optional, defaults per provider)
+model = "sonnet"
+
+# Timeout for headless mode in seconds (default: 600 = 10 min)
+timeout_seconds = 600
+
+# Path to ai-dev-base dev.sh script for container execution (optional)
+# dev_script = "~/projects/ai-dev-base/scripts/dev.sh"
+```
+
+### Dev Container Mode
+
+If you're running popctl inside a development container (e.g., ai-dev-base), you need to configure the `dev_script` path so the advisor can invoke the AI agent correctly:
+
+1. **Create/edit** `~/.config/popctl/advisor.toml`:
+
+```toml
+provider = "claude"
+dev_script = "/path/to/ai-dev-base/scripts/dev.sh"
+```
+
+2. **Set the path** to your `dev.sh` script (the wrapper that launches the container with the AI CLI).
+
+3. **Run advisor** normally:
+
+```bash
+popctl advisor classify --auto
+```
+
+The advisor will detect the `dev_script` setting and use it to invoke the AI agent through the container wrapper instead of calling `claude` or `gemini` directly.
+
+**Note:** When running inside a container, popctl displays a warning because package scanning and system modifications may not work correctly. For best results, run popctl directly on the host system.
+
+### File Locations
+
+| File | Path | Purpose |
+|------|------|---------|
+| Manifest | `~/.config/popctl/manifest.toml` | Desired system state |
+| Advisor Config | `~/.config/popctl/advisor.toml` | AI provider settings |
+| History | `~/.local/state/popctl/history.jsonl` | Action log for undo |
+| Exchange Dir | `/tmp/popctl-exchange/` | AI agent communication |
+
 ## Development
 
 ### Setup Development Environment
@@ -177,14 +400,17 @@ popctl undo --help         # Show undo command help
 # Install development dependencies
 uv sync --dev
 
-# Run tests
-uv run pytest
-
-# Run linter
-uv run ruff check app/popctl
+# Run all quality checks (lint + format)
+uv run fmt
 
 # Run type checker
-uv run pyright app/popctl
+uv run pyright .
+
+# Run tests
+uv run test
+
+# Run tests with coverage report
+uv run testcov
 
 # Run security scanner
 uv run bandit -r app/popctl
@@ -198,6 +424,7 @@ app/popctl/
 ├── __main__.py          # Module entry point
 ├── cli/
 │   ├── main.py          # Typer app and global options
+│   ├── types.py         # Shared CLI types (SourceChoice, scanner helpers)
 │   └── commands/
 │       ├── scan.py      # Scan command implementation
 │       ├── init.py      # Init command implementation
@@ -239,19 +466,6 @@ app/popctl/
     ├── shell.py         # Subprocess helpers
     └── formatting.py    # Rich console formatting
 ```
-
-## Roadmap
-
-### PoC Phase (Complete ✅)
-- [x] PoC-1: Hello APT - Scan APT packages
-- [x] PoC-2: Multi-Source - Flatpak scanner + export
-- [x] PoC-3: Manifest Birth - Generate manifest from scan
-- [x] PoC-4: Diff Engine - Compare manifest vs system
-
-### MVP Phase (Complete ✅)
-- [x] MVP-1: First Apply - Install/remove packages
-- [x] MVP-2: Claude Advisor - AI-assisted classification
-- [x] MVP-3: Safety Net - History and undo
 
 ## License
 

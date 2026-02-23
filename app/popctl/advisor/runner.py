@@ -67,6 +67,8 @@ class AgentRunner:
         Returns:
             AgentResult with path to decisions.toml if successful.
         """
+        from popctl.utils.shell import run_command
+
         if not prompt_file.exists():
             return AgentResult(
                 success=False,
@@ -77,17 +79,15 @@ class AgentRunner:
         command = self._build_command(prompt_file)
 
         try:
-            result = subprocess.run(
+            result = run_command(
                 command,
-                capture_output=True,
-                text=True,
-                timeout=self.config.timeout_seconds,
+                timeout=float(self.config.timeout_seconds),
                 cwd=str(exchange_dir),
             )
 
             decisions_path = exchange_dir / "decisions.toml"
 
-            if result.returncode == 0:
+            if result.success:
                 # Check if decisions file was created
                 if decisions_path.exists():
                     return AgentResult(

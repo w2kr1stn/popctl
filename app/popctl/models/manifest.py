@@ -7,7 +7,7 @@ structure that describes the desired system state.
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ManifestMeta(BaseModel):
@@ -96,6 +96,15 @@ class PackageConfig(BaseModel):
         dict[str, PackageEntry],
         Field(default_factory=dict, description="Packages to remove"),
     ]
+
+    @model_validator(mode="after")
+    def validate_no_duplicates(self) -> PackageConfig:
+        """Validate that no package appears in both keep and remove lists."""
+        duplicates = set(self.keep.keys()) & set(self.remove.keys())
+        if duplicates:
+            msg = f"Packages cannot be in both keep and remove: {duplicates}"
+            raise ValueError(msg)
+        return self
 
 
 class Manifest(BaseModel):
