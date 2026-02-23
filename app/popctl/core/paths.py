@@ -163,3 +163,57 @@ def ensure_dirs() -> None:
     ensure_config_dir()
     ensure_state_dir()
     ensure_cache_dir()
+
+
+# =============================================================================
+# Advisor-specific paths
+# =============================================================================
+
+# Exchange directory for file-based communication with AI advisors
+EXCHANGE_DIR = Path("/tmp/popctl-exchange")
+
+
+def get_exchange_dir() -> Path:
+    """Get the exchange directory path for advisor communication.
+
+    The exchange directory is used for file-based communication between
+    popctl and AI advisors (Claude Code / Gemini CLI). Files placed here
+    include scan.json, prompt.txt, and decisions.toml.
+
+    Returns:
+        Path to /tmp/popctl-exchange.
+    """
+    return EXCHANGE_DIR
+
+
+def ensure_exchange_dir() -> Path:
+    """Create the exchange directory if it doesn't exist.
+
+    The exchange directory is created with standard permissions in /tmp.
+    This should be called before any advisor operations.
+
+    Returns:
+        Path to the exchange directory.
+
+    Raises:
+        RuntimeError: If the directory cannot be created.
+    """
+    exchange_dir = get_exchange_dir()
+    try:
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError as e:
+        msg = f"Cannot create exchange directory {exchange_dir}: Permission denied"
+        raise RuntimeError(msg) from e
+    except OSError as e:
+        msg = f"Cannot create exchange directory {exchange_dir}: {e}"
+        raise RuntimeError(msg) from e
+    return exchange_dir
+
+
+def get_advisor_config_path() -> Path:
+    """Get the advisor configuration file path.
+
+    Returns:
+        Path to ~/.config/popctl/advisor.toml.
+    """
+    return get_config_dir() / "advisor.toml"
