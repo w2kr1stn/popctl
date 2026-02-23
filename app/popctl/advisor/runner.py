@@ -14,6 +14,7 @@ from pathlib import Path
 from popctl.advisor.config import AdvisorConfig
 from popctl.advisor.prompts import INITIAL_PROMPT
 from popctl.core.paths import ensure_dir, get_state_dir
+from popctl.utils.formatting import print_warning
 from popctl.utils.shell import run_command, run_interactive
 
 MANUAL_MODE_SENTINEL: str = "manual_mode"
@@ -209,6 +210,7 @@ class AgentRunner:
             logger.debug("Persisted memory.md to %s", persistent_path)
         except (OSError, RuntimeError) as e:
             logger.warning("Could not persist memory.md: %s", e)
+            print_warning(f"Could not persist advisor memory: {e}")
 
     def _build_headless_command(self, workspace_dir: Path) -> list[str]:
         """Build command for headless agent execution.

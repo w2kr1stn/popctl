@@ -126,7 +126,7 @@ class TestAgentRunnerRunHeadless:
         mock_result.stderr = ""
         mock_result.returncode = 0
 
-        with patch("popctl.utils.shell.run_command", return_value=mock_result):
+        with patch("popctl.advisor.runner.run_command", return_value=mock_result):
             result = runner.run_headless(workspace_dir)
 
         assert result.success is True
@@ -150,7 +150,7 @@ class TestAgentRunnerRunHeadless:
         mock_result.stderr = ""
         mock_result.returncode = 0
 
-        with patch("popctl.utils.shell.run_command", return_value=mock_result):
+        with patch("popctl.advisor.runner.run_command", return_value=mock_result):
             result = runner.run_headless(workspace_dir)
 
         assert result.success is False
@@ -172,7 +172,7 @@ class TestAgentRunnerRunHeadless:
         mock_result.stderr = "API key invalid"
         mock_result.returncode = 1
 
-        with patch("popctl.utils.shell.run_command", return_value=mock_result):
+        with patch("popctl.advisor.runner.run_command", return_value=mock_result):
             result = runner.run_headless(workspace_dir)
 
         assert result.success is False
@@ -188,7 +188,7 @@ class TestAgentRunnerRunHeadless:
         runner = AgentRunner(config=config)
 
         with patch(
-            "popctl.utils.shell.run_command",
+            "popctl.advisor.runner.run_command",
             side_effect=subprocess.TimeoutExpired(cmd=["claude"], timeout=60),
         ):
             result = runner.run_headless(workspace_dir)
@@ -208,7 +208,7 @@ class TestAgentRunnerRunHeadless:
         runner = AgentRunner(config=config)
 
         with patch(
-            "popctl.utils.shell.run_command",
+            "popctl.advisor.runner.run_command",
             side_effect=FileNotFoundError("claude not found"),
         ):
             result = runner.run_headless(workspace_dir)
@@ -226,7 +226,7 @@ class TestAgentRunnerRunHeadless:
         runner = AgentRunner(config=config)
 
         with patch(
-            "popctl.utils.shell.run_command",
+            "popctl.advisor.runner.run_command",
             side_effect=OSError("Permission denied"),
         ):
             result = runner.run_headless(workspace_dir)
@@ -251,7 +251,7 @@ class TestAgentRunnerRunHeadless:
         mock_result.stderr = ""
         mock_result.returncode = 0
 
-        with patch("popctl.utils.shell.run_command", return_value=mock_result) as mock_run:
+        with patch("popctl.advisor.runner.run_command", return_value=mock_result) as mock_run:
             runner.run_headless(workspace_dir)
 
         mock_run.assert_called_once()
@@ -275,7 +275,7 @@ class TestAgentRunnerRunHeadless:
         mock_result.stderr = ""
         mock_result.returncode = 0
 
-        with patch("popctl.utils.shell.run_command", return_value=mock_result) as mock_run:
+        with patch("popctl.advisor.runner.run_command", return_value=mock_result) as mock_run:
             runner.run_headless(workspace_dir)
 
         mock_run.assert_called_once()
@@ -318,7 +318,7 @@ class TestAgentRunnerLaunchInteractive:
             patch("sys.stdin") as mock_stdin,
             patch("shutil.which", return_value="/usr/bin/claude"),
             patch(
-                "popctl.utils.shell.run_interactive",
+                "popctl.advisor.runner.run_interactive",
                 side_effect=mock_run_interactive,
             ),
         ):
@@ -341,7 +341,7 @@ class TestAgentRunnerLaunchInteractive:
         with (
             patch("sys.stdin") as mock_stdin,
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("popctl.utils.shell.run_interactive", return_value=0),
+            patch("popctl.advisor.runner.run_interactive", return_value=0),
         ):
             mock_stdin.isatty.return_value = True
             result = runner.launch_interactive(workspace_dir)
@@ -366,7 +366,7 @@ class TestAgentRunnerLaunchInteractive:
         with (
             patch("sys.stdin") as mock_stdin,
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("popctl.utils.shell.run_interactive", side_effect=mock_run_interactive),
+            patch("popctl.advisor.runner.run_interactive", side_effect=mock_run_interactive),
             patch.object(runner, "_persist_memory") as mock_persist,
         ):
             mock_stdin.isatty.return_value = True
@@ -403,7 +403,7 @@ class TestAgentRunnerLaunchInteractive:
         with (
             patch("sys.stdin") as mock_stdin,
             patch("shutil.which", return_value="/usr/bin/gemini"),
-            patch("popctl.utils.shell.run_interactive", return_value=0) as mock_run,
+            patch("popctl.advisor.runner.run_interactive", return_value=0) as mock_run,
         ):
             mock_stdin.isatty.return_value = True
             runner.launch_interactive(workspace_dir)
@@ -425,7 +425,7 @@ class TestAgentRunnerLaunchInteractive:
         with (
             patch("sys.stdin") as mock_stdin,
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("popctl.utils.shell.run_interactive", return_value=0) as mock_run,
+            patch("popctl.advisor.runner.run_interactive", return_value=0) as mock_run,
         ):
             mock_stdin.isatty.return_value = True
             runner.launch_interactive(workspace_dir)
@@ -446,7 +446,7 @@ class TestAgentRunnerLaunchInteractive:
         with (
             patch("sys.stdin") as mock_stdin,
             patch("shutil.which", return_value="/usr/bin/gemini"),
-            patch("popctl.utils.shell.run_interactive", return_value=0) as mock_run,
+            patch("popctl.advisor.runner.run_interactive", return_value=0) as mock_run,
         ):
             mock_stdin.isatty.return_value = True
             runner.launch_interactive(workspace_dir)
@@ -482,7 +482,7 @@ class TestAgentRunnerPersistMemory:
         runner = AgentRunner(config=config)
 
         with patch(
-            "popctl.core.paths.ensure_dir",
+            "popctl.advisor.runner.ensure_dir",
             return_value=persistent_dir,
         ):
             persistent_dir.mkdir(parents=True, exist_ok=True)
@@ -492,19 +492,24 @@ class TestAgentRunnerPersistMemory:
         assert "Advisor Memory" in persistent_path.read_text()
 
     def test_persist_memory_handles_runtime_error(self, tmp_path: Path) -> None:
-        """_persist_memory logs warning on failure without raising."""
+        """_persist_memory logs warning and prints user-visible warning on failure."""
         workspace_memory = tmp_path / "memory.md"
         workspace_memory.write_text("# Memory\n")
 
         config = AdvisorConfig()
         runner = AgentRunner(config=config)
 
-        with patch(
-            "popctl.core.paths.ensure_dir",
-            side_effect=RuntimeError("Permission denied"),
+        with (
+            patch(
+                "popctl.advisor.runner.ensure_dir",
+                side_effect=RuntimeError("Permission denied"),
+            ),
+            patch("popctl.advisor.runner.print_warning") as mock_warn,
         ):
             # Should not raise
             runner._persist_memory(workspace_memory)
+
+        mock_warn.assert_called_once_with("Could not persist advisor memory: Permission denied")
 
 
 class TestAgentRunnerIntegration:
