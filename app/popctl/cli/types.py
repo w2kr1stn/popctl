@@ -9,6 +9,7 @@ from enum import Enum
 from popctl.scanners.apt import AptScanner
 from popctl.scanners.base import Scanner
 from popctl.scanners.flatpak import FlatpakScanner
+from popctl.scanners.snap import SnapScanner
 
 
 class SourceChoice(str, Enum):
@@ -16,6 +17,7 @@ class SourceChoice(str, Enum):
 
     APT = "apt"
     FLATPAK = "flatpak"
+    SNAP = "snap"
     ALL = "all"
 
 
@@ -23,7 +25,7 @@ def get_scanners(source: SourceChoice = SourceChoice.ALL) -> list[Scanner]:
     """Get scanner instances based on source selection.
 
     Args:
-        source: The source choice (apt, flatpak, or all).
+        source: The source choice (apt, flatpak, snap, or all).
 
     Returns:
         List of scanner instances.
@@ -35,6 +37,9 @@ def get_scanners(source: SourceChoice = SourceChoice.ALL) -> list[Scanner]:
 
     if source in (SourceChoice.FLATPAK, SourceChoice.ALL):
         scanners.append(FlatpakScanner())
+
+    if source in (SourceChoice.SNAP, SourceChoice.ALL):
+        scanners.append(SnapScanner())
 
     return scanners
 

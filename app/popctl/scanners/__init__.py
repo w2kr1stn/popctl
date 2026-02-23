@@ -6,5 +6,6 @@ This module exports the scanner classes for querying installed packages.
 from popctl.scanners.apt import AptScanner
 from popctl.scanners.base import Scanner
 from popctl.scanners.flatpak import FlatpakScanner
+from popctl.scanners.snap import SnapScanner
 
-__all__ = ["AptScanner", "FlatpakScanner", "Scanner"]
+__all__ = ["AptScanner", "FlatpakScanner", "Scanner", "SnapScanner"]

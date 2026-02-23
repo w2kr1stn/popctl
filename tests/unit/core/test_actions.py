@@ -21,14 +21,18 @@ class TestSourceToPackageSource:
         """'flatpak' maps to PackageSource.FLATPAK."""
         assert source_to_package_source("flatpak") == PackageSource.FLATPAK
 
+    def test_source_to_package_source_snap(self) -> None:
+        """'snap' maps to PackageSource.SNAP."""
+        assert source_to_package_source("snap") == PackageSource.SNAP
+
     def test_source_to_package_source_invalid(self) -> None:
         """Invalid source string raises KeyError."""
         with pytest.raises(KeyError):
-            source_to_package_source("snap")
+            source_to_package_source("brew")
 
     def test_source_map_contains_expected_keys(self) -> None:
-        """SOURCE_MAP contains exactly 'apt' and 'flatpak'."""
-        assert set(SOURCE_MAP.keys()) == {"apt", "flatpak"}
+        """SOURCE_MAP contains exactly 'apt', 'flatpak', and 'snap'."""
+        assert set(SOURCE_MAP.keys()) == {"apt", "flatpak", "snap"}
 
 
 class TestDiffToActionsMissing:
@@ -159,8 +163,22 @@ class TestDiffToActionsPurge:
         assert actions[0].action_type == ActionType.REMOVE
         assert actions[0].source == PackageSource.FLATPAK
 
+    def test_diff_to_actions_purge_for_snap(self) -> None:
+        """purge=True produces PURGE actions for Snap packages."""
+        diff_result = DiffResult(
+            new=(),
+            missing=(),
+            extra=(DiffEntry(name="telegram-desktop", source="snap", diff_type=DiffType.EXTRA),),
+        )
+
+        actions = diff_to_actions(diff_result, purge=True)
+
+        assert len(actions) == 1
+        assert actions[0].action_type == ActionType.PURGE
+        assert actions[0].source == PackageSource.SNAP
+
     def test_diff_to_actions_purge_mixed_sources(self) -> None:
-        """purge=True: APT gets PURGE, flatpak gets REMOVE."""
+        """purge=True: APT gets PURGE, flatpak gets REMOVE, snap gets PURGE."""
         diff_result = DiffResult(
             new=(),
             missing=(),
@@ -171,16 +189,23 @@ class TestDiffToActionsPurge:
                     source="flatpak",
                     diff_type=DiffType.EXTRA,
                 ),
+                DiffEntry(
+                    name="telegram-desktop",
+                    source="snap",
+                    diff_type=DiffType.EXTRA,
+                ),
             ),
         )
 
         actions = diff_to_actions(diff_result, purge=True)
 
-        assert len(actions) == 2
+        assert len(actions) == 3
         apt_action = next(a for a in actions if a.source == PackageSource.APT)
         flatpak_action = next(a for a in actions if a.source == PackageSource.FLATPAK)
+        snap_action = next(a for a in actions if a.source == PackageSource.SNAP)
         assert apt_action.action_type == ActionType.PURGE
         assert flatpak_action.action_type == ActionType.REMOVE
+        assert snap_action.action_type == ActionType.PURGE
 
 
 class TestDiffToActionsProtected:

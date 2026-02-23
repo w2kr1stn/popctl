@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from popctl.models.scan_result import ScanResult
 
 # Type alias for package source keys in decisions
-PackageSourceKey = Literal["apt", "flatpak"]
+PackageSourceKey = Literal["apt", "flatpak", "snap"]
 
 
 # =============================================================================
@@ -220,6 +220,7 @@ def export_scan_for_advisor(
         "manual_apt": 0,
         "auto_apt": 0,
         "flatpak": 0,
+        "snap": 0,
         "unknown": len(packages_by_group["unknown"]),
     }
 
@@ -231,6 +232,8 @@ def export_scan_for_advisor(
                 summary["auto_apt"] += 1
         elif pkg.source.value == "flatpak":
             summary["flatpak"] += 1
+        elif pkg.source.value == "snap":
+            summary["snap"] += 1
 
     # Build system info
     system_info: dict[str, str] = {
@@ -397,7 +400,7 @@ def _parse_decisions_data(data: dict[str, Any]) -> DecisionsResult:
     # Parse each source's decisions
     parsed_packages: dict[str, SourceDecisions] = {}
 
-    for source in ("apt", "flatpak"):
+    for source in ("apt", "flatpak", "snap"):
         source_data: Any = packages_dict.get(source, {})
 
         if not isinstance(source_data, dict):

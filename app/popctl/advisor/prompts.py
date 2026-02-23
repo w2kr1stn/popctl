@@ -73,6 +73,11 @@ ask = [
 keep = []
 remove = []
 ask = []
+
+[packages.snap]
+keep = []
+remove = []
+ask = []
 """
 # fmt: on
 
@@ -127,6 +132,10 @@ Write your decisions to `{decisions_output_path}` in TOML format.
 - Optional desktop features (accessibility, input methods)
 - Anything where you are uncertain
 
+**Note**: Snap packages follow the same classification rules as Flatpak — \
+they are user-facing applications. Classify them by their purpose, not their \
+packaging format.
+
 ## Valid Categories
 
 Use one of these categories for each package:
@@ -152,6 +161,11 @@ ask = [
 ]
 
 [packages.flatpak]
+keep = []
+remove = []
+ask = []
+
+[packages.snap]
 keep = []
 remove = []
 ask = []
@@ -329,7 +343,8 @@ If it exists, update it. Structure:
 
 Packages matching these patterns must always be classified as KEEP:
 `linux-*`, `systemd*`, `cosmic-*`, `pop-*`, `system76-*`, `grub-*`,
-`apt*`, `dpkg*`, `flatpak`, `bash`, `coreutils`, `sudo`, `networkmanager*`
+`apt*`, `dpkg*`, `flatpak`, `bash`, `coreutils`, `sudo`, `networkmanager*`,
+`snapd`, `core*`
 
 ## Valid Categories
 
@@ -350,6 +365,11 @@ ask = [
 ]
 
 [packages.flatpak]
+keep = []
+remove = []
+ask = []
+
+[packages.snap]
 keep = []
 remove = []
 ask = []

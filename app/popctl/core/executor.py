@@ -21,6 +21,7 @@ from popctl.models.history import (
 from popctl.operators.apt import AptOperator
 from popctl.operators.base import Operator
 from popctl.operators.flatpak import FlatpakOperator
+from popctl.operators.snap import SnapOperator
 from popctl.utils.formatting import print_warning
 
 if TYPE_CHECKING:
@@ -41,7 +42,7 @@ def get_operators(source: SourceChoice, dry_run: bool = False) -> list[Operator]
     """Get operator instances based on source selection.
 
     Args:
-        source: The source choice (apt, flatpak, or all).
+        source: The source choice (apt, flatpak, snap, or all).
         dry_run: Whether to run in dry-run mode.
 
     Returns:
@@ -54,6 +55,9 @@ def get_operators(source: SourceChoice, dry_run: bool = False) -> list[Operator]
 
     if source in (SourceChoice.FLATPAK, SourceChoice.ALL):
         operators.append(FlatpakOperator(dry_run=dry_run))
+
+    if source in (SourceChoice.SNAP, SourceChoice.ALL):
+        operators.append(SnapOperator(dry_run=dry_run))
 
     return operators
 

@@ -52,7 +52,7 @@ class SystemConfig(BaseModel):
 PackageStatusType = Literal["keep", "remove", "optional"]
 
 # Type alias for package source in manifest
-PackageSourceType = Literal["apt", "flatpak"]
+PackageSourceType = Literal["apt", "flatpak", "snap"]
 
 
 class PackageEntry(BaseModel):

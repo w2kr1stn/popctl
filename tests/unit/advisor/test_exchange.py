@@ -59,6 +59,14 @@ def sample_packages() -> list[ScannedPackage]:
             description="Music streaming service",
             size_bytes=1073741824,
         ),
+        ScannedPackage(
+            name="vlc",
+            source=PackageSource.SNAP,
+            version="3.0.20",
+            status=PackageStatus.MANUAL,
+            description="VLC media player",
+            size_bytes=None,
+        ),
     ]
 
 
@@ -67,7 +75,7 @@ def sample_scan_result(sample_packages: list[ScannedPackage]) -> ScanResult:
     """Create sample ScanResult for testing."""
     return ScanResult.create(
         packages=sample_packages,
-        sources=["apt", "flatpak"],
+        sources=["apt", "flatpak", "snap"],
         manual_only=False,
     )
 
@@ -96,6 +104,15 @@ keep = [
     { name = "com.spotify.Client", reason = "Music app", confidence = 0.90, category = "media" },
 ]
 remove = []
+ask = []
+
+[packages.snap]
+keep = [
+    { name = "vlc", reason = "Media player", confidence = 0.92, category = "media" },
+]
+remove = [
+    { name = "telegram-desktop", reason = "Use flatpak", confidence = 0.88, category = "desktop" },
+]
 ask = []
 """
 
@@ -310,16 +327,19 @@ class TestDecisionsResult:
             keep=[PackageDecision(name="apt-pkg", reason="r", confidence=0.9, category="system")]
         )
         flatpak_decisions = SourceDecisions()
+        snap_decisions = SourceDecisions()
 
         result = DecisionsResult(
             packages={
                 "apt": apt_decisions,
                 "flatpak": flatpak_decisions,
+                "snap": snap_decisions,
             }
         )
 
         assert "apt" in result.packages
         assert "flatpak" in result.packages
+        assert "snap" in result.packages
         assert len(result.packages["apt"].keep) == 1
 
 
@@ -363,12 +383,13 @@ class TestExportScanForAdvisor:
             data = json.load(f)
 
         unknown_packages = data["packages"]["unknown"]
-        assert len(unknown_packages) == 3
+        assert len(unknown_packages) == 4
 
         names = {p["name"] for p in unknown_packages}
         assert "firefox" in names
         assert "libgtk-3-0" in names
         assert "com.spotify.Client" in names
+        assert "vlc" in names
 
     def test_export_includes_system_info(
         self, tmp_path: Path, sample_scan_result: ScanResult
@@ -408,10 +429,11 @@ class TestExportScanForAdvisor:
             data = json.load(f)
 
         summary = data["summary"]
-        assert summary["total_packages"] == 3
+        assert summary["total_packages"] == 4
         assert summary["manual_apt"] == 1  # firefox
         assert summary["auto_apt"] == 1  # libgtk-3-0
         assert summary["flatpak"] == 1  # spotify
+        assert summary["snap"] == 1  # vlc
 
     def test_export_creates_exchange_dir_if_not_exists(
         self, tmp_path: Path, sample_scan_result: ScanResult
@@ -496,6 +518,7 @@ class TestImportDecisions:
         assert isinstance(result, DecisionsResult)
         assert "apt" in result.packages
         assert "flatpak" in result.packages
+        assert "snap" in result.packages
 
     def test_import_parses_keep_list(self, tmp_path: Path, valid_decisions_toml: str) -> None:
         """import_decisions correctly parses keep list."""
@@ -550,6 +573,48 @@ class TestImportDecisions:
         assert flatpak_keep[0].name == "com.spotify.Client"
         assert flatpak_keep[0].category == "media"
 
+    def test_import_parses_snap_decisions(self, tmp_path: Path, valid_decisions_toml: str) -> None:
+        """import_decisions correctly parses snap section."""
+        decisions_path = tmp_path / "decisions.toml"
+        decisions_path.write_text(valid_decisions_toml)
+
+        result = import_decisions(tmp_path)
+
+        snap_keep = result.packages["snap"].keep
+        assert len(snap_keep) == 1
+        assert snap_keep[0].name == "vlc"
+        assert snap_keep[0].category == "media"
+        assert snap_keep[0].confidence == 0.92
+
+        snap_remove = result.packages["snap"].remove
+        assert len(snap_remove) == 1
+        assert snap_remove[0].name == "telegram-desktop"
+
+    def test_import_handles_missing_snap_section(self, tmp_path: Path) -> None:
+        """import_decisions handles missing snap section gracefully."""
+        decisions_toml = """
+[packages.apt]
+keep = []
+remove = []
+ask = []
+
+[packages.flatpak]
+keep = []
+remove = []
+ask = []
+# snap section missing
+"""
+        decisions_path = tmp_path / "decisions.toml"
+        decisions_path.write_text(decisions_toml)
+
+        result = import_decisions(tmp_path)
+
+        # Should have empty snap decisions
+        assert "snap" in result.packages
+        assert result.packages["snap"].keep == []
+        assert result.packages["snap"].remove == []
+        assert result.packages["snap"].ask == []
+
     def test_import_raises_file_not_found(self, tmp_path: Path) -> None:
         """import_decisions raises FileNotFoundError if file missing."""
         with pytest.raises(FileNotFoundError, match="decisions.toml not found"):
@@ -585,6 +650,11 @@ ask = []
 keep = []
 remove = []
 ask = []
+
+[packages.snap]
+keep = []
+remove = []
+ask = []
 """
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
@@ -594,6 +664,9 @@ ask = []
         assert result.packages["apt"].keep == []
         assert result.packages["apt"].remove == []
         assert result.packages["apt"].ask == []
+        assert result.packages["snap"].keep == []
+        assert result.packages["snap"].remove == []
+        assert result.packages["snap"].ask == []
 
     def test_import_handles_missing_source(self, tmp_path: Path) -> None:
         """import_decisions handles missing source sections."""
@@ -602,16 +675,18 @@ ask = []
 keep = []
 remove = []
 ask = []
-# flatpak section missing
+# flatpak and snap sections missing
 """
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.write_text(decisions_toml)
 
         result = import_decisions(tmp_path)
 
-        # Should have empty flatpak decisions
+        # Should have empty flatpak and snap decisions
         assert result.packages["flatpak"].keep == []
         assert result.packages["flatpak"].remove == []
+        assert result.packages["snap"].keep == []
+        assert result.packages["snap"].remove == []
 
 
 # =============================================================================

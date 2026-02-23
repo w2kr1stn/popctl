@@ -26,6 +26,9 @@ PROTECTED_PATTERNS: list[str] = [
     "apt*",
     "dpkg*",
     "flatpak",
+    # Snap infrastructure
+    "core*",
+    "snapd*",
     # Essential system libs
     "libc6*",
     "libsystemd*",
@@ -64,6 +67,9 @@ PROTECTED_PACKAGES: set[str] = {
     "init",
     "systemd",
     "systemd-sysv",
+    # Snap infrastructure
+    "snapd",
+    "bare",
 }
 
 
