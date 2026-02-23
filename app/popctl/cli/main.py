@@ -8,7 +8,7 @@ from typing import Annotated
 import typer
 
 from popctl import __version__
-from popctl.cli.commands import diff, init, scan
+from popctl.cli.commands import apply, diff, init, scan
 
 # Create main Typer app
 app = typer.Typer(
@@ -72,6 +72,7 @@ def main(
 app.add_typer(scan.app, name="scan")
 app.add_typer(init.app, name="init")
 app.add_typer(diff.app, name="diff")
+app.add_typer(apply.app, name="apply")
 
 
 if __name__ == "__main__":
