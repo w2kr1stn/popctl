@@ -228,9 +228,7 @@ class TestScanSourceOption:
             patch("popctl.scanners.flatpak.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.run_command") as mock_run,
         ):
-            mock_run.return_value = CommandResult(
-                stdout=mock_flatpak, stderr="", returncode=0
-            )
+            mock_run.return_value = CommandResult(stdout=mock_flatpak, stderr="", returncode=0)
 
             result = runner.invoke(app, ["scan", "--source", "flatpak"])
 

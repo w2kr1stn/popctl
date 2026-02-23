@@ -161,9 +161,7 @@ def scan_packages(
         if scanner.is_available():
             available_sources.append(scanner.source.value)
         else:
-            print_warning(
-                f"{scanner.source.value.upper()} package manager is not available."
-            )
+            print_warning(f"{scanner.source.value.upper()} package manager is not available.")
 
     if not available_sources:
         print_error("No package managers are available on this system.")
@@ -209,6 +207,12 @@ def scan_packages(
 
     # Handle export (always JSON regardless of format option)
     if export_path is not None:
+        # Validate export path
+        export_path = export_path.resolve()
+        if export_path.is_dir():
+            print_error(f"Export path is a directory: {export_path}")
+            raise typer.Exit(code=1)
+
         scan_result = ScanResult.create(
             packages=packages,
             sources=available_sources,
@@ -275,8 +279,7 @@ def scan_packages(
     # Show source breakdown if scanning multiple sources
     if len(counts_by_source) > 1:
         source_parts = [
-            f"{name.upper()}: {counts['total']}"
-            for name, counts in counts_by_source.items()
+            f"{name.upper()}: {counts['total']}" for name, counts in counts_by_source.items()
         ]
         summary_parts.append(f"[{', '.join(source_parts)}]")
 

@@ -116,6 +116,9 @@ def _load_toml_colors(path: Path) -> dict[str, str] | None:
         return None
     except tomllib.TOMLDecodeError as e:
         logger.warning("Failed to parse TOML file %s: %s", path, e)
+        import sys
+
+        print(f"Warning: Failed to parse {path}: {e}", file=sys.stderr)
         return None
     except OSError as e:
         logger.warning("Failed to read theme file %s: %s", path, e)
@@ -137,7 +140,13 @@ def load_theme() -> ThemeColors:
     bundled_colors = _load_toml_colors(Path(bundled_path))
 
     if bundled_colors is None:
-        logger.warning("Failed to load bundled theme, using hardcoded defaults")
+        logger.error("Failed to load bundled theme - installation may be corrupted")
+        import sys
+
+        print(
+            "Error: Could not load default theme. Installation may be corrupted.",
+            file=sys.stderr,
+        )
         bundled_colors = {}
 
     # Try to load user overrides
@@ -156,6 +165,10 @@ def load_theme() -> ThemeColors:
         return ThemeColors(**merged_colors)
     except ValueError as e:
         logger.warning("Theme validation failed, using defaults: %s", e)
+        # Also print to stderr so user sees it without debug logging
+        import sys
+
+        print(f"Warning: Invalid theme configuration: {e}", file=sys.stderr)
         return ThemeColors()
 
 

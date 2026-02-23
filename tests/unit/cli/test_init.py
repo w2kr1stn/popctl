@@ -163,9 +163,7 @@ libfoo\t1.0\t50\tLibrary"""
         assert result.exit_code == 1
         assert "already exists" in (result.stdout + result.stderr)
 
-    def test_init_force_overwrites_existing(
-        self, tmp_path: Path, mock_apt_packages: str
-    ) -> None:
+    def test_init_force_overwrites_existing(self, tmp_path: Path, mock_apt_packages: str) -> None:
         """Init --force overwrites existing manifest."""
         manifest_path = tmp_path / "manifest.toml"
         manifest_path.write_text("[meta]\nversion = 'old'\n")
@@ -201,9 +199,7 @@ libfoo\t1.0\t50\tLibrary"""
 class TestInitManifestContent:
     """Tests for generated manifest content."""
 
-    def test_manifest_has_correct_structure(
-        self, tmp_path: Path, mock_apt_packages: str
-    ) -> None:
+    def test_manifest_has_correct_structure(self, tmp_path: Path, mock_apt_packages: str) -> None:
         """Generated manifest has correct TOML structure."""
         import tomllib
 

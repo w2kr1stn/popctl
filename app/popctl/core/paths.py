@@ -96,9 +96,19 @@ def ensure_config_dir() -> Path:
 
     Returns:
         Path to the configuration directory.
+
+    Raises:
+        RuntimeError: If the directory cannot be created.
     """
     config_dir = get_config_dir()
-    config_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError as e:
+        msg = f"Cannot create config directory {config_dir}: Permission denied"
+        raise RuntimeError(msg) from e
+    except OSError as e:
+        msg = f"Cannot create config directory {config_dir}: {e}"
+        raise RuntimeError(msg) from e
     return config_dir
 
 
@@ -107,9 +117,19 @@ def ensure_state_dir() -> Path:
 
     Returns:
         Path to the state directory.
+
+    Raises:
+        RuntimeError: If the directory cannot be created.
     """
     state_dir = get_state_dir()
-    state_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError as e:
+        msg = f"Cannot create state directory {state_dir}: Permission denied"
+        raise RuntimeError(msg) from e
+    except OSError as e:
+        msg = f"Cannot create state directory {state_dir}: {e}"
+        raise RuntimeError(msg) from e
     return state_dir
 
 
@@ -118,9 +138,19 @@ def ensure_cache_dir() -> Path:
 
     Returns:
         Path to the cache directory.
+
+    Raises:
+        RuntimeError: If the directory cannot be created.
     """
     cache_dir = get_cache_dir()
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError as e:
+        msg = f"Cannot create cache directory {cache_dir}: Permission denied"
+        raise RuntimeError(msg) from e
+    except OSError as e:
+        msg = f"Cannot create cache directory {cache_dir}: {e}"
+        raise RuntimeError(msg) from e
     return cache_dir
 
 
