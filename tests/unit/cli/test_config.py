@@ -9,10 +9,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from popctl.cli.main import app
-from popctl.configs.models import ScannedConfig
 from popctl.configs.operator import ConfigActionResult
-from popctl.domain.manifest import DomainConfig, DomainEntry
-from popctl.domain.models import OrphanReason, OrphanStatus, PathType
+from popctl.domain.models import OrphanReason, OrphanStatus, PathType, ScannedEntry
+from popctl.models.manifest import DomainConfig, DomainEntry
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -23,29 +22,17 @@ def _make_orphan(
     path_type: PathType = PathType.DIRECTORY,
     confidence: float = 0.70,
     size: int = 4096,
-) -> ScannedConfig:
-    """Create a test ScannedConfig with ORPHAN status."""
-    return ScannedConfig(
+) -> ScannedEntry:
+    """Create a test ScannedEntry with ORPHAN status."""
+    return ScannedEntry(
         path=path,
         path_type=path_type,
         status=OrphanStatus.ORPHAN,
         size_bytes=size,
         mtime="2024-01-15T10:00:00Z",
+        parent_target=None,
         orphan_reason=OrphanReason.NO_PACKAGE_MATCH,
         confidence=confidence,
-    )
-
-
-def _make_owned(path: str) -> ScannedConfig:
-    """Create a test ScannedConfig with OWNED status."""
-    return ScannedConfig(
-        path=path,
-        path_type=PathType.DIRECTORY,
-        status=OrphanStatus.OWNED,
-        size_bytes=1024,
-        mtime="2024-01-15T10:00:00Z",
-        orphan_reason=None,
-        confidence=0.0,
     )
 
 
@@ -83,11 +70,7 @@ class TestConfigScan:
             _make_orphan("/tmp/obs", confidence=0.70, size=8192),
         ]
 
-        with patch("popctl.cli.commands.config.ConfigScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(orphans)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.config.collect_domain_orphans", return_value=orphans):
             result = runner.invoke(app, ["config", "scan"])
 
         assert result.exit_code == 0
@@ -102,11 +85,7 @@ class TestConfigScan:
             _make_orphan("/home/user/.config/vlc"),
         ]
 
-        with patch("popctl.cli.commands.config.ConfigScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(orphans)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.config.collect_domain_orphans", return_value=orphans):
             result = runner.invoke(app, ["config", "scan", "--format", "json"])
 
         assert result.exit_code == 0
@@ -125,11 +104,7 @@ class TestConfigScan:
         with tempfile.TemporaryDirectory() as tmpdir:
             export_path = Path(tmpdir) / "orphans.json"
 
-            with patch("popctl.cli.commands.config.ConfigScanner") as mock_scanner_class:
-                mock_scanner = MagicMock()
-                mock_scanner.scan.return_value = iter(orphans)
-                mock_scanner_class.return_value = mock_scanner
-
+            with patch("popctl.cli.commands.config.collect_domain_orphans", return_value=orphans):
                 result = runner.invoke(app, ["config", "scan", "--export", str(export_path)])
 
             assert result.exit_code == 0
@@ -141,17 +116,14 @@ class TestConfigScan:
 
     def test_config_scan_limit(self) -> None:
         """Scan with --limit restricts displayed results."""
+        # collect_domain_orphans returns already sorted by confidence desc
         orphans = [
             _make_orphan("/tmp/aaa", confidence=0.90),
             _make_orphan("/tmp/bbb", confidence=0.80),
             _make_orphan("/tmp/ccc", confidence=0.70),
         ]
 
-        with patch("popctl.cli.commands.config.ConfigScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(orphans)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.config.collect_domain_orphans", return_value=orphans):
             result = runner.invoke(app, ["config", "scan", "--limit", "1"])
 
         assert result.exit_code == 0
@@ -162,11 +134,7 @@ class TestConfigScan:
 
     def test_config_scan_no_orphans_message(self) -> None:
         """Scan shows clean message when no orphans found."""
-        with patch("popctl.cli.commands.config.ConfigScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter([])
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.config.collect_domain_orphans", return_value=[]):
             result = runner.invoke(app, ["config", "scan"])
 
         assert result.exit_code == 0
@@ -174,17 +142,16 @@ class TestConfigScan:
         assert "No orphaned configurations found" in result.stdout
 
     def test_config_scan_filters_non_orphans(self) -> None:
-        """Scan filters to ORPHAN only; OWNED entries are excluded."""
-        mixed = [
+        """Scan filters to ORPHAN only; OWNED entries are excluded.
+
+        collect_domain_orphans already filters internally, so the mock
+        returns only orphan entries.
+        """
+        orphans_only = [
             _make_orphan("/tmp/vlc"),
-            _make_owned("/tmp/firefox"),
         ]
 
-        with patch("popctl.cli.commands.config.ConfigScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(mixed)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.config.collect_domain_orphans", return_value=orphans_only):
             result = runner.invoke(app, ["config", "scan"])
 
         assert result.exit_code == 0
@@ -218,7 +185,7 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.is_protected_config", return_value=False),
+            patch("popctl.cli.commands.config.is_protected", return_value=False),
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = dry_results
@@ -244,7 +211,7 @@ class TestConfigClean:
                 "popctl.cli.commands.config.require_manifest",
                 return_value=manifest,
             ),
-            patch("popctl.cli.commands.config.is_protected_config", return_value=False),
+            patch("popctl.cli.commands.config.is_protected", return_value=False),
         ):
             result = runner.invoke(app, ["config", "clean"], input="n\n")
 
@@ -273,7 +240,7 @@ class TestConfigClean:
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
             patch("popctl.cli.commands.config.record_domain_deletions") as mock_record,
-            patch("popctl.cli.commands.config.is_protected_config", return_value=False),
+            patch("popctl.cli.commands.config.is_protected", return_value=False),
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = success_results
@@ -323,7 +290,7 @@ class TestConfigClean:
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
             patch("popctl.cli.commands.config.record_domain_deletions") as mock_record,
-            patch("popctl.cli.commands.config.is_protected_config", return_value=False),
+            patch("popctl.cli.commands.config.is_protected", return_value=False),
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = success_results
@@ -361,7 +328,7 @@ class TestConfigClean:
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
             patch("popctl.cli.commands.config.record_domain_deletions"),
-            patch("popctl.cli.commands.config.is_protected_config", return_value=False),
+            patch("popctl.cli.commands.config.is_protected", return_value=False),
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = success_results
@@ -388,7 +355,7 @@ class TestConfigClean:
             ),
         ]
 
-        def mock_is_protected(path: str) -> bool:
+        def mock_is_protected(path: str, domain: str) -> bool:
             return ".ssh" in path
 
         with (
@@ -399,7 +366,7 @@ class TestConfigClean:
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
             patch("popctl.cli.commands.config.record_domain_deletions"),
             patch(
-                "popctl.cli.commands.config.is_protected_config",
+                "popctl.cli.commands.config.is_protected",
                 side_effect=mock_is_protected,
             ),
         ):
@@ -435,7 +402,7 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.is_protected_config", return_value=False),
+            patch("popctl.cli.commands.config.is_protected", return_value=False),
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = fail_results
@@ -464,17 +431,23 @@ class TestConfigHelp:
 
     def test_config_scan_help(self) -> None:
         """popctl config scan --help shows scan command help."""
+        from tests.unit.conftest import strip_ansi
+
         result = runner.invoke(app, ["config", "scan", "--help"])
         assert result.exit_code == 0
-        assert "Scan ~/.config/" in result.stdout
-        assert "--format" in result.stdout
-        assert "--export" in result.stdout
-        assert "--limit" in result.stdout
+        output = strip_ansi(result.stdout)
+        assert "Scan ~/.config/" in output
+        assert "--format" in output
+        assert "--export" in output
+        assert "--limit" in output
 
     def test_config_clean_help(self) -> None:
         """popctl config clean --help shows clean command help."""
+        from tests.unit.conftest import strip_ansi
+
         result = runner.invoke(app, ["config", "clean", "--help"])
         assert result.exit_code == 0
-        assert "Clean up config entries" in result.stdout
-        assert "--dry-run" in result.stdout
-        assert "--yes" in result.stdout
+        output = strip_ansi(result.stdout)
+        assert "Clean up config entries" in output
+        assert "--dry-run" in output
+        assert "--yes" in output

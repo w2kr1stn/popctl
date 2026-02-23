@@ -9,9 +9,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from popctl.cli.main import app
-from popctl.domain.manifest import DomainConfig, DomainEntry
-from popctl.filesystem.models import OrphanReason, PathStatus, PathType, ScannedPath
-from popctl.filesystem.operator import FilesystemActionResult
+from popctl.domain.models import (
+    DomainActionResult,
+    OrphanReason,
+    OrphanStatus,
+    PathType,
+    ScannedEntry,
+)
+from popctl.models.manifest import DomainConfig, DomainEntry
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -22,31 +27,17 @@ def _make_orphan(
     parent: str = "~/.config",
     confidence: float = 0.70,
     size: int = 4096,
-) -> ScannedPath:
-    """Create a test ScannedPath with ORPHAN status."""
-    return ScannedPath(
+) -> ScannedEntry:
+    """Create a test ScannedEntry with ORPHAN status."""
+    return ScannedEntry(
         path=path,
         path_type=PathType.DIRECTORY,
-        status=PathStatus.ORPHAN,
+        status=OrphanStatus.ORPHAN,
         size_bytes=size,
         mtime="2024-01-15T10:00:00Z",
         parent_target=parent,
         orphan_reason=OrphanReason.NO_PACKAGE_MATCH,
         confidence=confidence,
-    )
-
-
-def _make_owned(path: str) -> ScannedPath:
-    """Create a test ScannedPath with OWNED status."""
-    return ScannedPath(
-        path=path,
-        path_type=PathType.DIRECTORY,
-        status=PathStatus.OWNED,
-        size_bytes=1024,
-        mtime="2024-01-15T10:00:00Z",
-        parent_target="~/.config",
-        orphan_reason=None,
-        confidence=0.0,
     )
 
 
@@ -80,15 +71,11 @@ class TestFsScan:
     def test_fs_scan_default(self) -> None:
         """Scan returns table output with orphans."""
         orphans = [
-            _make_orphan("/tmp/vlc", confidence=0.70, size=4096),
             _make_orphan("/tmp/obs", confidence=0.80, size=8192),
+            _make_orphan("/tmp/vlc", confidence=0.70, size=4096),
         ]
 
-        with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(orphans)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.fs.collect_domain_orphans", return_value=orphans):
             result = runner.invoke(app, ["fs", "scan"])
 
         assert result.exit_code == 0
@@ -99,11 +86,7 @@ class TestFsScan:
 
     def test_fs_scan_no_orphans(self) -> None:
         """Scan shows clean message when no orphans found."""
-        with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter([])
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.fs.collect_domain_orphans", return_value=[]):
             result = runner.invoke(app, ["fs", "scan"])
 
         assert result.exit_code == 0
@@ -111,28 +94,24 @@ class TestFsScan:
         assert "No orphaned entries found" in result.stdout
 
     def test_fs_scan_with_files_flag(self) -> None:
-        """Scan passes include_files=True to scanner."""
-        with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter([])
-            mock_scanner_class.return_value = mock_scanner
-
+        """Scan passes include_files=True to collect_domain_orphans."""
+        with patch(
+            "popctl.cli.commands.fs.collect_domain_orphans", return_value=[]
+        ) as mock_collect:
             result = runner.invoke(app, ["fs", "scan", "--files"])
 
         assert result.exit_code == 0
-        mock_scanner_class.assert_called_once_with(include_files=True, include_etc=False)
+        mock_collect.assert_called_once_with("filesystem", include_files=True, include_etc=False)
 
     def test_fs_scan_with_etc_flag(self) -> None:
-        """Scan passes include_etc=True to scanner."""
-        with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter([])
-            mock_scanner_class.return_value = mock_scanner
-
+        """Scan passes include_etc=True to collect_domain_orphans."""
+        with patch(
+            "popctl.cli.commands.fs.collect_domain_orphans", return_value=[]
+        ) as mock_collect:
             result = runner.invoke(app, ["fs", "scan", "--include-etc"])
 
         assert result.exit_code == 0
-        mock_scanner_class.assert_called_once_with(include_files=False, include_etc=True)
+        mock_collect.assert_called_once_with("filesystem", include_files=False, include_etc=True)
 
     def test_fs_scan_json_format(self) -> None:
         """Scan with --format json outputs valid JSON."""
@@ -140,11 +119,7 @@ class TestFsScan:
             _make_orphan("/home/user/.config/vlc"),
         ]
 
-        with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(orphans)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.fs.collect_domain_orphans", return_value=orphans):
             result = runner.invoke(app, ["fs", "scan", "--format", "json"])
 
         assert result.exit_code == 0
@@ -163,11 +138,7 @@ class TestFsScan:
         with tempfile.TemporaryDirectory() as tmpdir:
             export_path = Path(tmpdir) / "orphans.json"
 
-            with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-                mock_scanner = MagicMock()
-                mock_scanner.scan.return_value = iter(orphans)
-                mock_scanner_class.return_value = mock_scanner
-
+            with patch("popctl.cli.commands.fs.collect_domain_orphans", return_value=orphans):
                 result = runner.invoke(app, ["fs", "scan", "--export", str(export_path)])
 
             assert result.exit_code == 0
@@ -179,17 +150,14 @@ class TestFsScan:
 
     def test_fs_scan_limit(self) -> None:
         """Scan with --limit restricts displayed results."""
+        # collect_domain_orphans returns already sorted by confidence desc
         orphans = [
             _make_orphan("/tmp/aaa", confidence=0.90),
             _make_orphan("/tmp/bbb", confidence=0.80),
             _make_orphan("/tmp/ccc", confidence=0.70),
         ]
 
-        with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(orphans)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.fs.collect_domain_orphans", return_value=orphans):
             result = runner.invoke(app, ["fs", "scan", "--limit", "1"])
 
         assert result.exit_code == 0
@@ -199,17 +167,16 @@ class TestFsScan:
         assert "limited to 1" in result.stdout
 
     def test_fs_scan_mixed_statuses(self) -> None:
-        """Scan filters to ORPHAN only; OWNED entries are excluded."""
-        mixed = [
+        """Scan filters to ORPHAN only; OWNED entries are excluded.
+
+        collect_domain_orphans already filters internally, so the mock
+        returns only orphan entries.
+        """
+        orphans_only = [
             _make_orphan("/tmp/vlc"),
-            _make_owned("/tmp/firefox"),
         ]
 
-        with patch("popctl.cli.commands.fs.FilesystemScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(mixed)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.fs.collect_domain_orphans", return_value=orphans_only):
             result = runner.invoke(app, ["fs", "scan"])
 
         assert result.exit_code == 0
@@ -234,7 +201,7 @@ class TestFsClean:
             }
         )
         dry_results = [
-            FilesystemActionResult(path="/home/user/.config/vlc", success=True, dry_run=True),
+            DomainActionResult(path="/home/user/.config/vlc", success=True, dry_run=True),
         ]
 
         with (
@@ -263,7 +230,7 @@ class TestFsClean:
             }
         )
         success_results = [
-            FilesystemActionResult(path="/home/user/.config/vlc", success=True),
+            DomainActionResult(path="/home/user/.config/vlc", success=True),
         ]
 
         with (
@@ -303,8 +270,8 @@ class TestFsClean:
             }
         )
         success_results = [
-            FilesystemActionResult(path="/home/user/.config/vlc", success=True),
-            FilesystemActionResult(path="/home/user/.cache/mozilla", success=True),
+            DomainActionResult(path="/home/user/.config/vlc", success=True),
+            DomainActionResult(path="/home/user/.cache/mozilla", success=True),
         ]
 
         with (
@@ -337,7 +304,7 @@ class TestFsClean:
             }
         )
         success_results = [
-            FilesystemActionResult(path="/home/user/.config/vlc", success=True),
+            DomainActionResult(path="/home/user/.config/vlc", success=True),
         ]
 
         with (
@@ -368,7 +335,7 @@ class TestFsClean:
             }
         )
         fail_results = [
-            FilesystemActionResult(
+            DomainActionResult(
                 path="/home/user/.config/vlc",
                 success=False,
                 error="Permission denied",
@@ -409,20 +376,26 @@ class TestFsHelp:
 
     def test_fs_scan_help(self) -> None:
         """popctl fs scan --help shows scan command help."""
+        from tests.unit.conftest import strip_ansi
+
         result = runner.invoke(app, ["fs", "scan", "--help"])
         assert result.exit_code == 0
-        assert "Scan filesystem for orphaned" in result.stdout
-        assert "--files" in result.stdout
-        assert "--include-etc" in result.stdout
-        assert "--format" in result.stdout
-        assert "--export" in result.stdout
-        assert "--limit" in result.stdout
+        output = strip_ansi(result.stdout)
+        assert "Scan filesystem for orphaned" in output
+        assert "--files" in output
+        assert "--include-etc" in output
+        assert "--format" in output
+        assert "--export" in output
+        assert "--limit" in output
 
     def test_fs_clean_help(self) -> None:
         """popctl fs clean --help shows clean command help."""
+        from tests.unit.conftest import strip_ansi
+
         result = runner.invoke(app, ["fs", "clean", "--help"])
         assert result.exit_code == 0
-        assert "Clean up filesystem entries" in result.stdout
-        assert "--dry-run" in result.stdout
-        assert "--yes" in result.stdout
-        assert "--include-etc" in result.stdout
+        output = strip_ansi(result.stdout)
+        assert "Clean up filesystem entries" in output
+        assert "--dry-run" in output
+        assert "--yes" in output
+        assert "--include-etc" in output

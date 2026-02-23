@@ -57,19 +57,24 @@ class TestSyncHelp:
 
     def test_sync_help_shows_flags(self) -> None:
         """Sync help shows all available flags."""
+        from tests.unit.conftest import strip_ansi
+
         result = runner.invoke(app, ["sync", "--help"])
-        assert "--no-advisor" in result.stdout
-        assert "--auto" in result.stdout
-        assert "--dry-run" in result.stdout
-        assert "--yes" in result.stdout
-        assert "--source" in result.stdout
-        assert "--purge" in result.stdout
+        output = strip_ansi(result.stdout)
+        assert "--no-advisor" in output
+        assert "--auto" in output
+        assert "--dry-run" in output
+        assert "--yes" in output
+        assert "--source" in output
+        assert "--purge" in output
 
     def test_sync_help_shows_no_filesystem(self) -> None:
         """Sync help shows --no-filesystem flag."""
+        from tests.unit.conftest import strip_ansi
+
         result = runner.invoke(app, ["sync", "--help"])
         assert result.exit_code == 0
-        assert "--no-filesystem" in result.stdout
+        assert "--no-filesystem" in strip_ansi(result.stdout)
 
 
 def test_sync_auto_init(sample_manifest: Manifest, in_sync_result: DiffResult) -> None:
@@ -81,22 +86,18 @@ def test_sync_auto_init(sample_manifest: Manifest, in_sync_result: DiffResult) -
 
     with (
         # First call: manifest_exists returns False (triggers init)
-        # Second call: after init, load_manifest is called by _compute_diff
+        # Second call: after init, compute_system_diff is called
         patch("popctl.cli.commands.sync.manifest_exists", return_value=False),
         patch("popctl.cli.commands.sync.get_available_scanners", return_value=[mock_scanner]),
         patch(
-            "popctl.cli.commands.sync.collect_manual_packages",
-            return_value=({"firefox": PackageEntry(source="apt")}, []),
+            "popctl.cli.commands.sync.scan_and_create_manifest",
+            return_value=(sample_manifest, {"firefox": PackageEntry(source="apt")}, []),
         ),
-        patch("popctl.cli.commands.sync.create_manifest", return_value=sample_manifest),
         patch("popctl.core.paths.ensure_config_dir"),
         patch("popctl.cli.commands.sync.save_manifest", return_value=Path("/tmp/manifest.toml")),
-        # For _compute_diff phase
-        patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-        patch("popctl.scanners.apt.command_exists", return_value=True),
-        patch("popctl.scanners.flatpak.command_exists", return_value=False),
+        # For compute_system_diff phase
         patch(
-            "popctl.cli.commands.sync.compute_diff",
+            "popctl.cli.commands.sync.compute_system_diff",
             return_value=in_sync_result,
         ),
     ):
@@ -110,11 +111,8 @@ def test_sync_in_sync_message(sample_manifest: Manifest, in_sync_result: DiffRes
     """Sync prints success when system matches manifest."""
     with (
         patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-        patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-        patch("popctl.scanners.apt.command_exists", return_value=True),
-        patch("popctl.scanners.flatpak.command_exists", return_value=False),
         patch(
-            "popctl.cli.commands.sync.compute_diff",
+            "popctl.cli.commands.sync.compute_system_diff",
             return_value=in_sync_result,
         ),
     ):
@@ -133,11 +131,8 @@ class TestSyncDryRun:
         """Dry-run shows diff summary but does not execute."""
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=diff_result_no_new,
             ),
         ):
@@ -153,11 +148,8 @@ class TestSyncDryRun:
         """Advisor is NOT invoked in dry-run mode even with NEW packages."""
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=diff_result_with_new,
             ),
             patch("popctl.cli.commands.sync._run_advisor") as mock_advisor,
@@ -174,12 +166,9 @@ def test_sync_no_advisor_skips_classification(
     """--no-advisor flag skips advisor entirely."""
     with (
         patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-        patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-        patch("popctl.scanners.apt.command_exists", return_value=True),
-        patch("popctl.scanners.flatpak.command_exists", return_value=False),
         patch("popctl.operators.apt.command_exists", return_value=True),
         patch(
-            "popctl.cli.commands.sync.compute_diff",
+            "popctl.cli.commands.sync.compute_system_diff",
             return_value=diff_result_with_new,
         ),
         patch("popctl.cli.commands.sync._run_advisor") as mock_advisor,
@@ -201,12 +190,9 @@ class TestSyncAdvisor:
         """No NEW packages means advisor is not called."""
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=diff_result_no_new,
             ),
             patch("popctl.cli.commands.sync._run_advisor") as mock_advisor,
@@ -224,17 +210,14 @@ class TestSyncAdvisor:
         """Advisor failure warns and continues with current manifest."""
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=diff_result_with_new,
             ),
             # Advisor internal: fail at config loading stage
             patch(
-                "popctl.cli.commands.advisor.load_or_create_config",
+                "popctl.advisor.config.load_or_create_config",
                 side_effect=RuntimeError("config error"),
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
@@ -257,12 +240,9 @@ class TestSyncExecution:
         """Sync installs/removes packages via operators."""
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=diff_result_no_new,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
@@ -280,12 +260,9 @@ class TestSyncExecution:
         """--yes flag skips confirmation prompt."""
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=diff_result_no_new,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
@@ -302,12 +279,9 @@ def test_sync_records_history(sample_manifest: Manifest, diff_result_no_new: Dif
     """Sync records actions with command='popctl sync'."""
     with (
         patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-        patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-        patch("popctl.scanners.apt.command_exists", return_value=True),
-        patch("popctl.scanners.flatpak.command_exists", return_value=False),
         patch("popctl.operators.apt.command_exists", return_value=True),
         patch(
-            "popctl.cli.commands.sync.compute_diff",
+            "popctl.cli.commands.sync.compute_system_diff",
             return_value=diff_result_no_new,
         ),
         patch("popctl.operators.apt.run_command") as mock_run,
@@ -336,12 +310,9 @@ def test_sync_reports_failures(sample_manifest: Manifest) -> None:
 
     with (
         patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-        patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-        patch("popctl.scanners.apt.command_exists", return_value=True),
-        patch("popctl.scanners.flatpak.command_exists", return_value=False),
         patch("popctl.operators.apt.command_exists", return_value=True),
         patch(
-            "popctl.cli.commands.sync.compute_diff",
+            "popctl.cli.commands.sync.compute_system_diff",
             return_value=missing_only,
         ),
         patch("popctl.operators.apt.run_command") as mock_run,
@@ -381,12 +352,9 @@ def test_sync_re_diffs_after_advisor(sample_manifest: Manifest) -> None:
 
     with (
         patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-        patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-        patch("popctl.scanners.apt.command_exists", return_value=True),
-        patch("popctl.scanners.flatpak.command_exists", return_value=False),
         patch("popctl.operators.apt.command_exists", return_value=True),
         patch(
-            "popctl.cli.commands.sync.compute_diff",
+            "popctl.cli.commands.sync.compute_system_diff",
             side_effect=compute_diff_side_effect,
         ),
         # Mock _run_advisor to be a no-op (we test re-diff, not advisor itself)
@@ -397,7 +365,7 @@ def test_sync_re_diffs_after_advisor(sample_manifest: Manifest) -> None:
 
         runner.invoke(app, ["sync", "--yes", "--no-filesystem"])
 
-    # compute_diff should have been called twice (initial + re-diff)
+    # compute_system_diff should have been called twice (initial + re-diff)
     assert diff_call_count == 2
 
 
@@ -411,12 +379,9 @@ def test_sync_purge_uses_purge_command(sample_manifest: Manifest) -> None:
 
     with (
         patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-        patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-        patch("popctl.scanners.apt.command_exists", return_value=True),
-        patch("popctl.scanners.flatpak.command_exists", return_value=False),
         patch("popctl.operators.apt.command_exists", return_value=True),
         patch(
-            "popctl.cli.commands.sync.compute_diff",
+            "popctl.cli.commands.sync.compute_system_diff",
             return_value=extra_only,
         ),
         patch("popctl.operators.apt.run_command") as mock_run,
@@ -444,11 +409,8 @@ class TestSyncFilesystem:
         """--no-filesystem skips filesystem phases entirely."""
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=in_sync_result,
             ),
             patch("popctl.cli.commands.sync._domain_scan", return_value=[]) as mock_domain_scan,
@@ -464,11 +426,8 @@ class TestSyncFilesystem:
         """When FS scan finds no orphans, remaining FS phases are skipped."""
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=in_sync_result,
             ),
             patch("popctl.cli.commands.sync._domain_scan", return_value=[]) as mock_domain_scan,
@@ -487,11 +446,8 @@ class TestSyncFilesystem:
         """FS scan failure prints warning, does not crash sync."""
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=in_sync_result,
             ),
             # _domain_scan catches exceptions internally and returns []
@@ -512,11 +468,8 @@ class TestSyncFilesystem:
         """When _domain_scan returns empty (due to exception), sync still succeeds."""
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=in_sync_result,
             ),
             # Simulate _domain_scan returning empty (as it does on exception)
@@ -535,12 +488,9 @@ class TestSyncFilesystem:
         """_domain_scan catches RuntimeError and returns empty list."""
         from popctl.cli.commands.sync import _domain_scan
 
-        mock_scanner = MagicMock()
-        mock_scanner.scan.side_effect = RuntimeError("scanner broken")
-
         with patch(
-            "popctl.cli.commands.sync.FilesystemScanner",
-            return_value=mock_scanner,
+            "popctl.cli.commands.sync.collect_domain_orphans",
+            side_effect=RuntimeError("scanner broken"),
         ):
             result = _domain_scan("filesystem")
 
@@ -550,12 +500,9 @@ class TestSyncFilesystem:
         """_domain_scan catches OSError and returns empty list."""
         from popctl.cli.commands.sync import _domain_scan
 
-        mock_scanner = MagicMock()
-        mock_scanner.scan.side_effect = OSError("disk error")
-
         with patch(
-            "popctl.cli.commands.sync.FilesystemScanner",
-            return_value=mock_scanner,
+            "popctl.cli.commands.sync.collect_domain_orphans",
+            side_effect=OSError("disk error"),
         ):
             result = _domain_scan("filesystem")
 
@@ -587,11 +534,8 @@ class TestSyncFilesystem:
 
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=diff_result_no_new,
             ),
             patch("popctl.cli.commands.sync._domain_scan", return_value=mock_orphans),
@@ -611,12 +555,9 @@ class TestSyncFilesystem:
         """Filesystem phases run after package execution phases complete."""
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=diff_result_no_new,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
@@ -659,11 +600,8 @@ class TestSyncFilesystem:
 
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=in_sync_result,
             ),
             patch("popctl.cli.commands.sync._domain_scan", return_value=mock_orphans),
@@ -684,12 +622,9 @@ class TestSyncFilesystem:
 
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=missing_only,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
@@ -720,9 +655,11 @@ class TestSyncConfigs:
 
     def test_sync_help_shows_no_configs(self) -> None:
         """Sync help shows --no-configs flag."""
+        from tests.unit.conftest import strip_ansi
+
         result = runner.invoke(app, ["sync", "--help"])
         assert result.exit_code == 0
-        assert "--no-configs" in result.stdout
+        assert "--no-configs" in strip_ansi(result.stdout)
 
     def test_sync_includes_config_phases(
         self, sample_manifest: Manifest, in_sync_result: DiffResult
@@ -745,11 +682,8 @@ class TestSyncConfigs:
 
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=in_sync_result,
             ),
             patch(
@@ -769,11 +703,8 @@ class TestSyncConfigs:
         """--no-configs skips all config phases entirely."""
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=in_sync_result,
             ),
             patch("popctl.cli.commands.sync._domain_scan", return_value=[]) as mock_domain_scan,
@@ -789,11 +720,8 @@ class TestSyncConfigs:
         """No orphans found => advisor/clean phases skipped."""
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=in_sync_result,
             ),
             patch("popctl.cli.commands.sync._domain_scan", return_value=[]) as mock_domain_scan,
@@ -827,11 +755,8 @@ class TestSyncConfigs:
 
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=diff_result_no_new,
             ),
             patch("popctl.cli.commands.sync._domain_scan", return_value=mock_orphans),
@@ -874,7 +799,7 @@ class TestSyncConfigs:
         ]
 
         # Build a manifest with configs.remove section
-        from popctl.domain.manifest import DomainConfig, DomainEntry
+        from popctl.models.manifest import DomainConfig, DomainEntry
 
         manifest_with_configs = sample_manifest.model_copy(
             update={
@@ -892,12 +817,9 @@ class TestSyncConfigs:
 
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=manifest_with_configs),
             patch("popctl.cli.commands.sync.load_manifest", return_value=manifest_with_configs),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=in_sync_result,
             ),
             patch("popctl.cli.commands.sync._domain_scan", return_value=mock_orphans),
@@ -917,12 +839,9 @@ class TestSyncConfigs:
         """_domain_scan catches RuntimeError and returns empty list."""
         from popctl.cli.commands.sync import _domain_scan
 
-        mock_scanner = MagicMock()
-        mock_scanner.scan.side_effect = RuntimeError("scanner broken")
-
         with patch(
-            "popctl.cli.commands.sync.ConfigScanner",
-            return_value=mock_scanner,
+            "popctl.cli.commands.sync.collect_domain_orphans",
+            side_effect=RuntimeError("scanner broken"),
         ):
             result = _domain_scan("configs")
 
@@ -932,12 +851,9 @@ class TestSyncConfigs:
         """_domain_scan catches OSError and returns empty list."""
         from popctl.cli.commands.sync import _domain_scan
 
-        mock_scanner = MagicMock()
-        mock_scanner.scan.side_effect = OSError("disk error")
-
         with patch(
-            "popctl.cli.commands.sync.ConfigScanner",
-            return_value=mock_scanner,
+            "popctl.cli.commands.sync.collect_domain_orphans",
+            side_effect=OSError("disk error"),
         ):
             result = _domain_scan("configs")
 
@@ -948,7 +864,7 @@ class TestSyncConfigs:
         from popctl.cli.commands.sync import _record_orphan_history
 
         with patch(
-            "popctl.domain.history.record_domain_deletions",
+            "popctl.core.state.record_domain_deletions",
             side_effect=OSError("write error"),
         ):
             # Should not raise
@@ -960,12 +876,9 @@ class TestSyncConfigs:
         """Config phases run after filesystem phases in the execution path."""
         with (
             patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
             patch(
-                "popctl.cli.commands.sync.compute_diff",
+                "popctl.cli.commands.sync.compute_system_diff",
                 return_value=diff_result_no_new,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
@@ -999,7 +912,7 @@ class TestInvokeAdvisor:
         from popctl.cli.commands.sync import _invoke_advisor
 
         with patch(
-            "popctl.cli.commands.advisor.load_or_create_config",
+            "popctl.advisor.config.load_or_create_config",
             side_effect=RuntimeError("config error"),
         ):
             result = _invoke_advisor(auto=True, domain="packages")
@@ -1011,7 +924,7 @@ class TestInvokeAdvisor:
         from popctl.cli.commands.sync import _invoke_advisor
 
         with (
-            patch("popctl.cli.commands.advisor.load_or_create_config", return_value=MagicMock()),
+            patch("popctl.advisor.config.load_or_create_config", return_value=MagicMock()),
             patch(
                 "popctl.cli.commands.sync.scan_system",
                 side_effect=RuntimeError("No scanners available"),
@@ -1026,10 +939,10 @@ class TestInvokeAdvisor:
         from popctl.cli.commands.sync import _invoke_advisor
 
         with (
-            patch("popctl.cli.commands.advisor.load_or_create_config", return_value=MagicMock()),
+            patch("popctl.advisor.config.load_or_create_config", return_value=MagicMock()),
             patch("popctl.cli.commands.sync.scan_system", return_value=MagicMock()),
             patch(
-                "popctl.cli.commands.sync.ensure_advisor_sessions_dir",
+                "popctl.cli.commands.sync.create_full_session_workspace",
                 side_effect=OSError("no space"),
             ),
         ):
@@ -1045,26 +958,16 @@ class TestInvokeAdvisor:
         mock_scan = MagicMock()
 
         with (
-            patch("popctl.cli.commands.advisor.load_or_create_config", return_value=mock_config),
+            patch("popctl.advisor.config.load_or_create_config", return_value=mock_config),
             patch("popctl.cli.commands.sync.scan_system", return_value=mock_scan),
             patch(
-                "popctl.cli.commands.sync.ensure_advisor_sessions_dir",
-                return_value=Path("/tmp/sess"),
-            ),
-            patch("popctl.core.paths.get_manifest_path") as mock_mp,
-            patch(
-                "popctl.cli.commands.sync.get_state_dir",
-                return_value=Path("/tmp/nonexistent-state"),
-            ),
-            patch(
-                "popctl.advisor.workspace.create_session_workspace", return_value=Path("/tmp/ws")
+                "popctl.cli.commands.sync.create_full_session_workspace",
+                return_value=Path("/tmp/ws"),
             ),
             patch(
                 "popctl.advisor.runner.AgentRunner.run_headless", side_effect=RuntimeError("boom")
             ),
         ):
-            mock_mp.return_value = MagicMock(exists=lambda: False)
-
             result = _invoke_advisor(auto=True, domain="packages")
 
         assert result is None
@@ -1081,27 +984,17 @@ class TestInvokeAdvisor:
         )
 
         with (
-            patch("popctl.cli.commands.advisor.load_or_create_config", return_value=MagicMock()),
+            patch("popctl.advisor.config.load_or_create_config", return_value=MagicMock()),
             patch("popctl.cli.commands.sync.scan_system", return_value=MagicMock()),
             patch(
-                "popctl.cli.commands.sync.ensure_advisor_sessions_dir",
-                return_value=Path("/tmp/sess"),
-            ),
-            patch("popctl.core.paths.get_manifest_path") as mock_mp,
-            patch(
-                "popctl.cli.commands.sync.get_state_dir",
-                return_value=Path("/tmp/nonexistent-state"),
-            ),
-            patch(
-                "popctl.advisor.workspace.create_session_workspace", return_value=Path("/tmp/ws")
+                "popctl.cli.commands.sync.create_full_session_workspace",
+                return_value=Path("/tmp/ws"),
             ),
             patch(
                 "popctl.advisor.runner.AgentRunner.launch_interactive",
                 return_value=mock_agent_result,
             ),
         ):
-            mock_mp.return_value = MagicMock(exists=lambda: False)
-
             result = _invoke_advisor(auto=False, domain="packages")
 
         assert result is None
@@ -1122,19 +1015,11 @@ class TestInvokeAdvisor:
         )
 
         with (
-            patch("popctl.cli.commands.advisor.load_or_create_config", return_value=MagicMock()),
+            patch("popctl.advisor.config.load_or_create_config", return_value=MagicMock()),
             patch("popctl.cli.commands.sync.scan_system", return_value=MagicMock()),
             patch(
-                "popctl.cli.commands.sync.ensure_advisor_sessions_dir",
-                return_value=Path("/tmp/sess"),
-            ),
-            patch("popctl.core.paths.get_manifest_path") as mock_mp,
-            patch(
-                "popctl.cli.commands.sync.get_state_dir",
-                return_value=tmp_path,
-            ),
-            patch(
-                "popctl.advisor.workspace.create_session_workspace", return_value=Path("/tmp/ws")
+                "popctl.cli.commands.sync.create_full_session_workspace",
+                return_value=Path("/tmp/ws"),
             ),
             patch(
                 "popctl.advisor.runner.AgentRunner.run_headless",
@@ -1142,8 +1027,6 @@ class TestInvokeAdvisor:
             ),
             patch("popctl.cli.commands.sync.import_decisions", return_value=expected_decisions),
         ):
-            mock_mp.return_value = MagicMock(exists=lambda: False)
-
             result = _invoke_advisor(auto=True, domain="packages")
 
         assert result is expected_decisions
@@ -1162,31 +1045,21 @@ class TestInvokeAdvisor:
         )
 
         with (
-            patch("popctl.cli.commands.advisor.load_or_create_config", return_value=MagicMock()),
+            patch("popctl.advisor.config.load_or_create_config", return_value=MagicMock()),
             patch("popctl.cli.commands.sync.scan_system", return_value=MagicMock()),
             patch(
-                "popctl.cli.commands.sync.ensure_advisor_sessions_dir",
-                return_value=Path("/tmp/sess"),
-            ),
-            patch("popctl.core.paths.get_manifest_path") as mock_mp,
-            patch(
-                "popctl.cli.commands.sync.get_state_dir",
-                return_value=tmp_path,
-            ),
-            patch(
-                "popctl.advisor.workspace.create_session_workspace", return_value=Path("/tmp/ws")
+                "popctl.cli.commands.sync.create_full_session_workspace",
+                return_value=Path("/tmp/ws"),
             ),
             patch(
                 "popctl.advisor.runner.AgentRunner.run_headless",
                 return_value=mock_agent_result,
             ),
             patch(
-                "popctl.advisor.import_decisions",
+                "popctl.cli.commands.sync.import_decisions",
                 side_effect=ValueError("bad TOML"),
             ),
         ):
-            mock_mp.return_value = MagicMock(exists=lambda: False)
-
             result = _invoke_advisor(auto=True, domain="packages")
 
         assert result is None
@@ -1210,6 +1083,16 @@ class TestFsRunAdvisor:
         orphan.parent_target = "~/.config"
         orphan.orphan_reason.value = "no_package_match"
         orphan.confidence = 0.8
+        orphan.to_dict.return_value = {
+            "path": path,
+            "path_type": "directory",
+            "status": "orphan",
+            "size_bytes": 4096,
+            "mtime": None,
+            "orphan_reason": "no_package_match",
+            "confidence": 0.8,
+            "parent_target": "~/.config",
+        }
         return orphan
 
     def test_fs_run_advisor_success(self) -> None:
@@ -1276,7 +1159,7 @@ class TestFsRunAdvisor:
         assert call_kwargs["domain"] == "filesystem"
         assert call_kwargs["auto"] is True
         assert len(call_kwargs["filesystem_orphans"]) == 1
-        assert call_kwargs["filesystem_orphans"][0].path == "/home/test/.config/vlc"
+        assert call_kwargs["filesystem_orphans"][0]["path"] == "/home/test/.config/vlc"
 
 
 # =============================================================================
@@ -1297,6 +1180,15 @@ class TestConfigRunAdvisor:
         orphan.parent_target = None
         orphan.orphan_reason.value = "no_package_match"
         orphan.confidence = 0.7
+        orphan.to_dict.return_value = {
+            "path": path,
+            "path_type": "directory",
+            "status": "orphan",
+            "size_bytes": 4096,
+            "mtime": None,
+            "orphan_reason": "no_package_match",
+            "confidence": 0.7,
+        }
         return orphan
 
     def test_config_run_advisor_success(self) -> None:
@@ -1363,4 +1255,4 @@ class TestConfigRunAdvisor:
         assert call_kwargs["domain"] == "configs"
         assert call_kwargs["auto"] is True
         assert len(call_kwargs["config_orphans"]) == 1
-        assert call_kwargs["config_orphans"][0].path == "/home/test/.config/nvim"
+        assert call_kwargs["config_orphans"][0]["path"] == "/home/test/.config/nvim"
