@@ -78,7 +78,9 @@ def get_user_theme_path() -> Path:
     Returns:
         Path to ~/.config/popctl/theme.toml
     """
-    return Path.home() / ".config" / "popctl" / "theme.toml"
+    from popctl.core.paths import get_config_dir
+
+    return get_config_dir() / "theme.toml"
 
 
 def get_bundled_theme_path() -> Path:

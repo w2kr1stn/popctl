@@ -254,8 +254,12 @@ def _record_advisor_apply_to_history(
             StateManager().record_action(entry)
             logger.debug("Recorded %d advisor apply item(s) to history", len(items))
 
-    except Exception as e:
+    except (OSError, RuntimeError) as e:
+        # Log and inform user, but don't interrupt the main flow
         logger.warning("Failed to record advisor apply to history: %s", str(e))
+        from popctl.utils.formatting import print_warning
+
+        print_warning(f"Could not record classifications to history: {e}")
 
 
 @app.command()

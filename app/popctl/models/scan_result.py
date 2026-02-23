@@ -46,12 +46,12 @@ class ScanResult:
 
     Attributes:
         metadata: Scan metadata including timestamp and hostname.
-        packages: List of scanned packages.
+        packages: Tuple of scanned packages (immutable).
         summary: Package count summary.
     """
 
     metadata: ScanMetadata
-    packages: list[ScannedPackage]
+    packages: tuple[ScannedPackage, ...]
     summary: dict[str, int] = field(default_factory=lambda: {})
 
     def to_dict(self) -> dict[str, Any]:
@@ -108,7 +108,7 @@ class ScanResult:
             manual_only=manual_only,
         )
 
-        return cls(metadata=metadata, packages=packages, summary=summary)
+        return cls(metadata=metadata, packages=tuple(packages), summary=summary)
 
 
 def _package_to_dict(pkg: ScannedPackage) -> dict[str, Any]:

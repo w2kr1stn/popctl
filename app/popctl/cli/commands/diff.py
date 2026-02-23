@@ -4,26 +4,18 @@ Compares the manifest with the current system state to show differences.
 """
 
 import json
-from enum import Enum
 from typing import Annotated
 
 import typer
 from rich.table import Table
 
+from popctl.cli.types import SourceChoice, get_scanners
 from popctl.core.diff import DiffEngine, DiffEntry, DiffResult, DiffType
-from popctl.core.manifest import (
-    ManifestError,
-    ManifestNotFoundError,
-    load_manifest,
-)
-from popctl.core.paths import get_manifest_path
-from popctl.scanners.apt import AptScanner
+from popctl.core.manifest import require_manifest
 from popctl.scanners.base import Scanner
-from popctl.scanners.flatpak import FlatpakScanner
 from popctl.utils.formatting import (
     console,
     print_error,
-    print_info,
     print_success,
     print_warning,
 )
@@ -32,34 +24,6 @@ app = typer.Typer(
     help="Compare manifest with current system state.",
     invoke_without_command=True,
 )
-
-
-class SourceChoice(str, Enum):
-    """Available package sources for diff filtering."""
-
-    APT = "apt"
-    FLATPAK = "flatpak"
-    ALL = "all"
-
-
-def _get_scanners(source: SourceChoice) -> list[Scanner]:
-    """Get scanner instances based on source selection.
-
-    Args:
-        source: The source choice (apt, flatpak, or all).
-
-    Returns:
-        List of scanner instances.
-    """
-    scanners: list[Scanner] = []
-
-    if source in (SourceChoice.APT, SourceChoice.ALL):
-        scanners.append(AptScanner())
-
-    if source in (SourceChoice.FLATPAK, SourceChoice.ALL):
-        scanners.append(FlatpakScanner())
-
-    return scanners
 
 
 def _get_status_display(diff_type: DiffType) -> tuple[str, str]:
@@ -205,19 +169,11 @@ def diff_packages(
     if ctx.invoked_subcommand is not None:
         return
 
-    # Load manifest (handles not-found case directly, avoiding TOCTOU race)
-    try:
-        manifest = load_manifest()
-    except ManifestNotFoundError as e:
-        print_error(f"Manifest not found: {get_manifest_path()}")
-        print_info("Run 'popctl init' to create a manifest from your current system.")
-        raise typer.Exit(code=1) from e
-    except ManifestError as e:
-        print_error(f"Failed to load manifest: {e}")
-        raise typer.Exit(code=1) from e
+    # Load manifest (exits with helpful message if not found)
+    manifest = require_manifest()
 
     # Get scanners
-    scanners = _get_scanners(source)
+    scanners = get_scanners(source)
     available_scanners: list[Scanner] = []
 
     for scanner in scanners:

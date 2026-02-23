@@ -127,6 +127,37 @@ def manifest_exists(path: Path | None = None) -> bool:
     return manifest_path.exists()
 
 
+def require_manifest(manifest_path: Path | None = None) -> Manifest:
+    """Load manifest or exit with helpful error message.
+
+    This is a convenience wrapper around load_manifest() that handles
+    common error cases by printing user-friendly messages and exiting.
+
+    Args:
+        manifest_path: Optional custom manifest path.
+
+    Returns:
+        Loaded and validated Manifest.
+
+    Raises:
+        typer.Exit: If manifest cannot be loaded.
+    """
+    import typer
+
+    from popctl.utils.formatting import print_error, print_info
+
+    path = manifest_path or get_manifest_path()
+    try:
+        return load_manifest(path)
+    except ManifestNotFoundError as e:
+        print_error(f"Manifest not found: {path}")
+        print_info("Run 'popctl init' to create a manifest from your current system.")
+        raise typer.Exit(code=1) from e
+    except ManifestError as e:
+        print_error(f"Failed to load manifest: {e}")
+        raise typer.Exit(code=1) from e
+
+
 def _manifest_to_dict(manifest: Manifest) -> dict[str, Any]:
     """Convert a Manifest to a dictionary suitable for TOML serialization.
 
