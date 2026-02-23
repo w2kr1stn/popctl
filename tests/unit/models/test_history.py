@@ -29,8 +29,13 @@ class TestHistoryActionType:
         assert HistoryActionType.ADVISOR_APPLY.value == "advisor_apply"
 
     def test_action_type_count(self) -> None:
-        """HistoryActionType has exactly 5 members."""
-        assert len(HistoryActionType) == 5
+        """HistoryActionType has exactly 6 members."""
+        assert len(HistoryActionType) == 6
+
+    def test_fs_delete_action_type(self) -> None:
+        """FS_DELETE is a valid HistoryActionType value."""
+        assert HistoryActionType.FS_DELETE.value == "fs_delete"
+        assert HistoryActionType("fs_delete") == HistoryActionType.FS_DELETE
 
     def test_action_type_is_str_enum(self) -> None:
         """HistoryActionType inherits from str for JSON serialization."""

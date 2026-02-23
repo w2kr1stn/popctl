@@ -72,6 +72,45 @@ class PackageScanEntry(BaseModel):
     size_bytes: int | None = None
 
 
+class FilesystemOrphanEntry(BaseModel):
+    """Single filesystem orphan entry in scan export.
+
+    Represents an orphaned filesystem path in the scan.json export format,
+    containing the information needed for AI classification.
+
+    Attributes:
+        path: Filesystem path (tilde-prefixed, e.g., "~/.config/vlc").
+        path_type: Type of path ("directory", "file", "symlink", "dead_symlink").
+        size_bytes: Size in bytes (None if unavailable).
+        mtime: Last modification time in ISO 8601 format (None if unavailable).
+        parent_target: Scan target root directory (e.g., "~/.config").
+        orphan_reason: Reason for orphan classification.
+        confidence: Orphan confidence score (0.0 to 1.0).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    path: str
+    path_type: str  # "directory", "file", "symlink", "dead_symlink"
+    size_bytes: int | None = None
+    mtime: str | None = None
+    parent_target: str
+    orphan_reason: str
+    confidence: float
+
+
+class FilesystemScanSection(BaseModel):
+    """Filesystem section in scan.json export.
+
+    Attributes:
+        orphans: List of orphaned filesystem entries.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    orphans: list[FilesystemOrphanEntry] = Field(default_factory=lambda: [])
+
+
 class ScanExport(BaseModel):
     """Complete scan export for AI agent.
 
@@ -83,6 +122,7 @@ class ScanExport(BaseModel):
         system: System information (hostname, os, manifest_path).
         summary: Package count summary.
         packages: Packages grouped by classification status.
+        filesystem: Optional filesystem orphan data for classification.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -91,6 +131,7 @@ class ScanExport(BaseModel):
     system: dict[str, str]  # hostname, os, manifest_path
     summary: dict[str, int]  # total_packages, manual_apt, etc.
     packages: dict[str, list[PackageScanEntry]]  # "unknown", "new_since_manifest"
+    filesystem: FilesystemScanSection | None = None
 
 
 # =============================================================================
@@ -146,6 +187,44 @@ class SourceDecisions(BaseModel):
     ask: list[PackageDecision] = Field(default_factory=lambda: [])
 
 
+class FilesystemPathDecision(BaseModel):
+    """Single filesystem path decision from AI agent.
+
+    Represents one path's classification in the decisions.toml file.
+
+    Attributes:
+        path: Filesystem path (tilde-prefixed, e.g., "~/.config/vlc").
+        reason: Explanation for the classification.
+        confidence: Classification confidence (0.0 - 1.0).
+        category: Path category (e.g., "config", "obsolete", "other").
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    path: str
+    reason: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    category: str
+
+
+class FilesystemDecisions(BaseModel):
+    """Filesystem decisions from AI agent.
+
+    Groups filesystem path decisions by classification: keep, remove, or ask.
+
+    Attributes:
+        keep: Paths that should be kept.
+        remove: Paths that should be removed.
+        ask: Paths that need user decision.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    keep: list[FilesystemPathDecision] = Field(default_factory=lambda: [])
+    remove: list[FilesystemPathDecision] = Field(default_factory=lambda: [])
+    ask: list[FilesystemPathDecision] = Field(default_factory=lambda: [])
+
+
 class DecisionsResult(BaseModel):
     """Complete decisions from AI agent.
 
@@ -153,11 +232,13 @@ class DecisionsResult(BaseModel):
 
     Attributes:
         packages: Decisions organized by package source.
+        filesystem: Optional filesystem path decisions.
     """
 
     model_config = ConfigDict(frozen=True)
 
     packages: dict[PackageSourceKey, SourceDecisions]
+    filesystem: FilesystemDecisions | None = None
 
 
 # =============================================================================
@@ -169,16 +250,19 @@ def export_scan_for_advisor(
     scan_result: ScanResult,
     exchange_dir: Path,
     manifest_path: Path | None = None,
+    filesystem_orphans: list[FilesystemOrphanEntry] | None = None,
 ) -> Path:
     """Export scan results to exchange directory for AI agent.
 
     Creates a scan.json file in the exchange directory containing
-    package data for the AI agent to classify.
+    package data and optional filesystem orphan data for the AI
+    agent to classify.
 
     Args:
         scan_result: Scan result from popctl scan command.
         exchange_dir: Directory for file exchange with AI agent.
         manifest_path: Optional path to manifest file for reference.
+        filesystem_orphans: Optional list of filesystem orphan entries.
 
     Returns:
         Path to the created scan.json file.
@@ -243,6 +327,11 @@ def export_scan_for_advisor(
     if manifest_path:
         system_info["manifest_path"] = str(manifest_path)
 
+    # Build filesystem section if orphans provided
+    filesystem_section: FilesystemScanSection | None = None
+    if filesystem_orphans:
+        filesystem_section = FilesystemScanSection(orphans=filesystem_orphans)
+
     # Create export model
     scan_export = ScanExport(
         scan_date=datetime.now(UTC).isoformat(),
@@ -252,6 +341,7 @@ def export_scan_for_advisor(
             "unknown": packages_by_group["unknown"],
             "new_since_manifest": packages_by_group["new_since_manifest"],
         },
+        filesystem=filesystem_section,
     )
 
     # Write to file
@@ -426,7 +516,21 @@ def _parse_decisions_data(data: dict[str, Any]) -> DecisionsResult:
             ask=ask_list,
         )
 
-    return DecisionsResult(packages=cast(dict[PackageSourceKey, SourceDecisions], parsed_packages))
+    # Parse filesystem decisions (optional, for backward compatibility)
+    filesystem_decisions: FilesystemDecisions | None = None
+    fs_data: Any = data.get("filesystem")
+    if isinstance(fs_data, dict):
+        fs_dict: dict[str, Any] = cast(dict[str, Any], fs_data)
+        filesystem_decisions = FilesystemDecisions(
+            keep=_parse_fs_decision_list(fs_dict.get("keep", [])),
+            remove=_parse_fs_decision_list(fs_dict.get("remove", [])),
+            ask=_parse_fs_decision_list(fs_dict.get("ask", [])),
+        )
+
+    return DecisionsResult(
+        packages=cast(dict[PackageSourceKey, SourceDecisions], parsed_packages),
+        filesystem=filesystem_decisions,
+    )
 
 
 def _parse_decision_list(items: Any) -> list[PackageDecision]:
@@ -457,6 +561,39 @@ def _parse_decision_list(items: Any) -> list[PackageDecision]:
         # Pydantic will validate the fields
         decision = PackageDecision(
             name=str(item_dict.get("name", "")),
+            reason=str(item_dict.get("reason", "")),
+            confidence=float(item_dict.get("confidence", 0.0)),
+            category=str(item_dict.get("category", "other")),
+        )
+        decisions.append(decision)
+
+    return decisions
+
+
+def _parse_fs_decision_list(items: Any) -> list[FilesystemPathDecision]:
+    """Parse a list of filesystem path decisions.
+
+    Args:
+        items: List of decision dictionaries from TOML.
+
+    Returns:
+        List of validated FilesystemPathDecision objects.
+    """
+    if not isinstance(items, list):
+        return []
+
+    decisions: list[FilesystemPathDecision] = []
+    items_list: list[Any] = cast(list[Any], items)
+
+    for item in items_list:
+        if not isinstance(item, dict):
+            continue
+
+        # Type-narrow item - cast for pyright
+        item_dict: dict[str, Any] = cast(dict[str, Any], item)
+
+        decision = FilesystemPathDecision(
+            path=str(item_dict.get("path", "")),
             reason=str(item_dict.get("reason", "")),
             confidence=float(item_dict.get("confidence", 0.0)),
             category=str(item_dict.get("category", "other")),

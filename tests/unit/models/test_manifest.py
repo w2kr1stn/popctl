@@ -6,6 +6,7 @@ Tests for the Pydantic models representing manifest.toml structure.
 from datetime import UTC, datetime
 
 import pytest
+from popctl.filesystem.manifest import FilesystemConfig, FilesystemEntry
 from popctl.models.manifest import (
     Manifest,
     ManifestMeta,
@@ -194,3 +195,100 @@ class TestManifest:
     def test_package_count(self, sample_manifest: Manifest) -> None:
         """package_count returns total tracked packages."""
         assert sample_manifest.package_count == 3
+
+
+class TestManifestFilesystem:
+    """Tests for filesystem integration in Manifest model."""
+
+    @pytest.fixture
+    def fs_config(self) -> FilesystemConfig:
+        """Create a sample FilesystemConfig for testing."""
+        return FilesystemConfig(
+            keep={
+                "~/.config/nvim": FilesystemEntry(reason="User config", category="config"),
+                "~/.config/git": FilesystemEntry(reason="Version control"),
+            },
+            remove={
+                "~/.config/old-app": FilesystemEntry(reason="App uninstalled", category="stale"),
+                "~/.cache/stale": FilesystemEntry(),
+            },
+        )
+
+    @pytest.fixture
+    def manifest_with_fs(self, fs_config: FilesystemConfig) -> Manifest:
+        """Create a manifest with filesystem section."""
+        now = datetime.now(UTC)
+        return Manifest(
+            meta=ManifestMeta(version="1.0", created=now, updated=now),
+            system=SystemConfig(name="test-machine"),
+            packages=PackageConfig(
+                keep={"firefox": PackageEntry(source="apt")},
+                remove={},
+            ),
+            filesystem=fs_config,
+        )
+
+    @pytest.fixture
+    def manifest_without_fs(self) -> Manifest:
+        """Create a manifest without filesystem section."""
+        now = datetime.now(UTC)
+        return Manifest(
+            meta=ManifestMeta(version="1.0", created=now, updated=now),
+            system=SystemConfig(name="test-machine"),
+            packages=PackageConfig(keep={}, remove={}),
+        )
+
+    def test_manifest_with_filesystem_section(self, manifest_with_fs: Manifest) -> None:
+        """Manifest accepts a filesystem section with keep/remove entries."""
+        assert manifest_with_fs.filesystem is not None
+        assert len(manifest_with_fs.filesystem.keep) == 2
+        assert len(manifest_with_fs.filesystem.remove) == 2
+        assert "~/.config/nvim" in manifest_with_fs.filesystem.keep
+        assert "~/.config/old-app" in manifest_with_fs.filesystem.remove
+
+    def test_manifest_without_filesystem_backward_compat(
+        self, manifest_without_fs: Manifest
+    ) -> None:
+        """Manifest without filesystem section loads with None default."""
+        assert manifest_without_fs.filesystem is None
+        assert manifest_without_fs.system.name == "test-machine"
+
+    def test_manifest_filesystem_defaults_to_none(self) -> None:
+        """Filesystem field defaults to None when not provided."""
+        now = datetime.now(UTC)
+        manifest = Manifest(
+            meta=ManifestMeta(created=now, updated=now),
+            system=SystemConfig(name="test"),
+            packages=PackageConfig(keep={}, remove={}),
+        )
+        assert manifest.filesystem is None
+
+    def test_get_fs_keep_paths(self, manifest_with_fs: Manifest) -> None:
+        """get_fs_keep_paths returns keep dict when filesystem is present."""
+        paths = manifest_with_fs.get_fs_keep_paths()
+
+        assert len(paths) == 2
+        assert "~/.config/nvim" in paths
+        assert "~/.config/git" in paths
+        assert paths["~/.config/nvim"].reason == "User config"
+        assert paths["~/.config/nvim"].category == "config"
+
+    def test_get_fs_remove_paths(self, manifest_with_fs: Manifest) -> None:
+        """get_fs_remove_paths returns remove dict when filesystem is present."""
+        paths = manifest_with_fs.get_fs_remove_paths()
+
+        assert len(paths) == 2
+        assert "~/.config/old-app" in paths
+        assert "~/.cache/stale" in paths
+        assert paths["~/.config/old-app"].reason == "App uninstalled"
+        assert paths["~/.config/old-app"].category == "stale"
+
+    def test_get_fs_keep_paths_when_none(self, manifest_without_fs: Manifest) -> None:
+        """get_fs_keep_paths returns empty dict when filesystem is None."""
+        paths = manifest_without_fs.get_fs_keep_paths()
+        assert paths == {}
+
+    def test_get_fs_remove_paths_when_none(self, manifest_without_fs: Manifest) -> None:
+        """get_fs_remove_paths returns empty dict when filesystem is None."""
+        paths = manifest_without_fs.get_fs_remove_paths()
+        assert paths == {}

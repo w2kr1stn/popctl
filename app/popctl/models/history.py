@@ -30,6 +30,7 @@ class HistoryActionType(str, Enum):
     PURGE = "purge"
     APPLY = "apply"
     ADVISOR_APPLY = "advisor_apply"
+    FS_DELETE = "fs_delete"
 
 
 @dataclass(frozen=True, slots=True)

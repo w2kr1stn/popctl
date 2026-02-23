@@ -1,7 +1,7 @@
 """Unit tests for sync command.
 
 Tests for the CLI sync command implementation covering all pipeline phases,
-flag behaviors, and edge cases.
+flag behaviors, and edge cases including filesystem phases.
 """
 
 from datetime import UTC, datetime
@@ -90,6 +90,12 @@ class TestSyncHelp:
         assert "--source" in result.stdout
         assert "--purge" in result.stdout
 
+    def test_sync_help_shows_no_filesystem(self) -> None:
+        """Sync help shows --no-filesystem flag."""
+        result = runner.invoke(app, ["sync", "--help"])
+        assert result.exit_code == 0
+        assert "--no-filesystem" in result.stdout
+
 
 class TestSyncNoManifest:
     """Tests for sync auto-init when no manifest exists."""
@@ -125,7 +131,7 @@ class TestSyncNoManifest:
                 return_value=in_sync_result,
             ),
         ):
-            result = runner.invoke(app, ["sync"])
+            result = runner.invoke(app, ["sync", "--no-filesystem"])
 
         assert result.exit_code == 0
         assert "Manifest created" in result.stdout or "in sync" in result.stdout.lower()
@@ -149,7 +155,7 @@ class TestSyncInSync:
                 return_value=in_sync_result,
             ),
         ):
-            result = runner.invoke(app, ["sync"])
+            result = runner.invoke(app, ["sync", "--no-filesystem"])
 
         assert result.exit_code == 0
         assert "in sync" in result.stdout.lower()
@@ -173,7 +179,7 @@ class TestSyncDryRun:
                 return_value=diff_result_no_new,
             ),
         ):
-            result = runner.invoke(app, ["sync", "--dry-run"])
+            result = runner.invoke(app, ["sync", "--dry-run", "--no-filesystem"])
 
         assert result.exit_code == 0
         assert "Dry-run" in result.stdout or "dry-run" in result.stdout.lower()
@@ -195,7 +201,7 @@ class TestSyncDryRun:
             ),
             patch("popctl.cli.commands.sync._run_advisor") as mock_advisor,
         ):
-            result = runner.invoke(app, ["sync", "--dry-run"])
+            result = runner.invoke(app, ["sync", "--dry-run", "--no-filesystem"])
 
         assert result.exit_code == 0
         mock_advisor.assert_not_called()
@@ -226,7 +232,7 @@ class TestSyncNoAdvisor:
                 "popctl.utils.shell", fromlist=["CommandResult"]
             ).CommandResult(stdout="", stderr="", returncode=0)
 
-            runner.invoke(app, ["sync", "--no-advisor", "--yes"])
+            runner.invoke(app, ["sync", "--no-advisor", "--yes", "--no-filesystem"])
 
         mock_advisor.assert_not_called()
 
@@ -256,7 +262,7 @@ class TestSyncAdvisor:
                 "popctl.utils.shell", fromlist=["CommandResult"]
             ).CommandResult(stdout="", stderr="", returncode=0)
 
-            runner.invoke(app, ["sync", "--yes"])
+            runner.invoke(app, ["sync", "--yes", "--no-filesystem"])
 
         mock_advisor.assert_not_called()
 
@@ -286,7 +292,7 @@ class TestSyncAdvisor:
                 "popctl.utils.shell", fromlist=["CommandResult"]
             ).CommandResult(stdout="", stderr="", returncode=0)
 
-            result = runner.invoke(app, ["sync", "--yes", "--auto"])
+            result = runner.invoke(app, ["sync", "--yes", "--auto", "--no-filesystem"])
 
         # Should NOT fail — advisor error is non-fatal
         # The command should still proceed to execution
@@ -317,7 +323,7 @@ class TestSyncExecution:
                 "popctl.utils.shell", fromlist=["CommandResult"]
             ).CommandResult(stdout="", stderr="", returncode=0)
 
-            runner.invoke(app, ["sync", "--yes"])
+            runner.invoke(app, ["sync", "--yes", "--no-filesystem"])
 
         # Should have executed commands
         mock_run.assert_called()
@@ -343,7 +349,7 @@ class TestSyncExecution:
                 "popctl.utils.shell", fromlist=["CommandResult"]
             ).CommandResult(stdout="", stderr="", returncode=0)
 
-            result = runner.invoke(app, ["sync", "--yes"])
+            result = runner.invoke(app, ["sync", "--yes", "--no-filesystem"])
 
         # Should have executed without "Confirm" / "y/N" in output
         assert "y/N" not in result.stdout or result.exit_code == 0
@@ -374,7 +380,7 @@ class TestSyncHistory:
                 "popctl.utils.shell", fromlist=["CommandResult"]
             ).CommandResult(stdout="", stderr="", returncode=0)
 
-            runner.invoke(app, ["sync", "--yes"])
+            runner.invoke(app, ["sync", "--yes", "--no-filesystem"])
 
         # record_actions_to_history should have been called with command="popctl sync"
         mock_record.assert_called_once()
@@ -413,7 +419,7 @@ class TestSyncFailures:
                 "popctl.utils.shell", fromlist=["CommandResult"]
             ).CommandResult(stdout="", stderr="E: Package not found", returncode=100)
 
-            result = runner.invoke(app, ["sync", "--yes"])
+            result = runner.invoke(app, ["sync", "--yes", "--no-filesystem"])
 
         assert result.exit_code == 1
         assert "FAIL" in result.stdout or "failed" in result.stdout.lower()
@@ -464,7 +470,7 @@ class TestSyncReDiff:
                 "popctl.utils.shell", fromlist=["CommandResult"]
             ).CommandResult(stdout="", stderr="", returncode=0)
 
-            runner.invoke(app, ["sync", "--yes"])
+            runner.invoke(app, ["sync", "--yes", "--no-filesystem"])
 
         # compute_diff should have been called twice (initial + re-diff)
         assert diff_call_count == 2
@@ -498,8 +504,296 @@ class TestSyncPurge:
                 "popctl.utils.shell", fromlist=["CommandResult"]
             ).CommandResult(stdout="", stderr="", returncode=0)
 
-            runner.invoke(app, ["sync", "--yes", "--purge"])
+            runner.invoke(app, ["sync", "--yes", "--purge", "--no-filesystem"])
 
         # Should have called apt-get purge
         args = mock_run.call_args[0][0]
         assert "purge" in args
+
+
+# =============================================================================
+# Tests for filesystem phases in sync pipeline
+# =============================================================================
+
+
+class TestSyncFilesystem:
+    """Tests for filesystem phases (9-13) in sync pipeline."""
+
+    def test_sync_no_filesystem_flag_skips_all_fs_phases(
+        self, sample_manifest: Manifest, in_sync_result: DiffResult
+    ) -> None:
+        """--no-filesystem skips filesystem phases entirely."""
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=in_sync_result,
+            ),
+            patch("popctl.cli.commands.sync._fs_scan") as mock_fs_scan,
+        ):
+            result = runner.invoke(app, ["sync", "--no-filesystem"])
+
+        assert result.exit_code == 0
+        mock_fs_scan.assert_not_called()
+
+    def test_sync_filesystem_no_orphans_skips(
+        self, sample_manifest: Manifest, in_sync_result: DiffResult
+    ) -> None:
+        """When FS scan finds no orphans, remaining FS phases are skipped."""
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=in_sync_result,
+            ),
+            patch("popctl.cli.commands.sync._fs_scan", return_value=[]) as mock_fs_scan,
+            patch("popctl.cli.commands.sync._fs_clean") as mock_fs_clean,
+        ):
+            result = runner.invoke(app, ["sync"])
+
+        assert result.exit_code == 0
+        mock_fs_scan.assert_called_once()
+        mock_fs_clean.assert_not_called()
+        assert "No orphaned filesystem entries found" in result.stdout
+
+    def test_sync_filesystem_scan_failure_non_fatal(
+        self, sample_manifest: Manifest, in_sync_result: DiffResult
+    ) -> None:
+        """FS scan failure prints warning, does not crash sync."""
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=in_sync_result,
+            ),
+            # _fs_scan catches exceptions internally and returns []
+            # but we can test via the FilesystemScanner raising
+            patch(
+                "popctl.cli.commands.sync._fs_scan",
+                return_value=[],
+            ),
+        ):
+            result = runner.invoke(app, ["sync"])
+
+        # Sync should still succeed (filesystem phases are non-fatal)
+        assert result.exit_code == 0
+
+    def test_sync_filesystem_scan_exception_non_fatal(
+        self, sample_manifest: Manifest, in_sync_result: DiffResult
+    ) -> None:
+        """When _fs_scan returns empty (due to exception), sync still succeeds."""
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=in_sync_result,
+            ),
+            # Simulate _fs_scan returning empty (as it does on exception)
+            patch("popctl.cli.commands.sync._fs_scan", return_value=[]),
+            patch("popctl.cli.commands.sync._fs_clean") as mock_fs_clean,
+        ):
+            result = runner.invoke(app, ["sync"])
+
+        # Sync should succeed despite filesystem issues
+        assert result.exit_code == 0
+        # No orphans found => remaining FS phases skipped
+        assert "No orphaned filesystem entries found" in result.stdout
+        mock_fs_clean.assert_not_called()
+
+    def test_fs_scan_catches_runtime_error(self) -> None:
+        """_fs_scan catches RuntimeError and returns empty list."""
+        from popctl.cli.commands.sync import _fs_scan
+
+        mock_scanner = MagicMock()
+        mock_scanner.scan.side_effect = RuntimeError("scanner broken")
+
+        with patch(
+            "popctl.filesystem.scanner.FilesystemScanner",
+            return_value=mock_scanner,
+        ):
+            result = _fs_scan()
+
+        assert result == []
+
+    def test_fs_scan_catches_os_error(self) -> None:
+        """_fs_scan catches OSError and returns empty list."""
+        from popctl.cli.commands.sync import _fs_scan
+
+        mock_scanner = MagicMock()
+        mock_scanner.scan.side_effect = OSError("disk error")
+
+        with patch(
+            "popctl.filesystem.scanner.FilesystemScanner",
+            return_value=mock_scanner,
+        ):
+            result = _fs_scan()
+
+        assert result == []
+
+    def test_sync_filesystem_dry_run_displays_orphans(
+        self, sample_manifest: Manifest, diff_result_no_new: DiffResult
+    ) -> None:
+        """In dry-run mode, filesystem orphans are displayed but not deleted."""
+        from popctl.filesystem.models import (
+            OrphanReason,
+            PathStatus,
+            PathType,
+            ScannedPath,
+        )
+
+        mock_orphans = [
+            ScannedPath(
+                path="/home/test/.config/old-app",
+                path_type=PathType.DIRECTORY,
+                status=PathStatus.ORPHAN,
+                size_bytes=4096,
+                mtime=None,
+                parent_target="~/.config",
+                orphan_reason=OrphanReason.NO_PACKAGE_MATCH,
+                confidence=0.70,
+                description=None,
+            ),
+        ]
+
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=diff_result_no_new,
+            ),
+            patch("popctl.cli.commands.sync._fs_scan", return_value=mock_orphans),
+            patch("popctl.cli.commands.sync._fs_clean") as mock_fs_clean,
+        ):
+            result = runner.invoke(app, ["sync", "--dry-run"])
+
+        assert result.exit_code == 0
+        mock_fs_clean.assert_not_called()
+        # Should see the orphan path in display
+        assert "old-app" in result.stdout
+        assert "No filesystem changes made" in result.stdout
+
+    def test_sync_filesystem_phases_run_after_package_execution(
+        self, sample_manifest: Manifest, diff_result_no_new: DiffResult
+    ) -> None:
+        """Filesystem phases run after package execution phases complete."""
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch("popctl.operators.apt.command_exists", return_value=True),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=diff_result_no_new,
+            ),
+            patch("popctl.operators.apt.run_command") as mock_run,
+            patch("popctl.cli.commands.sync._run_filesystem_phases") as mock_fs_phases,
+        ):
+            mock_run.return_value = __import__(
+                "popctl.utils.shell", fromlist=["CommandResult"]
+            ).CommandResult(stdout="", stderr="", returncode=0)
+
+            runner.invoke(app, ["sync", "--yes"])
+
+        # Filesystem phases should have been called
+        mock_fs_phases.assert_called_once()
+        call_kwargs = mock_fs_phases.call_args[1]
+        assert call_kwargs["dry_run"] is False
+        assert call_kwargs["yes"] is True
+
+    def test_sync_filesystem_phases_run_when_packages_in_sync(
+        self, sample_manifest: Manifest, in_sync_result: DiffResult
+    ) -> None:
+        """Filesystem phases still run even when packages are in sync."""
+        from popctl.filesystem.models import (
+            OrphanReason,
+            PathStatus,
+            PathType,
+            ScannedPath,
+        )
+
+        mock_orphans = [
+            ScannedPath(
+                path="/home/test/.cache/stale-app",
+                path_type=PathType.DIRECTORY,
+                status=PathStatus.ORPHAN,
+                size_bytes=1024,
+                mtime=None,
+                parent_target="~/.cache",
+                orphan_reason=OrphanReason.STALE_CACHE,
+                confidence=0.95,
+                description=None,
+            ),
+        ]
+
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=in_sync_result,
+            ),
+            patch("popctl.cli.commands.sync._fs_scan", return_value=mock_orphans),
+            patch("popctl.cli.commands.sync._fs_clean", return_value=[]),
+        ):
+            result = runner.invoke(app, ["sync"])
+
+        assert result.exit_code == 0
+        assert "1 orphaned filesystem" in result.stdout
+
+    def test_sync_filesystem_phases_run_before_exit_code_1(self, sample_manifest: Manifest) -> None:
+        """Filesystem phases run even when package actions fail (before exit 1)."""
+        missing_only = DiffResult(
+            new=(),
+            missing=(DiffEntry(name="broken-pkg", source="apt", diff_type=DiffType.MISSING),),
+            extra=(),
+        )
+
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.flatpak.command_exists", return_value=False),
+            patch("popctl.operators.apt.command_exists", return_value=True),
+            patch.object(
+                __import__("popctl.core.diff", fromlist=["DiffEngine"]).DiffEngine,
+                "compute_diff",
+                return_value=missing_only,
+            ),
+            patch("popctl.operators.apt.run_command") as mock_run,
+            patch("popctl.cli.commands.sync._run_filesystem_phases") as mock_fs_phases,
+        ):
+            mock_run.return_value = __import__(
+                "popctl.utils.shell", fromlist=["CommandResult"]
+            ).CommandResult(stdout="", stderr="E: Failed", returncode=100)
+
+            result = runner.invoke(app, ["sync", "--yes"])
+
+        # Package failure should give exit code 1
+        assert result.exit_code == 1
+        # But filesystem phases should still have been called
+        mock_fs_phases.assert_called_once()
