@@ -880,17 +880,23 @@ class TestConstructor:
         assert scanner._targets == custom
 
     def test_default_targets_include_xdg_dirs(self) -> None:
-        """Default targets include .config, .local/share, .cache."""
+        """Default targets include .local/share and .cache (not .config)."""
         scanner = FilesystemScanner()
         target_strs = [str(t) for t in scanner._targets]
         home = str(Path.home())
-        assert f"{home}/.config" in target_strs
         assert f"{home}/.local/share" in target_strs
         assert f"{home}/.cache" in target_strs
+
+    def test_default_targets_exclude_config(self) -> None:
+        """Default targets do NOT include .config (owned by ConfigScanner)."""
+        scanner = FilesystemScanner()
+        target_strs = [str(t) for t in scanner._targets]
+        home = str(Path.home())
+        assert f"{home}/.config" not in target_strs
 
     def test_include_etc_adds_etc_target(self) -> None:
         """include_etc=True adds /etc to default targets."""
         scanner = FilesystemScanner(include_etc=True)
         target_strs = [str(t) for t in scanner._targets]
         assert "/etc" in target_strs
-        assert len(scanner._targets) == 4  # 3 default + /etc
+        assert len(scanner._targets) == 3  # 2 default + /etc

@@ -18,8 +18,8 @@ from popctl.utils.shell import run_command
 logger = logging.getLogger(__name__)
 
 # Default scan target directories (relative to user home)
+# Note: .config is excluded — it is exclusively owned by ConfigScanner
 _DEFAULT_HOME_TARGETS: tuple[str, ...] = (
-    ".config",
     ".local/share",
     ".cache",
 )
@@ -38,8 +38,9 @@ class FilesystemScanner:
         include_files: If True, also scan individual files (not just directories).
         include_etc: If True, include /etc in scan targets.
         targets: Optional explicit list of target directories to scan.
-            Defaults to ~/.config, ~/.local/share, ~/.cache (and /etc if
-            include_etc is True).
+            Defaults to ~/.local/share, ~/.cache (and /etc if
+            include_etc is True). Note: ~/.config is handled exclusively
+            by ConfigScanner.
     """
 
     def __init__(

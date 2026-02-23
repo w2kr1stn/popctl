@@ -163,6 +163,36 @@ def ensure_dirs() -> None:
 
 
 # =============================================================================
+# Config backup paths
+# =============================================================================
+
+
+def get_config_backup_dir() -> Path:
+    """Get the config backup directory path.
+
+    Config backups are stored under the state directory in a dedicated
+    subdirectory. Each backup operation creates a timestamped subdirectory
+    within this location.
+
+    Returns:
+        Path to ~/.local/state/popctl/config-backups/.
+    """
+    return get_state_dir() / "config-backups"
+
+
+def ensure_config_backup_dir() -> Path:
+    """Create the config backup directory if it doesn't exist.
+
+    Returns:
+        Path to the config backup directory.
+
+    Raises:
+        RuntimeError: If the directory cannot be created.
+    """
+    return _ensure_dir(get_config_backup_dir(), "config backup")
+
+
+# =============================================================================
 # Advisor-specific paths
 # =============================================================================
 

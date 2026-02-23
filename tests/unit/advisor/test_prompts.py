@@ -593,3 +593,78 @@ class TestFilesystemPromptIntegration:
         fs_pos = schema.index("[filesystem]")
         snap_pos = schema.index("[packages.snap]")
         assert fs_pos > snap_pos, "Filesystem section should come after package sections"
+
+
+# =============================================================================
+# Test Config Integration in Prompts
+# =============================================================================
+
+
+class TestConfigPromptIntegration:
+    """Tests for config classification rules in prompts."""
+
+    def test_headless_prompt_mentions_configs(self) -> None:
+        """HEADLESS_PROMPT includes config classification rules."""
+        assert "Config Classification" in HEADLESS_PROMPT
+        assert "configs" in HEADLESS_PROMPT.lower()
+
+        prompt = build_headless_prompt(
+            "/tmp/scan.json",
+            "/tmp/decisions.toml",
+        )
+        assert "[configs]" in prompt
+
+    def test_session_claude_md_mentions_configs(self) -> None:
+        """SESSION_CLAUDE_MD includes config classification rules."""
+        assert "Config Classification" in SESSION_CLAUDE_MD
+        assert "configs" in SESSION_CLAUDE_MD.lower()
+
+        result = build_session_claude_md()
+        assert "[configs]" in result
+
+    def test_decisions_schema_has_configs(self) -> None:
+        """DECISIONS_SCHEMA includes [configs] section."""
+        assert "[configs]" in DECISIONS_SCHEMA
+        schema = get_decisions_schema()
+        assert "[configs]" in schema
+
+        # Configs section should appear after filesystem section
+        cfg_pos = schema.index("[configs]")
+        fs_pos = schema.index("[filesystem]")
+        assert cfg_pos > fs_pos, "Configs section should come after filesystem section"
+
+    def test_headless_prompt_has_config_keep_rules(self) -> None:
+        """HEADLESS_PROMPT lists config KEEP criteria."""
+        # The Config Classification section should mention key keep targets
+        assert "desktop configs" in HEADLESS_PROMPT.lower() or "cosmic" in HEADLESS_PROMPT.lower()
+        assert "docker" in HEADLESS_PROMPT.lower()
+
+    def test_headless_prompt_has_config_remove_rules(self) -> None:
+        """HEADLESS_PROMPT lists config REMOVE criteria."""
+        assert (
+            "uninstalled apps" in HEADLESS_PROMPT.lower()
+            or "uninstalled" in HEADLESS_PROMPT.lower()
+        )
+
+    def test_headless_prompt_has_config_ask_rules(self) -> None:
+        """HEADLESS_PROMPT lists config ASK criteria."""
+        assert (
+            "unclear ownership" in HEADLESS_PROMPT.lower() or "ambiguous" in HEADLESS_PROMPT.lower()
+        )
+
+    def test_session_claude_md_has_config_output(self) -> None:
+        """SESSION_CLAUDE_MD output format includes [configs] section."""
+        result = build_session_claude_md()
+        assert "[configs]" in result
+
+    def test_decisions_schema_config_structure(self) -> None:
+        """DECISIONS_SCHEMA [configs] section has keep/remove/ask with config examples."""
+        schema = get_decisions_schema()
+
+        # Find the configs section and verify it has examples
+        cfg_pos = schema.index("[configs]")
+        cfg_section = schema[cfg_pos:]
+        assert "path =" in cfg_section
+        assert "reason =" in cfg_section
+        assert "confidence =" in cfg_section
+        assert "category =" in cfg_section

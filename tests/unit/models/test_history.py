@@ -29,8 +29,8 @@ class TestHistoryActionType:
         assert HistoryActionType.ADVISOR_APPLY.value == "advisor_apply"
 
     def test_action_type_count(self) -> None:
-        """HistoryActionType has exactly 6 members."""
-        assert len(HistoryActionType) == 6
+        """HistoryActionType has exactly 7 members."""
+        assert len(HistoryActionType) == 7
 
     def test_fs_delete_action_type(self) -> None:
         """FS_DELETE is a valid HistoryActionType value."""

@@ -1397,3 +1397,641 @@ class TestParseFsDecisionList:
         assert result[0].reason == ""
         assert result[0].confidence == 0.0
         assert result[0].category == "other"
+
+
+# =============================================================================
+# Test ConfigOrphanEntry Model
+# =============================================================================
+
+
+class TestConfigOrphanEntry:
+    """Tests for ConfigOrphanEntry Pydantic model."""
+
+    def test_config_orphan_entry_creation(self) -> None:
+        """ConfigOrphanEntry accepts all fields."""
+        from popctl.advisor.exchange import ConfigOrphanEntry
+
+        entry = ConfigOrphanEntry(
+            path="~/.config/vlc",
+            config_type="directory",
+            size_bytes=4096,
+            mtime="2024-01-15T10:00:00Z",
+            orphan_reason="no_package_match",
+            confidence=0.70,
+        )
+
+        assert entry.path == "~/.config/vlc"
+        assert entry.config_type == "directory"
+        assert entry.size_bytes == 4096
+        assert entry.mtime == "2024-01-15T10:00:00Z"
+        assert entry.orphan_reason == "no_package_match"
+        assert entry.confidence == 0.70
+
+    def test_config_orphan_entry_optional_fields(self) -> None:
+        """ConfigOrphanEntry defaults optional fields to None."""
+        from popctl.advisor.exchange import ConfigOrphanEntry
+
+        entry = ConfigOrphanEntry(
+            path="~/.config/vlc",
+            config_type="directory",
+            orphan_reason="no_package_match",
+            confidence=0.70,
+        )
+
+        assert entry.size_bytes is None
+        assert entry.mtime is None
+
+    def test_config_orphan_entry_frozen(self) -> None:
+        """ConfigOrphanEntry is immutable."""
+        from popctl.advisor.exchange import ConfigOrphanEntry
+        from pydantic import ValidationError
+
+        entry = ConfigOrphanEntry(
+            path="~/.config/vlc",
+            config_type="directory",
+            orphan_reason="no_package_match",
+            confidence=0.70,
+        )
+
+        with pytest.raises(ValidationError):
+            entry.path = "changed"  # type: ignore[misc]
+
+    def test_config_orphan_entry_serialization(self) -> None:
+        """ConfigOrphanEntry serializes correctly via model_dump."""
+        from popctl.advisor.exchange import ConfigOrphanEntry
+
+        entry = ConfigOrphanEntry(
+            path="~/.config/vlc",
+            config_type="directory",
+            size_bytes=4096,
+            mtime="2024-01-15T10:00:00Z",
+            orphan_reason="app_not_installed",
+            confidence=0.70,
+        )
+
+        data = entry.model_dump()
+
+        assert data["path"] == "~/.config/vlc"
+        assert data["config_type"] == "directory"
+        assert data["size_bytes"] == 4096
+        assert data["mtime"] == "2024-01-15T10:00:00Z"
+        assert data["orphan_reason"] == "app_not_installed"
+        assert data["confidence"] == 0.70
+
+
+# =============================================================================
+# Test ConfigScanSection Model
+# =============================================================================
+
+
+class TestConfigScanSection:
+    """Tests for ConfigScanSection Pydantic model."""
+
+    def test_config_scan_section_defaults(self) -> None:
+        """ConfigScanSection defaults to empty orphans list."""
+        from popctl.advisor.exchange import ConfigScanSection
+
+        section = ConfigScanSection()
+
+        assert section.orphans == []
+
+    def test_config_scan_section_with_orphans(self) -> None:
+        """ConfigScanSection accepts orphan entries."""
+        from popctl.advisor.exchange import ConfigOrphanEntry, ConfigScanSection
+
+        orphan = ConfigOrphanEntry(
+            path="~/.config/vlc",
+            config_type="directory",
+            orphan_reason="no_package_match",
+            confidence=0.70,
+        )
+
+        section = ConfigScanSection(orphans=[orphan])
+
+        assert len(section.orphans) == 1
+        assert section.orphans[0].path == "~/.config/vlc"
+
+
+# =============================================================================
+# Test ConfigPathDecision Model
+# =============================================================================
+
+
+class TestConfigPathDecision:
+    """Tests for ConfigPathDecision Pydantic model."""
+
+    def test_config_path_decision_creation(self) -> None:
+        """ConfigPathDecision accepts valid data."""
+        from popctl.advisor.exchange import ConfigPathDecision
+
+        decision = ConfigPathDecision(
+            path="~/.config/vlc",
+            reason="VLC not installed",
+            confidence=0.85,
+            category="media",
+        )
+
+        assert decision.path == "~/.config/vlc"
+        assert decision.reason == "VLC not installed"
+        assert decision.confidence == 0.85
+        assert decision.category == "media"
+
+    def test_config_path_decision_optional_category(self) -> None:
+        """ConfigPathDecision allows None category."""
+        from popctl.advisor.exchange import ConfigPathDecision
+
+        decision = ConfigPathDecision(
+            path="~/.config/vlc",
+            reason="VLC not installed",
+            confidence=0.85,
+        )
+
+        assert decision.category is None
+
+    def test_config_path_decision_validation(self) -> None:
+        """ConfigPathDecision validates confidence bounds."""
+        from popctl.advisor.exchange import ConfigPathDecision
+
+        # Valid boundary values
+        ConfigPathDecision(path="test", reason="test", confidence=0.0)
+        ConfigPathDecision(path="test", reason="test", confidence=1.0)
+
+        # Invalid: below 0
+        with pytest.raises(ValueError):
+            ConfigPathDecision(path="test", reason="test", confidence=-0.1)
+
+        # Invalid: above 1
+        with pytest.raises(ValueError):
+            ConfigPathDecision(path="test", reason="test", confidence=1.1)
+
+    def test_config_path_decision_frozen(self) -> None:
+        """ConfigPathDecision is immutable."""
+        from popctl.advisor.exchange import ConfigPathDecision
+        from pydantic import ValidationError
+
+        decision = ConfigPathDecision(path="test", reason="test", confidence=0.5, category="other")
+
+        with pytest.raises(ValidationError):
+            decision.path = "changed"  # type: ignore[misc]
+
+
+# =============================================================================
+# Test ConfigDecisions Model
+# =============================================================================
+
+
+class TestConfigDecisions:
+    """Tests for ConfigDecisions Pydantic model."""
+
+    def test_config_decisions_defaults(self) -> None:
+        """ConfigDecisions defaults to empty lists."""
+        from popctl.advisor.exchange import ConfigDecisions
+
+        decisions = ConfigDecisions()
+
+        assert decisions.keep == []
+        assert decisions.remove == []
+        assert decisions.ask == []
+
+    def test_config_decisions_with_entries(self) -> None:
+        """ConfigDecisions accepts path decision lists."""
+        from popctl.advisor.exchange import ConfigDecisions, ConfigPathDecision
+
+        keep = [
+            ConfigPathDecision(
+                path="~/.config/nvim",
+                reason="User-created Neovim configuration",
+                confidence=0.95,
+                category="editor",
+            )
+        ]
+        remove = [
+            ConfigPathDecision(
+                path="~/.config/vlc",
+                reason="VLC not installed",
+                confidence=0.85,
+                category="media",
+            )
+        ]
+
+        decisions = ConfigDecisions(keep=keep, remove=remove)
+
+        assert len(decisions.keep) == 1
+        assert len(decisions.remove) == 1
+        assert len(decisions.ask) == 0
+
+
+# =============================================================================
+# Test ScanExport with Configs
+# =============================================================================
+
+
+class TestScanExportWithConfigs:
+    """Tests for ScanExport with configs section."""
+
+    def test_scan_export_with_configs(self) -> None:
+        """ScanExport includes configs section when provided."""
+        from popctl.advisor.exchange import ConfigOrphanEntry, ConfigScanSection
+
+        orphan = ConfigOrphanEntry(
+            path="~/.config/vlc",
+            config_type="directory",
+            orphan_reason="app_not_installed",
+            confidence=0.70,
+        )
+        cfg_section = ConfigScanSection(orphans=[orphan])
+
+        export = ScanExport(
+            scan_date="2026-01-25T12:00:00Z",
+            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
+            summary={"total_packages": 0},
+            packages={"unknown": []},
+            configs=cfg_section,
+        )
+
+        assert export.configs is not None
+        assert len(export.configs.orphans) == 1
+        assert export.configs.orphans[0].path == "~/.config/vlc"
+
+    def test_scan_export_without_configs(self) -> None:
+        """ScanExport works without configs section (backward compat)."""
+        export = ScanExport(
+            scan_date="2026-01-25T12:00:00Z",
+            system={"hostname": "test-host", "os": "Pop!_OS 24.04 LTS"},
+            summary={"total_packages": 0},
+            packages={"unknown": []},
+        )
+
+        assert export.configs is None
+
+
+# =============================================================================
+# Test DecisionsResult with Configs
+# =============================================================================
+
+
+class TestDecisionsResultWithConfigs:
+    """Tests for DecisionsResult with configs field."""
+
+    def test_decisions_result_with_configs(self) -> None:
+        """DecisionsResult includes config decisions when provided."""
+        from popctl.advisor.exchange import ConfigDecisions, ConfigPathDecision
+
+        cfg_decisions = ConfigDecisions(
+            keep=[
+                ConfigPathDecision(
+                    path="~/.config/nvim",
+                    reason="User-created Neovim configuration",
+                    confidence=0.95,
+                    category="editor",
+                )
+            ],
+            remove=[
+                ConfigPathDecision(
+                    path="~/.config/vlc",
+                    reason="VLC not installed",
+                    confidence=0.85,
+                    category="media",
+                )
+            ],
+        )
+
+        result = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(),
+                "flatpak": SourceDecisions(),
+                "snap": SourceDecisions(),
+            },
+            configs=cfg_decisions,
+        )
+
+        assert result.configs is not None
+        assert len(result.configs.keep) == 1
+        assert len(result.configs.remove) == 1
+        assert result.configs.keep[0].path == "~/.config/nvim"
+
+    def test_decisions_result_without_configs(self) -> None:
+        """DecisionsResult works without configs (backward compat)."""
+        result = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(),
+                "flatpak": SourceDecisions(),
+                "snap": SourceDecisions(),
+            }
+        )
+
+        assert result.configs is None
+
+
+# =============================================================================
+# Test export_scan_for_advisor with Config Orphans
+# =============================================================================
+
+
+class TestExportScanWithConfigs:
+    """Tests for export_scan_for_advisor with config orphans."""
+
+    def test_export_with_config_orphans(
+        self, tmp_path: Path, sample_scan_result: ScanResult
+    ) -> None:
+        """export_scan_for_advisor includes configs section when orphans provided."""
+        from popctl.advisor.exchange import ConfigOrphanEntry
+
+        orphans = [
+            ConfigOrphanEntry(
+                path="~/.config/vlc",
+                config_type="directory",
+                size_bytes=4096,
+                mtime="2024-01-15T10:00:00Z",
+                orphan_reason="app_not_installed",
+                confidence=0.70,
+            ),
+            ConfigOrphanEntry(
+                path="~/.config/sublime-text",
+                config_type="directory",
+                orphan_reason="no_package_match",
+                confidence=0.65,
+            ),
+        ]
+
+        result_path = export_scan_for_advisor(sample_scan_result, tmp_path, config_orphans=orphans)
+
+        with result_path.open() as f:
+            data = json.load(f)
+
+        assert "configs" in data
+        assert data["configs"] is not None
+        assert len(data["configs"]["orphans"]) == 2
+        assert data["configs"]["orphans"][0]["path"] == "~/.config/vlc"
+        assert data["configs"]["orphans"][0]["config_type"] == "directory"
+        assert data["configs"]["orphans"][1]["path"] == "~/.config/sublime-text"
+        assert data["configs"]["orphans"][1]["size_bytes"] is None
+
+    def test_export_without_config_orphans(
+        self, tmp_path: Path, sample_scan_result: ScanResult
+    ) -> None:
+        """export_scan_for_advisor omits configs when no orphans provided."""
+        result_path = export_scan_for_advisor(sample_scan_result, tmp_path)
+
+        with result_path.open() as f:
+            data = json.load(f)
+
+        assert data["configs"] is None
+
+
+# =============================================================================
+# Test import_decisions with Configs
+# =============================================================================
+
+
+class TestImportDecisionsWithConfigs:
+    """Tests for import_decisions with configs section."""
+
+    def test_import_decisions_with_configs(self, tmp_path: Path) -> None:
+        """import_decisions parses decisions.toml with [configs] section."""
+        decisions_toml = """
+[packages.apt]
+keep = []
+remove = []
+ask = []
+
+[packages.flatpak]
+keep = []
+remove = []
+ask = []
+
+[packages.snap]
+keep = []
+remove = []
+ask = []
+
+[configs]
+keep = [
+    { path = "~/.config/nvim", reason = "Neovim config", confidence = 0.95, category = "editor" },
+]
+remove = [
+    { path = "~/.config/vlc", reason = "VLC removed", confidence = 0.85, category = "media" },
+]
+ask = [
+    { path = "~/.config/foo", reason = "Unclear", confidence = 0.50, category = "unknown" },
+]
+"""
+        decisions_path = tmp_path / "decisions.toml"
+        decisions_path.write_text(decisions_toml)
+
+        result = import_decisions(tmp_path)
+
+        assert result.configs is not None
+        assert len(result.configs.keep) == 1
+        assert len(result.configs.remove) == 1
+        assert len(result.configs.ask) == 1
+
+        assert result.configs.keep[0].path == "~/.config/nvim"
+        assert result.configs.keep[0].confidence == 0.95
+        assert result.configs.keep[0].category == "editor"
+
+        assert result.configs.remove[0].path == "~/.config/vlc"
+        assert result.configs.remove[0].reason == "VLC removed"
+
+        assert result.configs.ask[0].path == "~/.config/foo"
+        assert result.configs.ask[0].confidence == 0.50
+
+    def test_import_decisions_without_configs_backward_compat(self, tmp_path: Path) -> None:
+        """import_decisions backward compat: no [configs] yields None."""
+        decisions_toml = """
+[packages.apt]
+keep = []
+remove = []
+ask = []
+
+[packages.flatpak]
+keep = []
+remove = []
+ask = []
+
+[packages.snap]
+keep = []
+remove = []
+ask = []
+"""
+        decisions_path = tmp_path / "decisions.toml"
+        decisions_path.write_text(decisions_toml)
+
+        result = import_decisions(tmp_path)
+
+        assert result.configs is None
+
+    def test_import_decisions_configs_empty_lists(self, tmp_path: Path) -> None:
+        """import_decisions handles empty config lists."""
+        decisions_toml = """
+[packages.apt]
+keep = []
+remove = []
+ask = []
+
+[packages.flatpak]
+keep = []
+remove = []
+ask = []
+
+[packages.snap]
+keep = []
+remove = []
+ask = []
+
+[configs]
+keep = []
+remove = []
+ask = []
+"""
+        decisions_path = tmp_path / "decisions.toml"
+        decisions_path.write_text(decisions_toml)
+
+        result = import_decisions(tmp_path)
+
+        assert result.configs is not None
+        assert result.configs.keep == []
+        assert result.configs.remove == []
+        assert result.configs.ask == []
+
+    def test_config_decisions_parsing(self, tmp_path: Path) -> None:
+        """ConfigDecisions parsed correctly from TOML with all field types."""
+        decisions_toml = """
+[packages.apt]
+keep = []
+remove = []
+ask = []
+
+[packages.flatpak]
+keep = []
+remove = []
+ask = []
+
+[packages.snap]
+keep = []
+remove = []
+ask = []
+
+[configs]
+keep = [
+    { path = "~/.config/nvim", reason = "User config", confidence = 0.95, category = "editor" },
+    { path = "~/.config/docker", reason = "Docker config", confidence = 0.99, category = "system" },
+]
+remove = [
+    { path = "~/.config/vlc", reason = "VLC not installed", confidence = 0.85 },
+]
+ask = []
+"""
+        decisions_path = tmp_path / "decisions.toml"
+        decisions_path.write_text(decisions_toml)
+
+        result = import_decisions(tmp_path)
+
+        assert result.configs is not None
+        assert len(result.configs.keep) == 2
+        assert result.configs.keep[0].category == "editor"
+        assert result.configs.keep[1].category == "system"
+        assert len(result.configs.remove) == 1
+        # category is optional; TOML entry without category yields None
+        assert result.configs.remove[0].category is None
+
+
+# =============================================================================
+# Test _parse_config_decision_list
+# =============================================================================
+
+
+class TestParseConfigDecisionList:
+    """Tests for _parse_config_decision_list helper function."""
+
+    def test_parse_config_decision_list_valid(self) -> None:
+        """_parse_config_decision_list parses valid input."""
+        from popctl.advisor.exchange import _parse_config_decision_list
+
+        items = [
+            {
+                "path": "~/.config/nvim",
+                "reason": "User config",
+                "confidence": 0.95,
+                "category": "editor",
+            },
+            {
+                "path": "~/.config/vlc",
+                "reason": "Removed",
+                "confidence": 0.85,
+                "category": "media",
+            },
+        ]
+
+        result = _parse_config_decision_list(items)
+
+        assert len(result) == 2
+        assert result[0].path == "~/.config/nvim"
+        assert result[0].category == "editor"
+        assert result[1].path == "~/.config/vlc"
+        assert result[1].category == "media"
+
+    def test_parse_config_decision_list_not_list(self) -> None:
+        """_parse_config_decision_list returns empty for non-list input."""
+        from popctl.advisor.exchange import _parse_config_decision_list
+
+        assert _parse_config_decision_list("not a list") == []
+        assert _parse_config_decision_list(42) == []
+        assert _parse_config_decision_list(None) == []
+
+    def test_parse_config_decision_list_skips_non_dict(self) -> None:
+        """_parse_config_decision_list skips non-dict items."""
+        from popctl.advisor.exchange import _parse_config_decision_list
+
+        items = [
+            "not a dict",
+            {
+                "path": "~/.config/nvim",
+                "reason": "User config",
+                "confidence": 0.95,
+                "category": "editor",
+            },
+            42,
+        ]
+
+        result = _parse_config_decision_list(items)
+
+        assert len(result) == 1
+        assert result[0].path == "~/.config/nvim"
+
+    def test_parse_config_decision_list_empty(self) -> None:
+        """_parse_config_decision_list handles empty list."""
+        from popctl.advisor.exchange import _parse_config_decision_list
+
+        assert _parse_config_decision_list([]) == []
+
+    def test_parse_config_decision_list_defaults(self) -> None:
+        """_parse_config_decision_list uses defaults for missing fields."""
+        from popctl.advisor.exchange import _parse_config_decision_list
+
+        items: list[dict[str, str]] = [{}]
+
+        result = _parse_config_decision_list(items)
+
+        assert len(result) == 1
+        assert result[0].path == ""
+        assert result[0].reason == ""
+        assert result[0].confidence == 0.0
+        assert result[0].category is None
+
+    def test_parse_config_decision_list_optional_category(self) -> None:
+        """_parse_config_decision_list handles missing category as None."""
+        from popctl.advisor.exchange import _parse_config_decision_list
+
+        items = [
+            {
+                "path": "~/.config/vlc",
+                "reason": "Removed",
+                "confidence": 0.85,
+            },
+        ]
+
+        result = _parse_config_decision_list(items)
+
+        assert len(result) == 1
+        assert result[0].category is None
