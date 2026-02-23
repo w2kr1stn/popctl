@@ -4,7 +4,7 @@ Declarative system configuration for Pop!_OS.
 
 ## Overview
 
-popctl is a CLI tool that enables users to define their desired system state in a manifest file and automatically maintain that state over time. It combines deterministic package management with AI-assisted decision-making for unknown packages and configurations.
+popctl is a CLI tool that enables users to define their desired system state in a manifest file and automatically maintain that state over time. It combines deterministic package management with AI-assisted decision-making for unknown packages, orphaned filesystem directories, and stale configuration files.
 
 ## Installation
 
@@ -26,325 +26,172 @@ uv sync
 
 ## Workflow
 
-The complete popctl workflow consists of six stages:
+### Quick Start: `popctl sync`
 
-```
-┌──────────┐     ┌──────────┐     ┌──────────┐
-│   init   │────>│   scan   │────>│   diff   │
-│          │     │ (optional│     │          │
-│ Creates  │     │  for     │     │ Compares │
-│ manifest │     │  debug)  │     │ manifest │
-└──────────┘     └──────────┘     │ vs system│
-                                  └────┬─────┘
-                                       │
-                                       v
-┌──────────┐     ┌──────────┐     ┌──────────┐
-│  apply   │<────│ advisor  │<────│ advisor  │
-│          │     │  apply   │     │ classify │
-│ Executes │     │          │     │          │
-│ install/ │     │ Updates  │     │ AI       │
-│ remove   │     │ manifest │     │ classifies│
-└──────────┘     └──────────┘     └──────────┘
-```
+The `sync` command is the primary entry point. It runs the entire pipeline in a single invocation:
 
-### Stage 1: `popctl init`
+```bash
+# Interactive (advisor prompts you for decisions)
+popctl sync
 
-**Purpose:** Creates a `manifest.toml` from the current system state.
+# Fully automated (CI-friendly)
+popctl sync -y -a
 
-**What happens:**
+# Dry-run (preview only, no changes)
+popctl sync --dry-run
 
-1. Checks if `manifest.toml` already exists (error unless `--force`)
-2. Loads available scanners (APT, Flatpak)
-3. Scans all packages from each scanner:
-   - Filters: Only `PackageStatus.MANUAL` (no auto-installed dependencies)
-   - Filters: Excludes protected packages (kernel, systemd, Pop!_OS core, etc.)
-4. Creates manifest structure:
-   - `meta`: version, created, updated timestamps
-   - `system`: hostname, base distribution
-   - `packages.keep`: all manually installed packages
-   - `packages.remove`: empty (nothing marked for removal yet)
-5. Saves to `~/.config/popctl/manifest.toml`
+# Skip AI advisor
+popctl sync --no-advisor
 
-**Output:** `~/.config/popctl/manifest.toml`
-
-### Stage 2: `popctl scan`
-
-**Purpose:** Displays currently installed packages (read-only, no changes).
-
-**What happens:**
-
-1. Loads scanners based on `--source` (apt/flatpak/all)
-2. Iterates over all available scanners, calling `scanner.scan()`
-3. For each package:
-   - Counts total/manual/auto
-   - Collects in list
-   - Optional: Filter with `--manual-only`
-4. Sorts by (source, name)
-5. Outputs based on flags:
-   - `--format table`: Rich table (default)
-   - `--format json`: JSON to stdout
-   - `--export path`: JSON file
-   - `--count`: Summary counts only
-
-**Output:** Terminal table or JSON (read-only, no state changes)
-
-### Stage 3: `popctl diff`
-
-**Purpose:** Compares manifest with current system state.
-
-**What happens:**
-
-1. Loads `manifest.toml` via `require_manifest()` (error if not found)
-2. Loads scanners and scans current system
-3. `compute_diff()` calculates three categories:
-
-| DiffType | Symbol | Meaning | Action on `apply` |
-|----------|--------|---------|-------------------|
-| `NEW` | `[+]` | Installed but NOT in manifest | None (user decides) |
-| `MISSING` | `[-]` | In manifest (keep) but NOT installed | INSTALL |
-| `EXTRA` | `[x]` | In manifest (remove) but still installed | REMOVE |
-
-4. Outputs table with Status, Source, Package, Note
-
-**Output:** `DiffResult` with `new`, `missing`, `extra` tuples
-
-### Stage 4: `popctl advisor classify`
-
-**Purpose:** AI classifies packages into keep/remove/ask categories.
-
-**What happens:**
-
-1. Container warning if running in Docker/Podman
-2. Loads/creates `AdvisorConfig`:
-   - `provider`: "claude" or "gemini"
-   - `model`: "sonnet", "opus", etc.
-   - `timeout_seconds`: 600 (default)
-3. Scans system (APT + Flatpak) or loads from `--input scan.json`
-4. Creates exchange directory: `/tmp/popctl-exchange/`
-5. Exports files:
-   - `scan.json`: All packages with metadata (name, source, version, status, description, size)
-   - `prompt.md`: System prompt for AI
-   - `instructions.md`: Instructions for user (interactive mode)
-6. Execution mode:
-   - **Interactive (default):** Shows instructions for manual AI agent execution
-   - **Headless (`--auto`):** AgentRunner starts AI process automatically
-
-**AI Classification Logic:**
-
-| Decision | Confidence | Criteria |
-|----------|------------|----------|
-| KEEP | >= 0.9 | System-critical, libraries, hardware support |
-| REMOVE | >= 0.9 | Orphaned dependencies, obsolete, telemetry |
-| ASK | < 0.9 | Uncertain, requires user decision |
-
-**Output:** `/tmp/popctl-exchange/decisions.toml`
-
-```toml
-[apt.keep]
-build-essential = { reason = "Development toolchain", confidence = 0.95 }
-
-[apt.remove]
-telemetry-pkg = { reason = "Telemetry/tracking", confidence = 0.92 }
-
-[apt.ask]
-some-tool = { reason = "Purpose unclear", confidence = 0.6 }
+# Skip filesystem/config cleanup
+popctl sync --no-filesystem --no-configs
 ```
 
-### Stage 5: `popctl advisor apply`
+### Pipeline Phases
 
-**Purpose:** Transfers AI decisions into the manifest.
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                         popctl sync                                  │
+│                                                                      │
+│  1. Init          Auto-create manifest if missing                    │
+│  2. Diff          Compute NEW / MISSING / EXTRA packages             │
+│  3. Advisor       AI classifies NEW packages (keep/remove/ask)       │
+│  4. Apply-M       Write advisor decisions to manifest                │
+│  5. Re-Diff       Recompute diff after manifest changes              │
+│  6. Confirm       Display planned actions, ask confirmation          │
+│  7. Execute       Install MISSING, remove/purge EXTRA packages       │
+│  8. History       Record all actions to history                      │
+│  9-13. FS         Scan → advisor → apply → cleanup → history         │
+│  14-18. Configs   Scan → advisor → apply → backup+cleanup → history  │
+└──────────────────────────────────────────────────────────────────────┘
+```
 
-**What happens:**
+### Individual Commands
 
-1. Loads `decisions.toml` from exchange directory (or `--input path`)
-2. Loads current `manifest.toml`
-3. For each source (apt, flatpak):
-   - **KEEP decisions** -> `manifest.packages.keep[name]` with `PackageEntry(source, status="keep", reason=...)`
-   - **REMOVE decisions** -> `manifest.packages.remove[name]` with `PackageEntry(source, status="remove", reason=...)`
-   - **ASK decisions** -> Skipped (displayed for manual user decision)
-4. Displays summary table (Keep/Remove/Ask counts per source)
-5. Saves updated manifest (updates `meta.updated` timestamp)
-6. Writes history entry (`ADVISOR_APPLY`)
+Each phase can also be run independently:
 
-**Output:** Updated `manifest.toml` with AI classifications
+| Command | Purpose |
+|---------|---------|
+| `popctl init` | Create manifest from current system state |
+| `popctl scan` | Display installed packages (read-only) |
+| `popctl diff` | Compare manifest vs. system (NEW/MISSING/EXTRA) |
+| `popctl apply` | Execute install/remove/purge from manifest |
+| `popctl sync` | Full pipeline (init + diff + advisor + apply + orphan cleanup) |
+| `popctl advisor classify` | AI classification (headless, packages only) |
+| `popctl advisor session` | AI classification (interactive, packages only) |
+| `popctl advisor apply` | Apply AI decisions to manifest |
+| `popctl fs scan` | Scan filesystem for orphaned directories |
+| `popctl config scan` | Scan for orphaned configuration files |
+| `popctl history` | View action history |
+| `popctl undo` | Revert last reversible action |
 
-### Stage 6: `popctl apply`
+## Diff Categories
 
-**Purpose:** Executes the manifest (installs/removes packages).
+When comparing manifest vs. system, popctl computes three categories:
 
-**What happens:**
-
-1. Loads `manifest.toml`
-2. Loads scanners and computes diff
-3. Converts diff to actions:
-   - `MISSING` -> `Action(INSTALL, package, source)`
-   - `EXTRA` -> `Action(REMOVE/PURGE, package, source)`
-   - `NEW` -> **IGNORED** (user must explicitly handle)
-4. Protected-check for all REMOVE actions (`is_protected()` -> action skipped)
-5. Displays actions table + summary
-6. Confirmation prompt (unless `--yes`)
-7. Loads operators (`AptOperator`, `FlatpakOperator`)
-8. Executes actions:
-   - `AptOperator`: `apt-get install/remove/purge`
-   - `FlatpakOperator`: `flatpak install/uninstall`
-9. Displays results table (OK/FAIL per action)
-10. Writes history entries (enables later `popctl undo`):
-    - `INSTALL`: All installed packages
-    - `REMOVE`: All removed packages
-    - `PURGE`: All purged packages
-
-**Output:** System changes + history in `~/.local/state/popctl/history.jsonl`
+| Category | Meaning | Action |
+|----------|---------|--------|
+| **NEW** | Installed but not in manifest | AI advisor decides (or user) |
+| **MISSING** | In manifest (keep) but not installed | Install |
+| **EXTRA** | In manifest (remove) but still installed | Remove/Purge |
 
 ## Usage
 
 ### Scan Installed Packages
 
 ```bash
-# Scan all sources (APT + Flatpak)
-popctl scan
-
-# Scan specific source
-popctl scan --source apt
-popctl scan --source flatpak
-
-# Show only manually installed packages
-popctl scan --manual-only
-
-# Show package counts only
-popctl scan --count
-
-# Limit output to first N packages
-popctl scan --limit 20
-
-# Export to JSON file
-popctl scan --export scan.json
-
-# Output as JSON (pipe-friendly)
-popctl scan --format json
-
-# Combined options
-popctl scan --source apt --manual-only --export ~/backup.json
+popctl scan                              # All sources (APT + Flatpak + Snap)
+popctl scan --source apt                 # APT only
+popctl scan --manual-only                # Only manually installed
+popctl scan --count                      # Summary counts only
+popctl scan --export scan.json           # Export to JSON
+popctl scan --format json                # JSON to stdout
 ```
 
 ### Initialize Manifest
 
 ```bash
-# Create manifest from current system state
-popctl init
-
-# Preview without creating files
-popctl init --dry-run
-
-# Custom output path
-popctl init --output ~/my-manifest.toml
-
-# Overwrite existing manifest
-popctl init --force
+popctl init                              # Create from current system
+popctl init --dry-run                    # Preview without creating
+popctl init --force                      # Overwrite existing
 ```
 
 ### Compare System vs Manifest
 
 ```bash
-# Show differences between manifest and system
-popctl diff
-
-# Summary only (counts)
-popctl diff --brief
-
-# Filter by source
-popctl diff --source apt
-
-# JSON output for scripting
-popctl diff --json
+popctl diff                              # Show all differences
+popctl diff --brief                      # Counts only
+popctl diff --source apt                 # Filter by source
+popctl diff --json                       # JSON output
 ```
 
 ### Apply Manifest Changes
 
 ```bash
-# Preview changes (dry-run, default behavior)
-popctl apply --dry-run
+popctl apply                             # With confirmation prompt
+popctl apply --yes                       # Skip confirmation
+popctl apply --source apt                # APT only
+popctl apply --purge                     # Purge instead of remove (APT/Snap)
+popctl apply --dry-run                   # Preview only
+```
 
-# Apply changes with confirmation prompt
-popctl apply
+### Full Sync
 
-# Apply without confirmation
-popctl apply --yes
+```bash
+popctl sync                              # Interactive advisor + full pipeline
+popctl sync --auto                       # Headless advisor
+popctl sync --no-advisor                 # Skip all advisor phases
+popctl sync --dry-run                    # Preview only
+popctl sync -y -a                        # Fully automated
+popctl sync --source apt                 # Filter to APT packages
+popctl sync --purge                      # Purge instead of remove
+popctl sync --no-filesystem              # Skip filesystem orphan phases
+popctl sync --no-configs                 # Skip config orphan phases
+```
 
-# Apply only APT packages
-popctl apply --source apt
+### Filesystem & Config Scanning
 
-# Use purge instead of remove for APT
-popctl apply --purge
+```bash
+popctl fs scan                           # Scan for orphaned directories
+popctl config scan                       # Scan for orphaned configs
 ```
 
 ### History and Undo
 
 ```bash
-# View history of package changes
-popctl history
-
-# Limit to last N entries
-popctl history -n 50
-
-# Filter by date
-popctl history --since 2026-01-01
-
-# JSON output for scripting
-popctl history --json
-
-# Undo the last reversible action
-popctl undo
-
-# Preview what would be undone
-popctl undo --dry-run
-
-# Skip confirmation prompt
-popctl undo --yes
+popctl history                           # View all history
+popctl history -n 50                     # Last 50 entries
+popctl history --since 2026-01-01        # Filter by date
+popctl history --json                    # JSON output
+popctl undo                              # Revert last reversible action
+popctl undo --dry-run                    # Preview what would be undone
+popctl undo --yes                        # Skip confirmation
 ```
 
 ### AI-Assisted Classification
 
-The advisor feature uses AI agents (Claude Code or Gemini CLI) to classify packages as keep, remove, or ask.
-
 ```bash
-# Interactive mode: Prepares files, you run the AI agent manually
-popctl advisor classify
-
-# Headless mode: Runs AI classification autonomously
-popctl advisor classify --auto
-
-# Use Gemini instead of Claude
-popctl advisor classify --provider gemini --auto
-
-# Use specific model
-popctl advisor classify --model opus --auto
-
-# Apply classification decisions to manifest
-popctl advisor apply
-
-# Preview changes without modifying manifest
-popctl advisor apply --dry-run
+popctl advisor classify                  # Headless classification
+popctl advisor classify -p gemini        # Use Gemini provider
+popctl advisor classify -m opus          # Use Claude Opus model
+popctl advisor session                   # Interactive AI session
+popctl advisor apply                     # Apply decisions to manifest
+popctl advisor apply --dry-run           # Preview changes
 ```
 
-### Command Line Options
+## Supported Package Managers
 
-```
-popctl --help              # Show main help
-popctl --version           # Show version
-popctl scan --help         # Show scan command help
-popctl init --help         # Show init command help
-popctl diff --help         # Show diff command help
-popctl apply --help        # Show apply command help
-popctl advisor --help      # Show advisor command help
-popctl history --help      # Show history command help
-popctl undo --help         # Show undo command help
-```
+| Manager | Scan | Install | Remove | Purge |
+|---------|------|---------|--------|-------|
+| APT | dpkg-query + apt-mark | apt-get install | apt-get remove | apt-get purge |
+| Flatpak | flatpak list | flatpak install --user | flatpak uninstall | N/A |
+| Snap | snap list | snap install | snap remove | snap remove --purge |
 
 ## Configuration
 
 ### Advisor Configuration
 
-The advisor can be configured via `~/.config/popctl/advisor.toml`:
+`~/.config/popctl/advisor.toml`:
 
 ```toml
 # AI provider: "claude" or "gemini"
@@ -353,35 +200,12 @@ provider = "claude"
 # Model to use (optional, defaults per provider)
 model = "sonnet"
 
-# Timeout for headless mode in seconds (default: 600 = 10 min)
+# Timeout for headless mode in seconds (default: 600)
 timeout_seconds = 600
 
-# Path to ai-dev-base dev.sh script for container execution (optional)
+# Path to dev.sh script for container execution (optional)
 # dev_script = "~/projects/ai-dev-base/scripts/dev.sh"
 ```
-
-### Dev Container Mode
-
-If you're running popctl inside a development container (e.g., ai-dev-base), you need to configure the `dev_script` path so the advisor can invoke the AI agent correctly:
-
-1. **Create/edit** `~/.config/popctl/advisor.toml`:
-
-```toml
-provider = "claude"
-dev_script = "/path/to/ai-dev-base/scripts/dev.sh"
-```
-
-2. **Set the path** to your `dev.sh` script (the wrapper that launches the container with the AI CLI).
-
-3. **Run advisor** normally:
-
-```bash
-popctl advisor classify --auto
-```
-
-The advisor will detect the `dev_script` setting and use it to invoke the AI agent through the container wrapper instead of calling `claude` or `gemini` directly.
-
-**Note:** When running inside a container, popctl displays a warning because package scanning and system modifications may not work correctly. For best results, run popctl directly on the host system.
 
 ### File Locations
 
@@ -390,81 +214,89 @@ The advisor will detect the `dev_script` setting and use it to invoke the AI age
 | Manifest | `~/.config/popctl/manifest.toml` | Desired system state |
 | Advisor Config | `~/.config/popctl/advisor.toml` | AI provider settings |
 | History | `~/.local/state/popctl/history.jsonl` | Action log for undo |
-| Exchange Dir | `/tmp/popctl-exchange/` | AI agent communication |
+| Config Backups | `~/.local/state/popctl/config-backups/` | Backed up configs before deletion |
+| Advisor Sessions | `~/.local/state/popctl/advisor-sessions/` | Workspace dirs for AI sessions |
+| Advisor Memory | `~/.local/state/popctl/advisor/memory.md` | Persistent cross-session memory |
 
 ## Development
 
 ### Setup Development Environment
 
 ```bash
-# Install development dependencies
 uv sync --dev
 
-# Run all quality checks (lint + format)
-uv run fmt
-
-# Run type checker
-uv run pyright .
-
-# Run tests
-uv run test
-
-# Run tests with coverage report
-uv run testcov
-
-# Run security scanner
-uv run bandit -r app/popctl
+# Quality checks
+uv run fmt                               # Lint + format (Ruff)
+uv run pyright app/                      # Type checking
+uv run test                              # Run tests
 ```
 
 ### Project Structure
 
 ```
 app/popctl/
-├── __init__.py          # Package version and metadata
-├── __main__.py          # Module entry point
+├── __init__.py              # Package version
+├── __main__.py              # Module entry point
 ├── cli/
-│   ├── main.py          # Typer app and global options
-│   ├── types.py         # Shared CLI types (SourceChoice, scanner helpers)
+│   ├── main.py              # Typer app, command registration
+│   ├── types.py             # SourceChoice, compute_system_diff, collect_domain_orphans
+│   ├── display.py           # Rich table formatting helpers
 │   └── commands/
-│       ├── scan.py      # Scan command implementation
-│       ├── init.py      # Init command implementation
-│       ├── diff.py      # Diff command implementation
-│       ├── apply.py     # Apply command implementation
-│       ├── advisor.py   # Advisor command (AI classification)
-│       ├── history.py   # History command (view past actions)
-│       └── undo.py      # Undo command (revert last action)
+│       ├── init.py          # popctl init
+│       ├── scan.py          # popctl scan
+│       ├── diff.py          # popctl diff
+│       ├── apply.py         # popctl apply
+│       ├── sync.py          # popctl sync (main orchestrator)
+│       ├── advisor.py       # popctl advisor {classify,session,apply}
+│       ├── fs.py            # popctl fs {scan}
+│       ├── config.py        # popctl config {scan}
+│       ├── history.py       # popctl history
+│       └── undo.py          # popctl undo
 ├── advisor/
-│   ├── config.py        # AdvisorConfig and provider settings
-│   ├── runner.py        # AgentRunner for AI execution
-│   ├── prompts.py       # Prompt templates for classification
-│   └── exchange.py      # File exchange with AI agents
+│   ├── config.py            # AdvisorConfig, provider settings
+│   ├── runner.py            # AgentRunner (headless + interactive)
+│   ├── prompts.py           # AI prompt templates
+│   ├── scanning.py          # scan_system() (framework-agnostic)
+│   ├── workspace.py         # Session workspace creation
+│   └── exchange.py          # Decision models + manifest application
 ├── core/
-│   ├── theme.py         # Theme management (TOML-based)
-│   ├── paths.py         # XDG-compliant path helpers
-│   ├── baseline.py      # Pop!_OS protected packages
-│   ├── manifest.py      # Manifest TOML I/O
-│   ├── diff.py          # compute_diff for manifest comparison
-│   └── state.py         # StateManager for history persistence
-├── data/
-│   ├── theme.toml       # Default color theme
-│   └── advisor.toml     # Default advisor configuration
+│   ├── paths.py             # XDG-compliant path helpers
+│   ├── manifest.py          # Manifest TOML I/O
+│   ├── baseline.py          # Protected package patterns
+│   ├── diff.py              # compute_diff, diff_to_actions
+│   ├── executor.py          # execute_actions, record_actions_to_history
+│   ├── state.py             # History persistence (JSONL)
+│   └── theme.py             # Color theme management
+├── domain/
+│   ├── models.py            # ScannedEntry, DomainActionResult, OrphanStatus, PathType
+│   ├── ownership.py         # classify_path_type, path ownership detection
+│   └── protected.py         # Protected path patterns (filesystem + configs)
 ├── models/
-│   ├── package.py       # PackageSource, PackageStatus, ScannedPackage
-│   ├── scan_result.py   # ScanResult, ScanMetadata for JSON export
-│   ├── manifest.py      # Manifest schema (Pydantic)
-│   ├── action.py        # Action, ActionResult, ActionType
-│   └── history.py       # HistoryEntry, HistoryItem, HistoryActionType
-├── operators/
-│   ├── base.py          # Operator ABC
-│   ├── apt.py           # AptOperator implementation
-│   └── flatpak.py       # FlatpakOperator implementation
+│   ├── package.py           # PackageSource, PackageStatus, ScannedPackage, ScanResult
+│   ├── manifest.py          # Manifest, PackageConfig, DomainConfig (Pydantic)
+│   ├── action.py            # Action, ActionResult, ActionType
+│   └── history.py           # HistoryEntry, HistoryItem, HistoryActionType
+├── filesystem/
+│   ├── scanner.py           # FilesystemScanner (orphan detection)
+│   └── operator.py          # FilesystemOperator (deletion, sudo for /etc)
+├── configs/
+│   ├── scanner.py           # ConfigScanner (config orphan detection)
+│   └── operator.py          # ConfigOperator (backup + deletion)
 ├── scanners/
-│   ├── base.py          # Scanner ABC
-│   ├── apt.py           # AptScanner implementation
-│   └── flatpak.py       # FlatpakScanner implementation
-└── utils/
-    ├── shell.py         # Subprocess helpers
-    └── formatting.py    # Rich console formatting
+│   ├── base.py              # Scanner ABC
+│   ├── apt.py               # AptScanner
+│   ├── flatpak.py           # FlatpakScanner
+│   └── snap.py              # SnapScanner
+├── operators/
+│   ├── base.py              # Operator ABC
+│   ├── apt.py               # AptOperator (batch)
+│   ├── flatpak.py           # FlatpakOperator (single-action)
+│   └── snap.py              # SnapOperator (single-action)
+├── utils/
+│   ├── shell.py             # run_command() subprocess wrapper
+│   └── formatting.py        # Rich console helpers
+└── data/
+    └── theme.toml           # Default color theme
 ```
 
 ## License
