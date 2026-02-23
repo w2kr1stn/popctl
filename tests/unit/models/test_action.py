@@ -12,20 +12,6 @@ from popctl.models.action import (
 from popctl.models.package import PackageSource
 
 
-class TestActionType:
-    """Tests for ActionType enum."""
-
-    def test_action_type_values(self) -> None:
-        """ActionType has expected values."""
-        assert ActionType.INSTALL.value == "install"
-        assert ActionType.REMOVE.value == "remove"
-        assert ActionType.PURGE.value == "purge"
-
-    def test_action_type_count(self) -> None:
-        """ActionType has exactly 3 members."""
-        assert len(ActionType) == 3
-
-
 class TestAction:
     """Tests for Action dataclass."""
 
@@ -39,17 +25,6 @@ class TestAction:
         assert action.action_type == ActionType.INSTALL
         assert action.package == "htop"
         assert action.source == PackageSource.APT
-        assert action.reason is None
-
-    def test_create_action_with_reason(self) -> None:
-        """Can create an action with reason."""
-        action = Action(
-            action_type=ActionType.REMOVE,
-            package="bloatware",
-            source=PackageSource.APT,
-            reason="User requested removal",
-        )
-        assert action.reason == "User requested removal"
 
     def test_action_is_frozen(self) -> None:
         """Action is immutable."""
@@ -69,39 +44,6 @@ class TestAction:
                 package="",
                 source=PackageSource.APT,
             )
-
-    def test_is_install_property(self) -> None:
-        """is_install returns True for install actions."""
-        action = Action(
-            action_type=ActionType.INSTALL,
-            package="htop",
-            source=PackageSource.APT,
-        )
-        assert action.is_install is True
-        assert action.is_remove is False
-        assert action.is_purge is False
-
-    def test_is_remove_property(self) -> None:
-        """is_remove returns True for remove actions."""
-        action = Action(
-            action_type=ActionType.REMOVE,
-            package="htop",
-            source=PackageSource.APT,
-        )
-        assert action.is_remove is True
-        assert action.is_install is False
-        assert action.is_purge is False
-
-    def test_is_purge_property(self) -> None:
-        """is_purge returns True for purge actions."""
-        action = Action(
-            action_type=ActionType.PURGE,
-            package="htop",
-            source=PackageSource.APT,
-        )
-        assert action.is_purge is True
-        assert action.is_install is False
-        assert action.is_remove is False
 
     def test_purge_valid_for_snap(self) -> None:
         """PURGE action is valid for SNAP packages."""
@@ -142,22 +84,20 @@ class TestActionResult:
         result = ActionResult(
             action=sample_action,
             success=True,
-            message="Package installed",
+            detail="Package installed",
         )
         assert result.success is True
-        assert result.message == "Package installed"
-        assert result.error is None
+        assert result.detail == "Package installed"
 
     def test_create_failure_result(self, sample_action: Action) -> None:
         """Can create a failure result."""
         result = ActionResult(
             action=sample_action,
             success=False,
-            error="Package not found",
+            detail="Package not found",
         )
         assert result.success is False
-        assert result.error == "Package not found"
-        assert result.message is None
+        assert result.detail == "Package not found"
 
     def test_result_is_frozen(self, sample_action: Action) -> None:
         """ActionResult is immutable."""

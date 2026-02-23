@@ -8,8 +8,7 @@ from popctl.advisor.workspace import (
     find_latest_decisions,
     list_sessions,
 )
-from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
-from popctl.models.scan_result import ScanResult
+from popctl.models.package import PackageSource, PackageStatus, ScannedPackage, ScanResult
 
 
 def _make_scan_result() -> ScanResult:
@@ -29,7 +28,7 @@ def _make_scan_result() -> ScanResult:
             status=PackageStatus.MANUAL,
         ),
     ]
-    return ScanResult(packages=tuple(packages))
+    return tuple(packages)
 
 
 class TestCreateSessionWorkspace:

@@ -8,7 +8,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from popctl.filesystem.operator import FilesystemActionResult, FilesystemOperator
+from popctl.domain.models import DomainActionResult
+from popctl.filesystem.operator import FilesystemOperator
 from popctl.utils.shell import CommandResult
 
 
@@ -207,13 +208,13 @@ class TestFilesystemOperator:
         mock_protected_typed.assert_called_once_with("/some/random/path", "filesystem")
 
     def test_filesystem_action_result_defaults(self) -> None:
-        """FilesystemActionResult has correct defaults."""
-        result = FilesystemActionResult(path="/test", success=True)
+        """DomainActionResult has correct defaults."""
+        result = DomainActionResult(path="/test", success=True)
         assert result.error is None
         assert result.dry_run is False
 
     def test_filesystem_action_result_frozen(self) -> None:
-        """FilesystemActionResult is immutable."""
-        result = FilesystemActionResult(path="/test", success=True)
+        """DomainActionResult is immutable."""
+        result = DomainActionResult(path="/test", success=True)
         with pytest.raises(AttributeError):
             result.success = False  # type: ignore[misc]

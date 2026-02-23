@@ -5,12 +5,12 @@ Tests for protected package patterns and baseline package definitions.
 
 import pytest
 from popctl.core.baseline import (
-    is_protected,
+    is_package_protected,
 )
 
 
 class TestIsProtected:
-    """Tests for is_protected function."""
+    """Tests for is_package_protected function."""
 
     # Test exact matches
     @pytest.mark.parametrize(
@@ -27,7 +27,7 @@ class TestIsProtected:
     )
     def test_exact_match_packages_are_protected(self, package_name: str) -> None:
         """Packages in PROTECTED_PACKAGES are protected."""
-        assert is_protected(package_name) is True
+        assert is_package_protected(package_name) is True
 
     # Test pattern matches
     @pytest.mark.parametrize(
@@ -52,7 +52,7 @@ class TestIsProtected:
     )
     def test_pattern_match_packages_are_protected(self, package_name: str) -> None:
         """Packages matching PROTECTED_PATTERNS are protected."""
-        assert is_protected(package_name) is True
+        assert is_package_protected(package_name) is True
 
     # Test non-protected packages
     @pytest.mark.parametrize(
@@ -71,7 +71,7 @@ class TestIsProtected:
     )
     def test_non_protected_packages(self, package_name: str) -> None:
         """Regular user packages are not protected."""
-        assert is_protected(package_name) is False
+        assert is_package_protected(package_name) is False
 
     # Test snap infrastructure protection
     @pytest.mark.parametrize(
@@ -84,18 +84,21 @@ class TestIsProtected:
             "snapd-something",
         ],
     )
-    def test_snap_infrastructure_is_protected(self, package_name: str) -> None:
+    def test_snap_infrastructure_is_package_protected(self, package_name: str) -> None:
         """Snap infrastructure packages are protected."""
-        assert is_protected(package_name) is True
+        assert is_package_protected(package_name) is True
 
     def test_case_insensitive_matching(self) -> None:
-        """Pattern matching is case-insensitive."""
-        # Linux pattern should match regardless of case
-        assert is_protected("LINUX-image-generic") is True
-        assert is_protected("Linux-Headers-6.5.0") is True
+        """Both exact and pattern matching are case-insensitive."""
+        # Exact match: BASH -> bash
+        assert is_package_protected("BASH") is True
+        assert is_package_protected("Sudo") is True
+        # Pattern match: Linux -> linux-*
+        assert is_package_protected("LINUX-image-generic") is True
+        assert is_package_protected("Linux-Headers-6.5.0") is True
 
     def test_flatpak_style_names_not_protected(self) -> None:
         """Flatpak-style app IDs are not protected by APT patterns."""
-        assert is_protected("com.spotify.Client") is False
-        assert is_protected("org.mozilla.firefox") is False
-        assert is_protected("io.github.something") is False
+        assert is_package_protected("com.spotify.Client") is False
+        assert is_package_protected("org.mozilla.firefox") is False
+        assert is_package_protected("io.github.something") is False

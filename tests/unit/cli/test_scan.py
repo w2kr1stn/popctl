@@ -317,7 +317,6 @@ class TestScanExportOption:
             data = json.loads(export_path.read_text())
             assert "metadata" in data
             assert "packages" in data
-            assert "summary" in data
             assert data["metadata"]["sources"] == ["apt"]
             assert len(data["packages"]) == 1
             assert data["packages"][0]["name"] == "firefox"
@@ -349,9 +348,9 @@ class TestScanExportOption:
 
             metadata = data["metadata"]
             assert "timestamp" in metadata
-            assert "hostname" in metadata
-            assert "popctl_version" in metadata
-            assert metadata["popctl_version"] == "0.1.0"
+            assert "sources" in metadata
+            assert metadata["sources"] == ["apt"]
+            assert metadata["manual_only"] is False
 
 
 class TestScanFormatOption:

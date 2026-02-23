@@ -13,9 +13,7 @@ import pytest
 from popctl.core.theme import (
     ThemeColors,
     _load_toml_colors,
-    get_rich_theme,
     get_theme,
-    get_user_theme_path,
     load_theme,
 )
 from rich.theme import Theme
@@ -121,8 +119,8 @@ class TestLoadTheme:
         user_theme.write_text('[colors]\nheader = "#ff0000"\n')
 
         with patch(
-            "popctl.core.theme.get_user_theme_path",
-            return_value=user_theme,
+            "popctl.core.theme.get_config_dir",
+            return_value=tmp_path,
         ):
             colors = load_theme()
 
@@ -138,8 +136,8 @@ class TestLoadTheme:
         user_theme.write_text("invalid toml [[[")
 
         with patch(
-            "popctl.core.theme.get_user_theme_path",
-            return_value=user_theme,
+            "popctl.core.theme.get_config_dir",
+            return_value=tmp_path,
         ):
             colors = load_theme()
 
@@ -153,8 +151,8 @@ class TestLoadTheme:
         user_theme.write_text('[colors]\nsuccess = "#00ff00"\nwarning = "#ffff00"\n')
 
         with patch(
-            "popctl.core.theme.get_user_theme_path",
-            return_value=user_theme,
+            "popctl.core.theme.get_config_dir",
+            return_value=tmp_path,
         ):
             colors = load_theme()
 
@@ -162,52 +160,6 @@ class TestLoadTheme:
         assert colors.warning == "#ffff00"
         # Other values from bundled theme
         assert colors.header == "#69B9A1"
-
-
-class TestGetRichTheme:
-    """Tests for get_rich_theme function."""
-
-    def test_returns_rich_theme(self) -> None:
-        """Returns a Rich Theme instance."""
-        theme = get_rich_theme()
-        assert isinstance(theme, Theme)
-
-    def test_includes_base_styles(self) -> None:
-        """Theme includes all base color styles."""
-        colors = ThemeColors()
-        theme = get_rich_theme(colors)
-
-        # Check direct color mappings exist
-        assert "text" in theme.styles
-        assert "muted" in theme.styles
-        assert "header" in theme.styles
-        assert "success" in theme.styles
-        assert "error" in theme.styles
-
-    def test_includes_convenience_styles(self) -> None:
-        """Theme includes convenience styles."""
-        theme = get_rich_theme()
-
-        assert "bold_header" in theme.styles
-        assert "dim" in theme.styles
-        assert "package.name" in theme.styles
-        assert "package.version" in theme.styles
-        assert "package.size" in theme.styles
-
-    def test_includes_legacy_compatibility_styles(self) -> None:
-        """Theme includes legacy package status styles."""
-        theme = get_rich_theme()
-
-        assert "package.manual" in theme.styles
-        assert "package.auto" in theme.styles
-
-    def test_uses_provided_colors(self) -> None:
-        """Uses provided ThemeColors instance."""
-        colors = ThemeColors(header="#123456")
-        theme = get_rich_theme(colors)
-
-        # The theme should use the custom color
-        assert theme.styles["header"]._color is not None
 
 
 class TestGetTheme:
@@ -221,22 +173,38 @@ class TestGetTheme:
     def test_caches_theme(self) -> None:
         """get_theme returns cached instance on subsequent calls."""
         # Reset cache
-
-        theme_module._cached_theme = None
+        theme_module.get_theme.cache_clear()
 
         theme1 = get_theme()
         theme2 = get_theme()
 
         assert theme1 is theme2
 
+    def test_includes_base_styles(self) -> None:
+        """Theme includes all base color styles."""
+        theme_module.get_theme.cache_clear()
+        theme = get_theme()
 
-class TestGetUserThemePath:
-    """Tests for get_user_theme_path function."""
+        assert "text" in theme.styles
+        assert "muted" in theme.styles
+        assert "header" in theme.styles
+        assert "success" in theme.styles
+        assert "error" in theme.styles
 
-    def test_returns_xdg_config_path(self) -> None:
-        """Returns path under ~/.config/popctl/."""
-        path = get_user_theme_path()
+    def test_includes_convenience_styles(self) -> None:
+        """Theme includes convenience styles."""
+        theme_module.get_theme.cache_clear()
+        theme = get_theme()
 
-        assert path.parts[-1] == "theme.toml"
-        assert path.parts[-2] == "popctl"
-        assert ".config" in path.parts
+        assert "bold_header" in theme.styles
+        assert "dim" in theme.styles
+
+    def test_uses_custom_colors(self) -> None:
+        """Theme uses colors from load_theme."""
+        theme_module.get_theme.cache_clear()
+        custom_colors = ThemeColors(header="#123456")
+
+        with patch("popctl.core.theme.load_theme", return_value=custom_colors):
+            theme = get_theme()
+
+        assert theme.styles["header"]._color is not None

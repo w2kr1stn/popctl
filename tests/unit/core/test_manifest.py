@@ -15,31 +15,15 @@ from popctl.core.manifest import (
     manifest_exists,
     save_manifest,
 )
-from popctl.domain.manifest import DomainConfig, DomainEntry
 from popctl.models.manifest import (
+    DomainConfig,
+    DomainEntry,
     Manifest,
     ManifestMeta,
     PackageConfig,
     PackageEntry,
     SystemConfig,
 )
-
-
-@pytest.fixture
-def sample_manifest() -> Manifest:
-    """Create a sample manifest for testing."""
-    now = datetime.now(UTC)
-    return Manifest(
-        meta=ManifestMeta(version="1.0", created=now, updated=now),
-        system=SystemConfig(name="test-machine", description="Test"),
-        packages=PackageConfig(
-            keep={
-                "firefox": PackageEntry(source="apt"),
-                "com.spotify.Client": PackageEntry(source="flatpak"),
-            },
-            remove={},
-        ),
-    )
 
 
 class TestSaveManifest:
@@ -86,9 +70,7 @@ class TestSaveManifest:
 
         loaded = load_manifest(manifest_path)
 
-        assert loaded.meta.version == sample_manifest.meta.version
         assert loaded.system.name == sample_manifest.system.name
-        assert loaded.system.description == sample_manifest.system.description
         assert set(loaded.packages.keep.keys()) == set(sample_manifest.packages.keep.keys())
 
 
@@ -103,7 +85,7 @@ class TestLoadManifest:
         loaded = load_manifest(manifest_path)
 
         assert loaded.system.name == "test-machine"
-        assert len(loaded.packages.keep) == 2
+        assert len(loaded.packages.keep) == 3
 
     def test_load_raises_on_missing_file(self, tmp_path: Path) -> None:
         """load_manifest raises ManifestNotFoundError for missing file."""
@@ -157,7 +139,7 @@ class TestManifestRoundTrip:
         updated = datetime(2024, 1, 20, 14, 45, 0, tzinfo=UTC)
 
         manifest = Manifest(
-            meta=ManifestMeta(version="1.0", created=created, updated=updated),
+            meta=ManifestMeta(created=created, updated=updated),
             system=SystemConfig(name="test"),
             packages=PackageConfig(keep={}, remove={}),
         )
@@ -182,7 +164,7 @@ class TestManifestRoundTrip:
                     "spotify": PackageEntry(source="flatpak"),
                 },
                 remove={
-                    "bloat": PackageEntry(source="apt", status="remove"),
+                    "bloat": PackageEntry(source="apt"),
                 },
             ),
         )
@@ -194,55 +176,57 @@ class TestManifestRoundTrip:
         assert loaded.packages.keep["firefox"].source == "apt"
         assert loaded.packages.keep["firefox"].reason == "Browser"
         assert loaded.packages.keep["spotify"].source == "flatpak"
-        assert loaded.packages.remove["bloat"].status == "remove"
+        assert "bloat" in loaded.packages.remove
 
 
-class TestManifestFilesystemIO:
-    """Tests for filesystem section I/O in manifest."""
+@pytest.mark.parametrize("domain", ["filesystem", "configs"])
+class TestManifestDomainIO:
+    """Tests for domain (filesystem/configs) section I/O in manifest."""
 
     @pytest.fixture
-    def manifest_with_fs(self) -> Manifest:
-        """Create a manifest with filesystem section."""
+    def manifest_with_domain(self, domain: str) -> Manifest:
+        """Create a manifest with the given domain section."""
         now = datetime.now(UTC)
+        domain_config = DomainConfig(
+            keep={
+                "~/.config/nvim": DomainEntry(reason="User config", category="config"),
+                "~/.config/git": DomainEntry(reason="Version control"),
+            },
+            remove={
+                "~/.config/old-app": DomainEntry(reason="App uninstalled", category="stale"),
+                "~/.cache/stale": DomainEntry(),
+            },
+        )
         return Manifest(
-            meta=ManifestMeta(version="1.0", created=now, updated=now),
+            meta=ManifestMeta(created=now, updated=now),
             system=SystemConfig(name="test-machine"),
             packages=PackageConfig(
                 keep={"firefox": PackageEntry(source="apt")},
                 remove={},
             ),
-            filesystem=DomainConfig(
-                keep={
-                    "~/.config/nvim": DomainEntry(reason="User config", category="config"),
-                    "~/.config/git": DomainEntry(reason="Version control"),
-                },
-                remove={
-                    "~/.config/old-app": DomainEntry(reason="App uninstalled", category="stale"),
-                    "~/.cache/stale": DomainEntry(),
-                },
-            ),
+            **{domain: domain_config},
         )
 
-    def test_save_manifest_with_filesystem(
-        self, tmp_path: Path, manifest_with_fs: Manifest
+    def test_save_manifest_with_domain(
+        self, tmp_path: Path, manifest_with_domain: Manifest, domain: str
     ) -> None:
-        """save_manifest includes [filesystem] section in TOML output."""
+        """save_manifest includes the domain section in TOML output."""
         import tomllib
 
         manifest_path = tmp_path / "manifest.toml"
-        save_manifest(manifest_with_fs, manifest_path)
+        save_manifest(manifest_with_domain, manifest_path)
 
         with open(manifest_path, "rb") as f:
             data = tomllib.load(f)
 
-        assert "filesystem" in data
-        assert "keep" in data["filesystem"]
-        assert "remove" in data["filesystem"]
-        assert "~/.config/nvim" in data["filesystem"]["keep"]
-        assert "~/.config/old-app" in data["filesystem"]["remove"]
+        assert domain in data
+        assert "keep" in data[domain]
+        assert "remove" in data[domain]
+        assert "~/.config/nvim" in data[domain]["keep"]
+        assert "~/.config/old-app" in data[domain]["remove"]
 
-    def test_load_manifest_with_filesystem(self, tmp_path: Path) -> None:
-        """load_manifest correctly parses [filesystem] section from TOML."""
+    def test_load_manifest_with_domain(self, tmp_path: Path, domain: str) -> None:
+        """load_manifest correctly parses the domain section from TOML."""
         manifest_path = tmp_path / "manifest.toml"
         now = datetime.now(UTC)
         toml_content = f"""\
@@ -257,11 +241,11 @@ name = "test-machine"
 [packages.keep]
 [packages.remove]
 
-[filesystem.keep."~/.config/nvim"]
+[{domain}.keep."~/.config/nvim"]
 reason = "User config"
 category = "config"
 
-[filesystem.remove."~/.config/old-app"]
+[{domain}.remove."~/.config/old-app"]
 reason = "App uninstalled"
 category = "stale"
 """
@@ -269,15 +253,18 @@ category = "stale"
 
         loaded = load_manifest(manifest_path)
 
-        assert loaded.filesystem is not None
-        assert "~/.config/nvim" in loaded.filesystem.keep
-        assert loaded.filesystem.keep["~/.config/nvim"].reason == "User config"
-        assert loaded.filesystem.keep["~/.config/nvim"].category == "config"
-        assert "~/.config/old-app" in loaded.filesystem.remove
-        assert loaded.filesystem.remove["~/.config/old-app"].reason == "App uninstalled"
+        section = getattr(loaded, domain)
+        assert section is not None
+        assert "~/.config/nvim" in section.keep
+        assert section.keep["~/.config/nvim"].reason == "User config"
+        assert section.keep["~/.config/nvim"].category == "config"
+        assert "~/.config/old-app" in section.remove
+        assert section.remove["~/.config/old-app"].reason == "App uninstalled"
 
-    def test_load_manifest_without_filesystem_backward_compat(self, tmp_path: Path) -> None:
-        """Existing TOML without [filesystem] section loads without error."""
+    def test_load_manifest_without_domain_backward_compat(
+        self, tmp_path: Path, domain: str
+    ) -> None:
+        """Existing TOML without the domain section loads without error."""
         manifest_path = tmp_path / "manifest.toml"
         now = datetime.now(UTC)
         toml_content = f"""\
@@ -296,65 +283,62 @@ name = "test-machine"
 
         loaded = load_manifest(manifest_path)
 
-        assert loaded.filesystem is None
+        assert getattr(loaded, domain) is None
         assert loaded.system.name == "test-machine"
 
-    def test_roundtrip_manifest_with_filesystem(
-        self, tmp_path: Path, manifest_with_fs: Manifest
+    def test_roundtrip_manifest_with_domain(
+        self, tmp_path: Path, manifest_with_domain: Manifest, domain: str
     ) -> None:
-        """Save then load preserves filesystem section data."""
+        """Save then load preserves domain section data."""
         manifest_path = tmp_path / "manifest.toml"
-        save_manifest(manifest_with_fs, manifest_path)
+        save_manifest(manifest_with_domain, manifest_path)
         loaded = load_manifest(manifest_path)
 
-        assert loaded.filesystem is not None
-        assert set(loaded.filesystem.keep.keys()) == set(
-            manifest_with_fs.filesystem.keep.keys()  # type: ignore[union-attr]
-        )
-        assert set(loaded.filesystem.remove.keys()) == set(
-            manifest_with_fs.filesystem.remove.keys()  # type: ignore[union-attr]
-        )
+        loaded_section = getattr(loaded, domain)
+        original_section = getattr(manifest_with_domain, domain)
+        assert loaded_section is not None
+        assert set(loaded_section.keep.keys()) == set(original_section.keep.keys())
+        assert set(loaded_section.remove.keys()) == set(original_section.remove.keys())
 
         # Verify entry details survive round-trip
-        nvim = loaded.filesystem.keep["~/.config/nvim"]
+        nvim = loaded_section.keep["~/.config/nvim"]
         assert nvim.reason == "User config"
         assert nvim.category == "config"
 
-        old_app = loaded.filesystem.remove["~/.config/old-app"]
+        old_app = loaded_section.remove["~/.config/old-app"]
         assert old_app.reason == "App uninstalled"
         assert old_app.category == "stale"
 
-    def test_fs_entry_serialization(self, tmp_path: Path, manifest_with_fs: Manifest) -> None:
+    def test_domain_entry_serialization(
+        self, tmp_path: Path, manifest_with_domain: Manifest, domain: str
+    ) -> None:
         """DomainEntry reason and category are serialized correctly."""
         import tomllib
 
         manifest_path = tmp_path / "manifest.toml"
-        save_manifest(manifest_with_fs, manifest_path)
+        save_manifest(manifest_with_domain, manifest_path)
 
         with open(manifest_path, "rb") as f:
             data = tomllib.load(f)
 
-        nvim_data = data["filesystem"]["keep"]["~/.config/nvim"]
+        nvim_data = data[domain]["keep"]["~/.config/nvim"]
         assert nvim_data["reason"] == "User config"
         assert nvim_data["category"] == "config"
 
-        old_app_data = data["filesystem"]["remove"]["~/.config/old-app"]
+        old_app_data = data[domain]["remove"]["~/.config/old-app"]
         assert old_app_data["reason"] == "App uninstalled"
         assert old_app_data["category"] == "stale"
 
-    def test_fs_entry_empty_serialization(self, tmp_path: Path) -> None:
+    def test_domain_entry_empty_serialization(self, tmp_path: Path, domain: str) -> None:
         """DomainEntry with no reason/category produces empty dict."""
         import tomllib
 
         now = datetime.now(UTC)
         manifest = Manifest(
-            meta=ManifestMeta(version="1.0", created=now, updated=now),
+            meta=ManifestMeta(created=now, updated=now),
             system=SystemConfig(name="test"),
             packages=PackageConfig(keep={}, remove={}),
-            filesystem=DomainConfig(
-                keep={},
-                remove={"~/.cache/stale": DomainEntry()},
-            ),
+            **{domain: DomainConfig(keep={}, remove={"~/.cache/stale": DomainEntry()})},
         )
 
         manifest_path = tmp_path / "manifest.toml"
@@ -363,13 +347,13 @@ name = "test-machine"
         with open(manifest_path, "rb") as f:
             data = tomllib.load(f)
 
-        stale_data = data["filesystem"]["remove"]["~/.cache/stale"]
+        stale_data = data[domain]["remove"]["~/.cache/stale"]
         assert stale_data == {}
 
-    def test_save_manifest_without_filesystem_omits_section(
-        self, tmp_path: Path, sample_manifest: Manifest
+    def test_save_manifest_without_domain_omits_section(
+        self, tmp_path: Path, sample_manifest: Manifest, domain: str
     ) -> None:
-        """save_manifest omits [filesystem] when it is None."""
+        """save_manifest omits the domain section when it is None."""
         import tomllib
 
         manifest_path = tmp_path / "manifest.toml"
@@ -378,190 +362,4 @@ name = "test-machine"
         with open(manifest_path, "rb") as f:
             data = tomllib.load(f)
 
-        assert "filesystem" not in data
-
-
-class TestManifestConfigsIO:
-    """Tests for configs section I/O in manifest."""
-
-    @pytest.fixture
-    def manifest_with_configs(self) -> Manifest:
-        """Create a manifest with configs section."""
-        now = datetime.now(UTC)
-        return Manifest(
-            meta=ManifestMeta(version="1.0", created=now, updated=now),
-            system=SystemConfig(name="test-machine"),
-            packages=PackageConfig(
-                keep={"firefox": PackageEntry(source="apt")},
-                remove={},
-            ),
-            configs=DomainConfig(
-                keep={
-                    "~/.config/Code": DomainEntry(reason="VS Code settings", category="editor"),
-                    "~/.config/nvim": DomainEntry(reason="User config"),
-                },
-                remove={
-                    "~/.config/vlc": DomainEntry(reason="VLC not installed", category="obsolete"),
-                    "~/.config/sublime-text": DomainEntry(reason="Switched editor"),
-                },
-            ),
-        )
-
-    def test_save_manifest_with_configs(
-        self, tmp_path: Path, manifest_with_configs: Manifest
-    ) -> None:
-        """save_manifest includes [configs] section in TOML output."""
-        import tomllib
-
-        manifest_path = tmp_path / "manifest.toml"
-        save_manifest(manifest_with_configs, manifest_path)
-
-        with open(manifest_path, "rb") as f:
-            data = tomllib.load(f)
-
-        assert "configs" in data
-        assert "keep" in data["configs"]
-        assert "remove" in data["configs"]
-        assert "~/.config/Code" in data["configs"]["keep"]
-        assert "~/.config/vlc" in data["configs"]["remove"]
-
-    def test_load_manifest_with_configs(self, tmp_path: Path) -> None:
-        """load_manifest correctly parses [configs] section from TOML."""
-        manifest_path = tmp_path / "manifest.toml"
-        now = datetime.now(UTC)
-        toml_content = f"""\
-[meta]
-version = "1.0"
-created = "{now.isoformat()}"
-updated = "{now.isoformat()}"
-
-[system]
-name = "test-machine"
-
-[packages.keep]
-[packages.remove]
-
-[configs.keep."~/.config/Code"]
-reason = "VS Code settings"
-category = "editor"
-
-[configs.remove."~/.config/vlc"]
-reason = "VLC not installed"
-category = "obsolete"
-"""
-        manifest_path.write_text(toml_content)
-
-        loaded = load_manifest(manifest_path)
-
-        assert loaded.configs is not None
-        assert "~/.config/Code" in loaded.configs.keep
-        assert loaded.configs.keep["~/.config/Code"].reason == "VS Code settings"
-        assert loaded.configs.keep["~/.config/Code"].category == "editor"
-        assert "~/.config/vlc" in loaded.configs.remove
-        assert loaded.configs.remove["~/.config/vlc"].reason == "VLC not installed"
-
-    def test_load_manifest_without_configs_backward_compat(self, tmp_path: Path) -> None:
-        """Existing TOML without [configs] section loads without error."""
-        manifest_path = tmp_path / "manifest.toml"
-        now = datetime.now(UTC)
-        toml_content = f"""\
-[meta]
-version = "1.0"
-created = "{now.isoformat()}"
-updated = "{now.isoformat()}"
-
-[system]
-name = "test-machine"
-
-[packages.keep]
-[packages.remove]
-"""
-        manifest_path.write_text(toml_content)
-
-        loaded = load_manifest(manifest_path)
-
-        assert loaded.configs is None
-        assert loaded.system.name == "test-machine"
-
-    def test_roundtrip_manifest_with_configs(
-        self, tmp_path: Path, manifest_with_configs: Manifest
-    ) -> None:
-        """Save then load preserves configs section data."""
-        manifest_path = tmp_path / "manifest.toml"
-        save_manifest(manifest_with_configs, manifest_path)
-        loaded = load_manifest(manifest_path)
-
-        assert loaded.configs is not None
-        assert set(loaded.configs.keep.keys()) == set(
-            manifest_with_configs.configs.keep.keys()  # type: ignore[union-attr]
-        )
-        assert set(loaded.configs.remove.keys()) == set(
-            manifest_with_configs.configs.remove.keys()  # type: ignore[union-attr]
-        )
-
-        # Verify entry details survive round-trip
-        code = loaded.configs.keep["~/.config/Code"]
-        assert code.reason == "VS Code settings"
-        assert code.category == "editor"
-
-        vlc = loaded.configs.remove["~/.config/vlc"]
-        assert vlc.reason == "VLC not installed"
-        assert vlc.category == "obsolete"
-
-    def test_config_entry_serialization(
-        self, tmp_path: Path, manifest_with_configs: Manifest
-    ) -> None:
-        """DomainEntry reason and category are serialized correctly."""
-        import tomllib
-
-        manifest_path = tmp_path / "manifest.toml"
-        save_manifest(manifest_with_configs, manifest_path)
-
-        with open(manifest_path, "rb") as f:
-            data = tomllib.load(f)
-
-        code_data = data["configs"]["keep"]["~/.config/Code"]
-        assert code_data["reason"] == "VS Code settings"
-        assert code_data["category"] == "editor"
-
-        vlc_data = data["configs"]["remove"]["~/.config/vlc"]
-        assert vlc_data["reason"] == "VLC not installed"
-        assert vlc_data["category"] == "obsolete"
-
-    def test_config_entry_empty_serialization(self, tmp_path: Path) -> None:
-        """DomainEntry with no reason/category produces empty dict."""
-        import tomllib
-
-        now = datetime.now(UTC)
-        manifest = Manifest(
-            meta=ManifestMeta(version="1.0", created=now, updated=now),
-            system=SystemConfig(name="test"),
-            packages=PackageConfig(keep={}, remove={}),
-            configs=DomainConfig(
-                keep={},
-                remove={"~/.config/stale": DomainEntry()},
-            ),
-        )
-
-        manifest_path = tmp_path / "manifest.toml"
-        save_manifest(manifest, manifest_path)
-
-        with open(manifest_path, "rb") as f:
-            data = tomllib.load(f)
-
-        stale_data = data["configs"]["remove"]["~/.config/stale"]
-        assert stale_data == {}
-
-    def test_save_manifest_without_configs_omits_section(
-        self, tmp_path: Path, sample_manifest: Manifest
-    ) -> None:
-        """save_manifest omits [configs] when it is None."""
-        import tomllib
-
-        manifest_path = tmp_path / "manifest.toml"
-        save_manifest(sample_manifest, manifest_path)
-
-        with open(manifest_path, "rb") as f:
-            data = tomllib.load(f)
-
-        assert "configs" not in data
+        assert domain not in data

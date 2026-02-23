@@ -7,12 +7,12 @@ from unittest.mock import MagicMock, patch
 
 from popctl.core.executor import (
     execute_actions,
-    get_available_operators,
     record_actions_to_history,
 )
 from popctl.models.action import Action, ActionResult, ActionType
 from popctl.models.history import HistoryActionType
 from popctl.models.package import PackageSource
+from popctl.operators import get_available_operators
 from popctl.operators.apt import AptOperator
 from popctl.operators.flatpak import FlatpakOperator
 from popctl.operators.snap import SnapOperator
@@ -78,8 +78,8 @@ class TestGetAvailableOperators:
 class TestExecuteActions:
     """Tests for the execute_actions dispatcher."""
 
-    def test_execute_actions_dispatches_by_source(self) -> None:
-        """Actions are dispatched to operators matching their source."""
+    def test_dispatches_installs_by_source(self) -> None:
+        """Install actions are dispatched to operators matching their source."""
         apt_action = _make_action(package="vim", source=PackageSource.APT)
         flatpak_action = _make_action(
             package="com.example.App",
@@ -91,22 +91,76 @@ class TestExecuteActions:
 
         apt_op = MagicMock(spec=AptOperator)
         apt_op.source = PackageSource.APT
-        apt_op.execute.return_value = [apt_result]
+        apt_op.install.return_value = [apt_result]
 
         flatpak_op = MagicMock(spec=FlatpakOperator)
         flatpak_op.source = PackageSource.FLATPAK
-        flatpak_op.execute.return_value = [flatpak_result]
+        flatpak_op.install.return_value = [flatpak_result]
 
         results = execute_actions(
             [apt_action, flatpak_action],
             [apt_op, flatpak_op],
         )
 
-        apt_op.execute.assert_called_once_with([apt_action])
-        flatpak_op.execute.assert_called_once_with([flatpak_action])
+        apt_op.install.assert_called_once_with(["vim"])
+        flatpak_op.install.assert_called_once_with(["com.example.App"])
         assert results == [apt_result, flatpak_result]
 
-    def test_execute_actions_empty_list(self) -> None:
+    def test_dispatches_removes_with_purge_false(self) -> None:
+        """Remove actions are dispatched with purge=False."""
+        action = _make_action(package="bloat", action_type=ActionType.REMOVE)
+        result = _make_result(action)
+
+        op = MagicMock(spec=AptOperator)
+        op.source = PackageSource.APT
+        op.remove.return_value = [result]
+
+        results = execute_actions([action], [op])
+
+        op.remove.assert_called_once_with(["bloat"], purge=False)
+        assert results == [result]
+
+    def test_dispatches_purges_with_purge_true(self) -> None:
+        """Purge actions are dispatched with purge=True."""
+        action = _make_action(package="bloat", action_type=ActionType.PURGE)
+        result = _make_result(action)
+
+        op = MagicMock(spec=AptOperator)
+        op.source = PackageSource.APT
+        op.remove.return_value = [result]
+
+        results = execute_actions([action], [op])
+
+        op.remove.assert_called_once_with(["bloat"], purge=True)
+        assert results == [result]
+
+    def test_groups_mixed_action_types(self) -> None:
+        """Mixed action types are grouped and dispatched correctly."""
+        install_action = _make_action(package="vim", action_type=ActionType.INSTALL)
+        remove_action = _make_action(package="bloat", action_type=ActionType.REMOVE)
+        purge_action = _make_action(package="junk", action_type=ActionType.PURGE)
+
+        install_result = _make_result(install_action)
+        remove_result = _make_result(remove_action)
+        purge_result = _make_result(purge_action)
+
+        op = MagicMock(spec=AptOperator)
+        op.source = PackageSource.APT
+        op.install.return_value = [install_result]
+        op.remove.side_effect = [[remove_result], [purge_result]]
+
+        results = execute_actions(
+            [install_action, remove_action, purge_action],
+            [op],
+        )
+
+        op.install.assert_called_once_with(["vim"])
+        assert op.remove.call_count == 2
+        op.remove.assert_any_call(["bloat"], purge=False)
+        op.remove.assert_any_call(["junk"], purge=True)
+        assert results == [install_result, remove_result, purge_result]
+
+    def test_empty_list_returns_empty_results(self) -> None:
         """Empty action list returns empty results."""
         op = MagicMock(spec=AptOperator)
         op.source = PackageSource.APT
@@ -114,7 +168,27 @@ class TestExecuteActions:
         results = execute_actions([], [op])
 
         assert results == []
-        op.execute.assert_not_called()
+        op.install.assert_not_called()
+        op.remove.assert_not_called()
+
+    def test_skips_operator_with_no_matching_actions(self) -> None:
+        """Operators with no matching actions are skipped entirely."""
+        action = _make_action(package="vim", source=PackageSource.APT)
+        result = _make_result(action)
+
+        apt_op = MagicMock(spec=AptOperator)
+        apt_op.source = PackageSource.APT
+        apt_op.install.return_value = [result]
+
+        flatpak_op = MagicMock(spec=FlatpakOperator)
+        flatpak_op.source = PackageSource.FLATPAK
+
+        results = execute_actions([action], [apt_op, flatpak_op])
+
+        apt_op.install.assert_called_once()
+        flatpak_op.install.assert_not_called()
+        flatpak_op.remove.assert_not_called()
+        assert results == [result]
 
 
 # ---------------------------------------------------------------------------

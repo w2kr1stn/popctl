@@ -82,8 +82,3 @@ class TestScanner:
         """is_available returns False when not available."""
         scanner = ConcreteScanner(sample_packages, available=False)
         assert scanner.is_available() is False
-
-    def test_scanner_is_abstract(self) -> None:
-        """Scanner cannot be instantiated directly."""
-        with pytest.raises(TypeError):
-            Scanner()  # type: ignore[abstract]

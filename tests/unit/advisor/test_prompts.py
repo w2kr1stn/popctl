@@ -217,8 +217,8 @@ class TestModuleExports:
         assert hasattr(prompts, "build_session_claude_md")
 
     def test_advisor_init_exports_prompts(self) -> None:
-        """advisor __init__ exports prompt functions."""
-        from popctl.advisor import (
+        """prompts module exports prompt functions directly."""
+        from popctl.advisor.prompts import (
             CATEGORIES,
             build_session_claude_md,
         )

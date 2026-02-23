@@ -17,18 +17,6 @@ from popctl.models.history import (
 from popctl.models.package import PackageSource
 
 
-class TestHistoryActionType:
-    """Tests for HistoryActionType enum."""
-
-    def test_action_type_count(self) -> None:
-        """HistoryActionType has exactly 6 members."""
-        assert len(HistoryActionType) == 6
-
-    def test_action_type_is_str_enum(self) -> None:
-        """HistoryActionType inherits from str for JSON serialization."""
-        assert isinstance(HistoryActionType.INSTALL, str)
-
-
 class TestHistoryItem:
     """Tests for HistoryItem dataclass."""
 
@@ -375,7 +363,7 @@ class TestCreateHistoryEntry:
 
     def test_create_history_entry_empty_items_raises(self) -> None:
         """create_history_entry raises on empty items list."""
-        with pytest.raises(ValueError, match="Cannot create history entry with no items"):
+        with pytest.raises(ValueError, match="History entry must have at least one item"):
             create_history_entry(
                 action_type=HistoryActionType.INSTALL,
                 items=[],

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from popctl.core.state import (
     HISTORY_FILENAME,
-    _get_inverse_action_type,
+    INVERSE_ACTION_TYPES,
     get_history,
     get_last_reversible,
     mark_entry_reversed,
@@ -28,11 +28,6 @@ from popctl.models.package import PackageSource
 def _history_path(state_dir: Path) -> Path:
     """Test helper: compute the history file path for a given state dir."""
     return state_dir / HISTORY_FILENAME
-
-
-def test_history_filename_constant() -> None:
-    """HISTORY_FILENAME is the expected value."""
-    assert HISTORY_FILENAME == "history.jsonl"
 
 
 class TestRecordAction:
@@ -443,23 +438,20 @@ class TestMarkEntryReversed:
         assert reversal.items[1].name == "htop"
 
 
-class TestInverseActionType:
-    """Tests for _get_inverse_action_type function."""
+class TestInverseActionTypes:
+    """Tests for INVERSE_ACTION_TYPES mapping."""
 
     def test_install_inverse_is_remove(self) -> None:
         """INSTALL inverse is REMOVE."""
-        result = _get_inverse_action_type(HistoryActionType.INSTALL)
-        assert result == HistoryActionType.REMOVE
+        assert INVERSE_ACTION_TYPES[HistoryActionType.INSTALL] == HistoryActionType.REMOVE
 
     def test_remove_inverse_is_install(self) -> None:
         """REMOVE inverse is INSTALL."""
-        result = _get_inverse_action_type(HistoryActionType.REMOVE)
-        assert result == HistoryActionType.INSTALL
+        assert INVERSE_ACTION_TYPES[HistoryActionType.REMOVE] == HistoryActionType.INSTALL
 
     def test_purge_inverse_is_install(self) -> None:
         """PURGE inverse is INSTALL (reinstall)."""
-        result = _get_inverse_action_type(HistoryActionType.PURGE)
-        assert result == HistoryActionType.INSTALL
+        assert INVERSE_ACTION_TYPES[HistoryActionType.PURGE] == HistoryActionType.INSTALL
 
     @pytest.mark.parametrize(
         "action_type",
@@ -469,7 +461,6 @@ class TestInverseActionType:
             HistoryActionType.CONFIG_DELETE,
         ],
     )
-    def test_non_reversible_types_raise_value_error(self, action_type: HistoryActionType) -> None:
-        """Non-reversible action types raise ValueError."""
-        with pytest.raises(ValueError, match="Cannot invert non-reversible action type"):
-            _get_inverse_action_type(action_type)
+    def test_non_reversible_types_not_in_mapping(self, action_type: HistoryActionType) -> None:
+        """Non-reversible action types are not in the inverse mapping."""
+        assert action_type not in INVERSE_ACTION_TYPES

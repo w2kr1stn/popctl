@@ -515,16 +515,17 @@ class TestDomainDecisions:
 
 
 # =============================================================================
-# Test DecisionsResult with Filesystem
+# Test DecisionsResult with Domain (filesystem/configs)
 # =============================================================================
 
 
-class TestDecisionsResultWithFilesystem:
-    """Tests for DecisionsResult with filesystem field."""
+@pytest.mark.parametrize("domain", ["filesystem", "configs"])
+class TestDecisionsResultDomain:
+    """Tests for DecisionsResult with domain (filesystem/configs) field."""
 
-    def test_decisions_result_with_filesystem(self) -> None:
-        """DecisionsResult includes filesystem decisions when provided."""
-        fs_decisions = DomainDecisions(
+    def test_decisions_result_with_domain(self, domain: str) -> None:
+        """DecisionsResult includes domain decisions when provided."""
+        decisions = DomainDecisions(
             keep=[
                 PathDecision(
                     path="~/.config/nvim",
@@ -549,16 +550,17 @@ class TestDecisionsResultWithFilesystem:
                 "flatpak": SourceDecisions(),
                 "snap": SourceDecisions(),
             },
-            filesystem=fs_decisions,
+            **{domain: decisions},
         )
 
-        assert result.filesystem is not None
-        assert len(result.filesystem.keep) == 1
-        assert len(result.filesystem.remove) == 1
-        assert result.filesystem.keep[0].path == "~/.config/nvim"
+        domain_result = getattr(result, domain)
+        assert domain_result is not None
+        assert len(domain_result.keep) == 1
+        assert len(domain_result.remove) == 1
+        assert domain_result.keep[0].path == "~/.config/nvim"
 
-    def test_decisions_result_without_filesystem(self) -> None:
-        """DecisionsResult works without filesystem (backward compat)."""
+    def test_decisions_result_without_domain(self, domain: str) -> None:
+        """DecisionsResult works without domain (backward compat)."""
         result = DecisionsResult(
             packages={
                 "apt": SourceDecisions(),
@@ -567,20 +569,21 @@ class TestDecisionsResultWithFilesystem:
             }
         )
 
-        assert result.filesystem is None
+        assert getattr(result, domain) is None
 
 
 # =============================================================================
-# Test import_decisions with Filesystem
+# Test import_decisions with Domain (filesystem/configs)
 # =============================================================================
 
 
-class TestImportDecisionsWithFilesystem:
-    """Tests for import_decisions with filesystem section."""
+@pytest.mark.parametrize("domain", ["filesystem", "configs"])
+class TestImportDecisionsDomain:
+    """Tests for import_decisions with domain (filesystem/configs) section."""
 
-    def test_import_decisions_with_filesystem(self, tmp_path: Path) -> None:
-        """import_decisions parses decisions.toml with [filesystem] section."""
-        decisions_toml = """
+    def test_import_decisions_with_domain(self, tmp_path: Path, domain: str) -> None:
+        """import_decisions parses decisions.toml with the domain section."""
+        decisions_toml = f"""
 [packages.apt]
 keep = []
 remove = []
@@ -596,15 +599,15 @@ keep = []
 remove = []
 ask = []
 
-[filesystem]
+[{domain}]
 keep = [
-    { path = "~/.config/nvim", reason = "User config", confidence = 0.95, category = "config" },
+    {{ path = "~/.config/nvim", reason = "User config", confidence = 0.95, category = "config" }},
 ]
 remove = [
-    { path = "~/.config/vlc", reason = "VLC removed", confidence = 0.90, category = "obsolete" },
+    {{ path = "~/.config/vlc", reason = "VLC removed", confidence = 0.90, category = "obsolete" }},
 ]
 ask = [
-    { path = "~/.local/share/foo", reason = "Unknown", confidence = 0.50, category = "other" },
+    {{ path = "~/.local/share/foo", reason = "Unknown", confidence = 0.50, category = "other" }},
 ]
 """
         decisions_path = tmp_path / "decisions.toml"
@@ -612,23 +615,24 @@ ask = [
 
         result = import_decisions(tmp_path / "decisions.toml")
 
-        assert result.filesystem is not None
-        assert len(result.filesystem.keep) == 1
-        assert len(result.filesystem.remove) == 1
-        assert len(result.filesystem.ask) == 1
+        section = getattr(result, domain)
+        assert section is not None
+        assert len(section.keep) == 1
+        assert len(section.remove) == 1
+        assert len(section.ask) == 1
 
-        assert result.filesystem.keep[0].path == "~/.config/nvim"
-        assert result.filesystem.keep[0].confidence == 0.95
-        assert result.filesystem.keep[0].category == "config"
+        assert section.keep[0].path == "~/.config/nvim"
+        assert section.keep[0].confidence == 0.95
+        assert section.keep[0].category == "config"
 
-        assert result.filesystem.remove[0].path == "~/.config/vlc"
-        assert result.filesystem.remove[0].reason == "VLC removed"
+        assert section.remove[0].path == "~/.config/vlc"
+        assert section.remove[0].reason == "VLC removed"
 
-        assert result.filesystem.ask[0].path == "~/.local/share/foo"
-        assert result.filesystem.ask[0].confidence == 0.50
+        assert section.ask[0].path == "~/.local/share/foo"
+        assert section.ask[0].confidence == 0.50
 
-    def test_import_decisions_without_filesystem(self, tmp_path: Path) -> None:
-        """import_decisions backward compat: no [filesystem] yields None."""
+    def test_import_decisions_without_domain(self, tmp_path: Path, domain: str) -> None:
+        """import_decisions backward compat: no domain section yields None."""
         decisions_toml = """
 [packages.apt]
 keep = []
@@ -650,11 +654,11 @@ ask = []
 
         result = import_decisions(tmp_path / "decisions.toml")
 
-        assert result.filesystem is None
+        assert getattr(result, domain) is None
 
-    def test_import_decisions_filesystem_empty_lists(self, tmp_path: Path) -> None:
-        """import_decisions handles empty filesystem lists."""
-        decisions_toml = """
+    def test_import_decisions_domain_empty_lists(self, tmp_path: Path, domain: str) -> None:
+        """import_decisions handles empty domain lists."""
+        decisions_toml = f"""
 [packages.apt]
 keep = []
 remove = []
@@ -670,7 +674,7 @@ keep = []
 remove = []
 ask = []
 
-[filesystem]
+[{domain}]
 keep = []
 remove = []
 ask = []
@@ -680,182 +684,15 @@ ask = []
 
         result = import_decisions(tmp_path / "decisions.toml")
 
-        assert result.filesystem is not None
-        assert result.filesystem.keep == []
-        assert result.filesystem.remove == []
-        assert result.filesystem.ask == []
+        section = getattr(result, domain)
+        assert section is not None
+        assert section.keep == []
+        assert section.remove == []
+        assert section.ask == []
 
 
-# =============================================================================
-# Test DecisionsResult with Configs
-# =============================================================================
-
-
-class TestDecisionsResultWithConfigs:
-    """Tests for DecisionsResult with configs field."""
-
-    def test_decisions_result_with_configs(self) -> None:
-        """DecisionsResult includes config decisions when provided."""
-        cfg_decisions = DomainDecisions(
-            keep=[
-                PathDecision(
-                    path="~/.config/nvim",
-                    reason="User-created Neovim configuration",
-                    confidence=0.95,
-                    category="editor",
-                )
-            ],
-            remove=[
-                PathDecision(
-                    path="~/.config/vlc",
-                    reason="VLC not installed",
-                    confidence=0.85,
-                    category="media",
-                )
-            ],
-        )
-
-        result = DecisionsResult(
-            packages={
-                "apt": SourceDecisions(),
-                "flatpak": SourceDecisions(),
-                "snap": SourceDecisions(),
-            },
-            configs=cfg_decisions,
-        )
-
-        assert result.configs is not None
-        assert len(result.configs.keep) == 1
-        assert len(result.configs.remove) == 1
-        assert result.configs.keep[0].path == "~/.config/nvim"
-
-    def test_decisions_result_without_configs(self) -> None:
-        """DecisionsResult works without configs (backward compat)."""
-        result = DecisionsResult(
-            packages={
-                "apt": SourceDecisions(),
-                "flatpak": SourceDecisions(),
-                "snap": SourceDecisions(),
-            }
-        )
-
-        assert result.configs is None
-
-
-# =============================================================================
-# Test import_decisions with Configs
-# =============================================================================
-
-
-class TestImportDecisionsWithConfigs:
-    """Tests for import_decisions with configs section."""
-
-    def test_import_decisions_with_configs(self, tmp_path: Path) -> None:
-        """import_decisions parses decisions.toml with [configs] section."""
-        decisions_toml = """
-[packages.apt]
-keep = []
-remove = []
-ask = []
-
-[packages.flatpak]
-keep = []
-remove = []
-ask = []
-
-[packages.snap]
-keep = []
-remove = []
-ask = []
-
-[configs]
-keep = [
-    { path = "~/.config/nvim", reason = "Neovim config", confidence = 0.95, category = "editor" },
-]
-remove = [
-    { path = "~/.config/vlc", reason = "VLC removed", confidence = 0.85, category = "media" },
-]
-ask = [
-    { path = "~/.config/foo", reason = "Unclear", confidence = 0.50, category = "unknown" },
-]
-"""
-        decisions_path = tmp_path / "decisions.toml"
-        decisions_path.write_text(decisions_toml)
-
-        result = import_decisions(tmp_path / "decisions.toml")
-
-        assert result.configs is not None
-        assert len(result.configs.keep) == 1
-        assert len(result.configs.remove) == 1
-        assert len(result.configs.ask) == 1
-
-        assert result.configs.keep[0].path == "~/.config/nvim"
-        assert result.configs.keep[0].confidence == 0.95
-        assert result.configs.keep[0].category == "editor"
-
-        assert result.configs.remove[0].path == "~/.config/vlc"
-        assert result.configs.remove[0].reason == "VLC removed"
-
-        assert result.configs.ask[0].path == "~/.config/foo"
-        assert result.configs.ask[0].confidence == 0.50
-
-    def test_import_decisions_without_configs_backward_compat(self, tmp_path: Path) -> None:
-        """import_decisions backward compat: no [configs] yields None."""
-        decisions_toml = """
-[packages.apt]
-keep = []
-remove = []
-ask = []
-
-[packages.flatpak]
-keep = []
-remove = []
-ask = []
-
-[packages.snap]
-keep = []
-remove = []
-ask = []
-"""
-        decisions_path = tmp_path / "decisions.toml"
-        decisions_path.write_text(decisions_toml)
-
-        result = import_decisions(tmp_path / "decisions.toml")
-
-        assert result.configs is None
-
-    def test_import_decisions_configs_empty_lists(self, tmp_path: Path) -> None:
-        """import_decisions handles empty config lists."""
-        decisions_toml = """
-[packages.apt]
-keep = []
-remove = []
-ask = []
-
-[packages.flatpak]
-keep = []
-remove = []
-ask = []
-
-[packages.snap]
-keep = []
-remove = []
-ask = []
-
-[configs]
-keep = []
-remove = []
-ask = []
-"""
-        decisions_path = tmp_path / "decisions.toml"
-        decisions_path.write_text(decisions_toml)
-
-        result = import_decisions(tmp_path / "decisions.toml")
-
-        assert result.configs is not None
-        assert result.configs.keep == []
-        assert result.configs.remove == []
-        assert result.configs.ask == []
+class TestConfigDecisionsParsing:
+    """Tests for config-specific decisions parsing."""
 
     def test_config_decisions_parsing(self, tmp_path: Path) -> None:
         """ConfigDecisions parsed correctly from TOML with all field types."""
