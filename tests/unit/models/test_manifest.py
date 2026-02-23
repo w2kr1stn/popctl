@@ -6,6 +6,7 @@ Tests for the Pydantic models representing manifest.toml structure.
 from datetime import UTC, datetime
 
 import pytest
+from popctl.configs.manifest import ConfigEntry, ConfigsConfig
 from popctl.filesystem.manifest import FilesystemConfig, FilesystemEntry
 from popctl.models.manifest import (
     Manifest,
@@ -291,4 +292,101 @@ class TestManifestFilesystem:
     def test_get_fs_remove_paths_when_none(self, manifest_without_fs: Manifest) -> None:
         """get_fs_remove_paths returns empty dict when filesystem is None."""
         paths = manifest_without_fs.get_fs_remove_paths()
+        assert paths == {}
+
+
+class TestManifestConfigs:
+    """Tests for configs integration in Manifest model."""
+
+    @pytest.fixture
+    def configs_config(self) -> ConfigsConfig:
+        """Create a sample ConfigsConfig for testing."""
+        return ConfigsConfig(
+            keep={
+                "~/.config/Code": ConfigEntry(reason="VS Code settings", category="editor"),
+                "~/.config/nvim": ConfigEntry(reason="User config"),
+            },
+            remove={
+                "~/.config/vlc": ConfigEntry(reason="VLC not installed", category="obsolete"),
+                "~/.config/sublime-text": ConfigEntry(reason="Switched editor"),
+            },
+        )
+
+    @pytest.fixture
+    def manifest_with_configs(self, configs_config: ConfigsConfig) -> Manifest:
+        """Create a manifest with configs section."""
+        now = datetime.now(UTC)
+        return Manifest(
+            meta=ManifestMeta(version="1.0", created=now, updated=now),
+            system=SystemConfig(name="test-machine"),
+            packages=PackageConfig(
+                keep={"firefox": PackageEntry(source="apt")},
+                remove={},
+            ),
+            configs=configs_config,
+        )
+
+    @pytest.fixture
+    def manifest_without_configs(self) -> Manifest:
+        """Create a manifest without configs section."""
+        now = datetime.now(UTC)
+        return Manifest(
+            meta=ManifestMeta(version="1.0", created=now, updated=now),
+            system=SystemConfig(name="test-machine"),
+            packages=PackageConfig(keep={}, remove={}),
+        )
+
+    def test_manifest_with_configs_section(self, manifest_with_configs: Manifest) -> None:
+        """Manifest accepts a configs section with keep/remove entries."""
+        assert manifest_with_configs.configs is not None
+        assert len(manifest_with_configs.configs.keep) == 2
+        assert len(manifest_with_configs.configs.remove) == 2
+        assert "~/.config/Code" in manifest_with_configs.configs.keep
+        assert "~/.config/vlc" in manifest_with_configs.configs.remove
+
+    def test_manifest_without_configs_backward_compat(
+        self, manifest_without_configs: Manifest
+    ) -> None:
+        """Manifest without configs section loads with None default."""
+        assert manifest_without_configs.configs is None
+        assert manifest_without_configs.system.name == "test-machine"
+
+    def test_manifest_configs_defaults_to_none(self) -> None:
+        """Configs field defaults to None when not provided."""
+        now = datetime.now(UTC)
+        manifest = Manifest(
+            meta=ManifestMeta(created=now, updated=now),
+            system=SystemConfig(name="test"),
+            packages=PackageConfig(keep={}, remove={}),
+        )
+        assert manifest.configs is None
+
+    def test_get_config_keep_paths(self, manifest_with_configs: Manifest) -> None:
+        """get_config_keep_paths returns keep dict when configs is present."""
+        paths = manifest_with_configs.get_config_keep_paths()
+
+        assert len(paths) == 2
+        assert "~/.config/Code" in paths
+        assert "~/.config/nvim" in paths
+        assert paths["~/.config/Code"].reason == "VS Code settings"
+        assert paths["~/.config/Code"].category == "editor"
+
+    def test_get_config_remove_paths(self, manifest_with_configs: Manifest) -> None:
+        """get_config_remove_paths returns remove dict when configs is present."""
+        paths = manifest_with_configs.get_config_remove_paths()
+
+        assert len(paths) == 2
+        assert "~/.config/vlc" in paths
+        assert "~/.config/sublime-text" in paths
+        assert paths["~/.config/vlc"].reason == "VLC not installed"
+        assert paths["~/.config/vlc"].category == "obsolete"
+
+    def test_get_config_keep_paths_when_none(self, manifest_without_configs: Manifest) -> None:
+        """get_config_keep_paths returns empty dict when configs is None."""
+        paths = manifest_without_configs.get_config_keep_paths()
+        assert paths == {}
+
+    def test_get_config_remove_paths_when_none(self, manifest_without_configs: Manifest) -> None:
+        """get_config_remove_paths returns empty dict when configs is None."""
+        paths = manifest_without_configs.get_config_remove_paths()
         assert paths == {}

@@ -248,5 +248,6 @@ class StateManager:
             HistoryActionType.APPLY: HistoryActionType.APPLY,
             HistoryActionType.ADVISOR_APPLY: HistoryActionType.ADVISOR_APPLY,
             HistoryActionType.FS_DELETE: HistoryActionType.FS_DELETE,
+            HistoryActionType.CONFIG_DELETE: HistoryActionType.CONFIG_DELETE,
         }
         return inverse_map.get(action_type, action_type)

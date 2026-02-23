@@ -111,6 +111,43 @@ class FilesystemScanSection(BaseModel):
     orphans: list[FilesystemOrphanEntry] = Field(default_factory=lambda: [])
 
 
+class ConfigOrphanEntry(BaseModel):
+    """Single config orphan entry in scan export.
+
+    Represents an orphaned configuration path in the scan.json export format,
+    containing the information needed for AI classification.
+
+    Attributes:
+        path: Config path (tilde-prefixed, e.g., "~/.config/vlc").
+        config_type: Type of config ("directory" or "file").
+        size_bytes: Size in bytes (None if unavailable).
+        mtime: Last modification time in ISO 8601 format (None if unavailable).
+        orphan_reason: Reason for orphan classification.
+        confidence: Orphan confidence score (0.0 to 1.0).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    path: str
+    config_type: str  # ConfigType value: "directory" or "file"
+    size_bytes: int | None = None
+    mtime: str | None = None
+    orphan_reason: str  # ConfigOrphanReason value
+    confidence: float
+
+
+class ConfigScanSection(BaseModel):
+    """Config section in scan.json export.
+
+    Attributes:
+        orphans: List of orphaned config entries.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    orphans: list[ConfigOrphanEntry] = Field(default_factory=lambda: [])
+
+
 class ScanExport(BaseModel):
     """Complete scan export for AI agent.
 
@@ -123,6 +160,7 @@ class ScanExport(BaseModel):
         summary: Package count summary.
         packages: Packages grouped by classification status.
         filesystem: Optional filesystem orphan data for classification.
+        configs: Optional config orphan data for classification.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -132,6 +170,7 @@ class ScanExport(BaseModel):
     summary: dict[str, int]  # total_packages, manual_apt, etc.
     packages: dict[str, list[PackageScanEntry]]  # "unknown", "new_since_manifest"
     filesystem: FilesystemScanSection | None = None
+    configs: ConfigScanSection | None = None
 
 
 # =============================================================================
@@ -225,6 +264,44 @@ class FilesystemDecisions(BaseModel):
     ask: list[FilesystemPathDecision] = Field(default_factory=lambda: [])
 
 
+class ConfigPathDecision(BaseModel):
+    """Single config path decision from AI agent.
+
+    Represents one config path's classification in the decisions.toml file.
+
+    Attributes:
+        path: Config path (tilde-prefixed, e.g., "~/.config/vlc").
+        reason: Explanation for the classification.
+        confidence: Classification confidence (0.0 - 1.0).
+        category: Config category (e.g., "editor", "media", "unknown").
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    path: str
+    reason: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    category: str | None = None
+
+
+class ConfigDecisions(BaseModel):
+    """Config decisions from AI agent.
+
+    Groups config path decisions by classification: keep, remove, or ask.
+
+    Attributes:
+        keep: Config paths that should be kept.
+        remove: Config paths that should be removed.
+        ask: Config paths that need user decision.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    keep: list[ConfigPathDecision] = Field(default_factory=lambda: [])
+    remove: list[ConfigPathDecision] = Field(default_factory=lambda: [])
+    ask: list[ConfigPathDecision] = Field(default_factory=lambda: [])
+
+
 class DecisionsResult(BaseModel):
     """Complete decisions from AI agent.
 
@@ -233,12 +310,14 @@ class DecisionsResult(BaseModel):
     Attributes:
         packages: Decisions organized by package source.
         filesystem: Optional filesystem path decisions.
+        configs: Optional config path decisions.
     """
 
     model_config = ConfigDict(frozen=True)
 
     packages: dict[PackageSourceKey, SourceDecisions]
     filesystem: FilesystemDecisions | None = None
+    configs: ConfigDecisions | None = None
 
 
 # =============================================================================
@@ -251,18 +330,20 @@ def export_scan_for_advisor(
     exchange_dir: Path,
     manifest_path: Path | None = None,
     filesystem_orphans: list[FilesystemOrphanEntry] | None = None,
+    config_orphans: list[ConfigOrphanEntry] | None = None,
 ) -> Path:
     """Export scan results to exchange directory for AI agent.
 
     Creates a scan.json file in the exchange directory containing
-    package data and optional filesystem orphan data for the AI
-    agent to classify.
+    package data, optional filesystem orphan data, and optional
+    config orphan data for the AI agent to classify.
 
     Args:
         scan_result: Scan result from popctl scan command.
         exchange_dir: Directory for file exchange with AI agent.
         manifest_path: Optional path to manifest file for reference.
         filesystem_orphans: Optional list of filesystem orphan entries.
+        config_orphans: Optional list of config orphan entries.
 
     Returns:
         Path to the created scan.json file.
@@ -332,6 +413,11 @@ def export_scan_for_advisor(
     if filesystem_orphans:
         filesystem_section = FilesystemScanSection(orphans=filesystem_orphans)
 
+    # Build configs section if orphans provided
+    configs_section: ConfigScanSection | None = None
+    if config_orphans:
+        configs_section = ConfigScanSection(orphans=config_orphans)
+
     # Create export model
     scan_export = ScanExport(
         scan_date=datetime.now(UTC).isoformat(),
@@ -342,6 +428,7 @@ def export_scan_for_advisor(
             "new_since_manifest": packages_by_group["new_since_manifest"],
         },
         filesystem=filesystem_section,
+        configs=configs_section,
     )
 
     # Write to file
@@ -527,9 +614,21 @@ def _parse_decisions_data(data: dict[str, Any]) -> DecisionsResult:
             ask=_parse_fs_decision_list(fs_dict.get("ask", [])),
         )
 
+    # Parse config decisions (optional, for backward compatibility)
+    config_decisions: ConfigDecisions | None = None
+    cfg_data: Any = data.get("configs")
+    if isinstance(cfg_data, dict):
+        cfg_dict: dict[str, Any] = cast(dict[str, Any], cfg_data)
+        config_decisions = ConfigDecisions(
+            keep=_parse_config_decision_list(cfg_dict.get("keep", [])),
+            remove=_parse_config_decision_list(cfg_dict.get("remove", [])),
+            ask=_parse_config_decision_list(cfg_dict.get("ask", [])),
+        )
+
     return DecisionsResult(
         packages=cast(dict[PackageSourceKey, SourceDecisions], parsed_packages),
         filesystem=filesystem_decisions,
+        configs=config_decisions,
     )
 
 
@@ -597,6 +696,43 @@ def _parse_fs_decision_list(items: Any) -> list[FilesystemPathDecision]:
             reason=str(item_dict.get("reason", "")),
             confidence=float(item_dict.get("confidence", 0.0)),
             category=str(item_dict.get("category", "other")),
+        )
+        decisions.append(decision)
+
+    return decisions
+
+
+def _parse_config_decision_list(items: Any) -> list[ConfigPathDecision]:
+    """Parse a list of config path decisions.
+
+    Args:
+        items: List of decision dictionaries from TOML.
+
+    Returns:
+        List of validated ConfigPathDecision objects.
+    """
+    if not isinstance(items, list):
+        return []
+
+    decisions: list[ConfigPathDecision] = []
+    items_list: list[Any] = cast(list[Any], items)
+
+    for item in items_list:
+        if not isinstance(item, dict):
+            continue
+
+        # Type-narrow item - cast for pyright
+        item_dict: dict[str, Any] = cast(dict[str, Any], item)
+
+        # category is optional for config decisions (may be None)
+        raw_category: Any = item_dict.get("category")
+        category: str | None = str(raw_category) if raw_category is not None else None
+
+        decision = ConfigPathDecision(
+            path=str(item_dict.get("path", "")),
+            reason=str(item_dict.get("reason", "")),
+            confidence=float(item_dict.get("confidence", 0.0)),
+            category=category,
         )
         decisions.append(decision)
 
