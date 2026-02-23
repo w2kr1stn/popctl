@@ -10,38 +10,39 @@ Commands:
 - apply: Apply classification decisions to manifest
 """
 
-from enum import Enum
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.table import Table
 
 from popctl.advisor import (
-    AdvisorConfig,
     AgentRunner,
-    DecisionsResult,
-    create_session_workspace,
     find_latest_decisions,
-    is_running_in_container,
+    import_decisions,
 )
 from popctl.advisor.config import (
-    AdvisorConfigError,
-    AdvisorConfigNotFoundError,
-    get_default_config,
-    load_advisor_config,
-    save_advisor_config,
+    load_or_create_config,
 )
-from popctl.core.paths import ensure_advisor_sessions_dir, get_manifest_path
-from popctl.models.package import PackageSource
-from popctl.models.scan_result import ScanResult
-from popctl.scanners.apt import AptScanner
-from popctl.scanners.flatpak import FlatpakScanner
+from popctl.advisor.exchange import (
+    apply_decisions_to_manifest,
+    record_advisor_apply_to_history,
+)
+from popctl.advisor.runner import MANUAL_MODE_SENTINEL
+from popctl.advisor.scanning import scan_system
+from popctl.advisor.workspace import create_session_workspace, ensure_advisor_sessions_dir
+from popctl.cli.types import ProviderChoice, require_manifest
+from popctl.core.manifest import (
+    ManifestError,
+    save_manifest,
+)
+from popctl.core.paths import get_manifest_path, get_state_dir
 from popctl.utils.formatting import (
     console,
     print_error,
     print_info,
     print_success,
-    print_warning,
 )
 
 app = typer.Typer(
@@ -52,225 +53,43 @@ app = typer.Typer(
 )
 
 
-class ProviderChoice(str, Enum):
-    """Available AI providers."""
-
-    CLAUDE = "claude"
-    GEMINI = "gemini"
-
-
-def _show_container_warning() -> None:
-    """Display warning if running inside a container."""
-    if is_running_in_container():
-        print_warning(
-            "popctl is running inside a container.\n"
-            "    Package scanning and system modifications may not work correctly.\n"
-            "    Consider running popctl directly on the host system."
-        )
-
-
-def _load_or_create_config(
-    provider: ProviderChoice | None = None,
-    model: str | None = None,
-) -> AdvisorConfig:
-    """Load existing config or create default with CLI overrides.
+def _prepare_session(
+    provider: ProviderChoice | None,
+    model: str | None,
+    input_file: Path | None,
+) -> tuple[AgentRunner, Path]:
+    """Load config, scan system, and create session workspace.
 
     Args:
-        provider: Optional provider override from CLI.
-        model: Optional model override from CLI.
+        provider: AI provider choice (or None for default).
+        model: Model override (or None for default).
+        input_file: Existing scan.json to use instead of scanning.
 
     Returns:
-        AdvisorConfig with applied overrides.
-    """
-    try:
-        config = load_advisor_config()
-    except AdvisorConfigNotFoundError:
-        # Create default config if not found
-        config = get_default_config()
-        # Save the default config for future use
-        try:
-            save_advisor_config(config)
-            print_info("Created default advisor configuration.")
-        except AdvisorConfigError as e:
-            print_warning(f"Could not save default config: {e}")
-    except AdvisorConfigError as e:
-        print_warning(f"Error loading config, using defaults: {e}")
-        config = get_default_config()
-
-    # Apply CLI overrides
-    if provider is not None or model is not None:
-        updates: dict[str, str] = {}
-        if provider is not None:
-            updates["provider"] = provider.value
-        if model is not None:
-            updates["model"] = model
-        config = config.model_copy(update=updates)
-
-    return config
-
-
-def _scan_system(input_file: Path | None = None) -> ScanResult:
-    """Scan system for packages or load from file.
-
-    Args:
-        input_file: Optional path to existing scan.json file.
-
-    Returns:
-        ScanResult with package data.
+        Tuple of (configured AgentRunner, workspace directory path).
 
     Raises:
-        typer.Exit: If scanning fails or input file is invalid.
+        typer.Exit: If scanning fails.
     """
-    from popctl.models.package import PackageStatus, ScannedPackage
-    from popctl.scanners.base import Scanner
-
-    if input_file is not None:
-        # Load from existing scan file
-        if not input_file.exists():
-            print_error(f"Input file not found: {input_file}")
-            raise typer.Exit(code=1)
-
-        import json
-
-        try:
-            data = json.loads(input_file.read_text())
-            packages: list[ScannedPackage] = []
-            sources_set: set[str] = set()
-
-            for pkg_data in data.get("packages", []):
-                pkg = ScannedPackage(
-                    name=pkg_data["name"],
-                    source=PackageSource(pkg_data["source"]),
-                    version=pkg_data["version"],
-                    status=PackageStatus(pkg_data["status"]),
-                    description=pkg_data.get("description"),
-                    size_bytes=pkg_data.get("size_bytes"),
-                )
-                packages.append(pkg)
-                sources_set.add(pkg_data["source"])
-
-            return ScanResult.create(packages, list(sources_set))
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            print_error(f"Invalid scan file format: {e}")
-            raise typer.Exit(code=1) from e
-
-    # Perform live scan
-    scanners: list[Scanner] = []
-    apt_scanner = AptScanner()
-    flatpak_scanner = FlatpakScanner()
-
-    if apt_scanner.is_available():
-        scanners.append(apt_scanner)
-    else:
-        print_warning("APT package manager is not available.")
-
-    if flatpak_scanner.is_available():
-        scanners.append(flatpak_scanner)
-    else:
-        print_warning("Flatpak is not available.")
-
-    if not scanners:
-        print_error("No package managers are available on this system.")
-        raise typer.Exit(code=1)
-
-    packages: list[ScannedPackage] = []
-    sources: list[str] = []
-
-    for scanner in scanners:
-        sources.append(scanner.source.value)
-        try:
-            for pkg in scanner.scan():
-                packages.append(pkg)
-        except RuntimeError as e:
-            print_error(f"Scan failed: {e}")
-            raise typer.Exit(code=1) from e
-
-    print_info(f"Scanned {len(packages)} packages from {len(sources)} source(s).")
-    return ScanResult.create(packages, sources)
-
-
-def _record_advisor_apply_to_history(
-    decisions: DecisionsResult,
-) -> None:
-    """Record advisor apply decisions to history.
-
-    Creates a single history entry for all classifications applied.
-    Errors during recording are logged but do not interrupt the flow.
-
-    Args:
-        decisions: The decisions result that was applied.
-    """
-    import logging
-
-    from popctl.core.state import StateManager
-    from popctl.models.history import (
-        HistoryActionType,
-        HistoryItem,
-        create_history_entry,
-    )
-
-    logger = logging.getLogger(__name__)
+    config = load_or_create_config(provider.value if provider else None, model)
+    print_info(f"Using provider: {config.provider}, model: {config.effective_model}")
 
     try:
-        # Collect all items from decisions
-        items: list[HistoryItem] = []
-
-        for source_str in ("apt", "flatpak"):
-            source_decisions = decisions.packages.get(source_str)
-            if source_decisions is None:
-                continue
-
-            pkg_source = PackageSource(source_str)
-
-            # Add keep decisions
-            for decision in source_decisions.keep:
-                items.append(HistoryItem(name=decision.name, source=pkg_source))
-
-            # Add remove decisions
-            for decision in source_decisions.remove:
-                items.append(HistoryItem(name=decision.name, source=pkg_source))
-
-        if items:
-            entry = create_history_entry(
-                action_type=HistoryActionType.ADVISOR_APPLY,
-                items=items,
-                metadata={"command": "popctl advisor apply"},
-            )
-            StateManager().record_action(entry)
-            logger.debug("Recorded %d advisor apply item(s) to history", len(items))
-
-    except (OSError, RuntimeError) as e:
-        # Log and inform user, but don't interrupt the main flow
-        logger.warning("Failed to record advisor apply to history: %s", str(e))
-        from popctl.utils.formatting import print_warning
-
-        print_warning(f"Could not record classifications to history: {e}")
-
-
-def _create_workspace(scan_result: ScanResult) -> Path:
-    """Create a session workspace for the scan result.
-
-    Args:
-        scan_result: Scan result with package data.
-
-    Returns:
-        Path to the created workspace directory.
-    """
-    from popctl.core.paths import get_advisor_memory_path
+        scan_result = scan_system(input_file)
+    except RuntimeError as e:
+        print_error(str(e))
+        raise typer.Exit(code=1) from None
 
     sessions_dir = ensure_advisor_sessions_dir()
     manifest_path = get_manifest_path()
-    manifest_for_workspace = manifest_path if manifest_path.exists() else None
-
-    memory_path = get_advisor_memory_path()
-    memory_for_workspace = memory_path if memory_path.exists() else None
-
-    return create_session_workspace(
+    memory_path = get_state_dir() / "advisor" / "memory.md"
+    workspace_dir = create_session_workspace(
         scan_result,
         sessions_dir,
-        manifest_path=manifest_for_workspace,
-        memory_path=memory_for_workspace,
+        manifest_path=manifest_path if manifest_path.exists() else None,
+        memory_path=memory_path if memory_path.exists() else None,
     )
+    return AgentRunner(config), workspace_dir
 
 
 @app.command()
@@ -310,24 +129,13 @@ def classify(
         popctl advisor classify -p gemini    # Use Gemini
         popctl advisor classify -m opus      # Use Claude Opus
     """
-    # Step 1: Check container warning
-    _show_container_warning()
-
-    # Step 2: Load/create config with CLI overrides
-    config = _load_or_create_config(provider, model)
-    print_info(f"Using provider: {config.provider}, model: {config.effective_model}")
-
-    # Step 3: Scan system and create workspace
-    scan_result = _scan_system(input_file)
-    workspace_dir = _create_workspace(scan_result)
+    agent_runner, workspace_dir = _prepare_session(provider, model, input_file)
     print_info(f"Workspace: {workspace_dir}")
 
-    # Step 4: Run headless agent
     print_info("Running AI agent in headless mode...")
     console.print()
 
-    runner = AgentRunner(config)
-    result = runner.run_headless(workspace_dir)
+    result = agent_runner.run_headless(workspace_dir)
 
     if result.success:
         print_success("Classification completed successfully.")
@@ -374,13 +182,6 @@ def session(
             help="Use existing scan.json instead of scanning.",
         ),
     ] = None,
-    host: Annotated[
-        bool,
-        typer.Option(
-            "--host",
-            help="Force host-mode (skip container).",
-        ),
-    ] = False,
 ) -> None:
     """Start an interactive AI session for package classification.
 
@@ -389,36 +190,19 @@ def session(
 
     Examples:
         popctl advisor session               # Interactive session
-        popctl advisor session --host        # Force host-mode
         popctl advisor session -p gemini     # Use Gemini
     """
-    # Step 1: Check container warning
-    _show_container_warning()
-
-    # Step 2: Load/create config with CLI overrides
-    config = _load_or_create_config(provider, model)
-
-    # Override container_mode if --host flag is set
-    if host:
-        config = config.model_copy(update={"container_mode": False})
-
-    print_info(f"Using provider: {config.provider}, model: {config.effective_model}")
-
-    # Step 3: Scan system and create workspace
-    scan_result = _scan_system(input_file)
-    workspace_dir = _create_workspace(scan_result)
+    agent_runner, workspace_dir = _prepare_session(provider, model, input_file)
     print_info(f"Session workspace: {workspace_dir}")
 
-    # Step 4: Launch interactive session
-    runner = AgentRunner(config)
-    result = runner.launch_interactive(workspace_dir)
+    result = agent_runner.launch_interactive(workspace_dir)
 
     if result.success:
         print_success("Session completed.")
         if result.decisions_path:
             print_info(f"Decisions written to: {result.decisions_path}")
             print_info("Run 'popctl advisor apply' to apply the classifications.")
-    elif result.error == "manual_mode":
+    elif result.error == MANUAL_MODE_SENTINEL:
         console.print()
         console.print(result.output)
     else:
@@ -455,35 +239,22 @@ def apply(
         popctl advisor apply --dry-run    # Preview only
         popctl advisor apply -i dec.toml  # From specific file
     """
-    from datetime import UTC, datetime
-
-    from rich.table import Table
-
-    from popctl.advisor import import_decisions
-    from popctl.core.manifest import (
-        ManifestError,
-        ManifestNotFoundError,
-        load_manifest,
-        save_manifest,
-    )
-    from popctl.core.paths import get_exchange_dir
-    from popctl.models.manifest import PackageEntry
-
     # Step 1: Determine decisions.toml path
     if input_file is not None:
         decisions_path = input_file
     else:
-        # Try latest session workspace first, then legacy exchange dir
         sessions_dir = ensure_advisor_sessions_dir()
         latest = find_latest_decisions(sessions_dir)
-        decisions_path = latest if latest is not None else get_exchange_dir() / "decisions.toml"
+        if latest is None:
+            print_error("No advisor decisions found. Run 'popctl advisor classify' first.")
+            raise typer.Exit(code=1)
+        decisions_path = latest
 
     print_info(f"Decisions from: {decisions_path}")
 
     # Step 2: Load decisions
-    # import_decisions expects the directory containing decisions.toml
     try:
-        decisions = import_decisions(decisions_path.parent)
+        decisions = import_decisions(decisions_path)
     except FileNotFoundError as err:
         print_error(f"decisions.toml not found at {decisions_path}")
         print_info("Run 'popctl advisor classify' first to generate classifications.")
@@ -493,48 +264,10 @@ def apply(
         raise typer.Exit(code=1) from e
 
     # Step 3: Load current manifest
-    try:
-        manifest = load_manifest()
-    except ManifestNotFoundError as err:
-        print_error("No manifest found. Run 'popctl init' first to create a manifest.")
-        raise typer.Exit(code=1) from err
-    except ManifestError as e:
-        print_error(f"Failed to load manifest: {e}")
-        raise typer.Exit(code=1) from e
+    manifest = require_manifest()
 
     # Step 4: Apply decisions and collect statistics
-    stats: dict[str, dict[str, int]] = {}
-    ask_packages: list[tuple[str, str, str, float]] = []  # (name, source, reason, confidence)
-
-    for source in ("apt", "flatpak"):
-        source_decisions = decisions.packages.get(source)
-        if source_decisions is None:
-            continue
-
-        stats[source] = {"keep": 0, "remove": 0, "ask": 0}
-
-        # Process keep decisions
-        for decision in source_decisions.keep:
-            manifest.packages.keep[decision.name] = PackageEntry(
-                source=source,  # type: ignore[arg-type]
-                status="keep",
-                reason=decision.reason,
-            )
-            stats[source]["keep"] += 1
-
-        # Process remove decisions
-        for decision in source_decisions.remove:
-            manifest.packages.remove[decision.name] = PackageEntry(
-                source=source,  # type: ignore[arg-type]
-                status="remove",
-                reason=decision.reason,
-            )
-            stats[source]["remove"] += 1
-
-        # Process ask decisions (skip but collect for display)
-        for decision in source_decisions.ask:
-            ask_packages.append((decision.name, source, decision.reason, decision.confidence))
-            stats[source]["ask"] += 1
+    stats, ask_packages = apply_decisions_to_manifest(manifest, decisions)
 
     # Step 5: Display summary
     console.print()
@@ -603,18 +336,5 @@ def apply(
             raise typer.Exit(code=1) from e
 
         # Record to history
-        _record_advisor_apply_to_history(decisions)
+        record_advisor_apply_to_history(decisions)
         print_info("Classifications recorded to history.")
-
-
-@app.callback(invoke_without_command=True)
-def advisor_callback(ctx: typer.Context) -> None:
-    """AI-assisted package classification.
-
-    The advisor uses AI agents (Claude Code or Gemini CLI) to classify
-    packages as keep, remove, or ask. Run 'popctl advisor classify --help'
-    for usage details.
-    """
-    # Show help if no subcommand
-    if ctx.invoked_subcommand is None:
-        ctx.get_help()

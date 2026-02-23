@@ -5,22 +5,23 @@ and clean up entries marked for removal in the manifest.
 """
 
 import json
-from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.table import Table
 
-from popctl.core.manifest import require_manifest
-from popctl.filesystem.history import record_fs_deletions
-from popctl.filesystem.manifest import FilesystemEntry
-from popctl.filesystem.models import PathStatus, ScannedPath
-from popctl.filesystem.operator import FilesystemActionResult, FilesystemOperator
-from popctl.filesystem.scanner import FilesystemScanner
+from popctl.cli.display import (
+    export_orphan_results,
+    print_deletion_plan,
+    print_deletion_results,
+    print_orphan_table,
+)
+from popctl.cli.types import OutputFormat, collect_domain_orphans, require_manifest
+from popctl.core.state import record_domain_deletions
+from popctl.filesystem import FilesystemOperator
 from popctl.utils.formatting import (
     console,
-    print_error,
+    format_size,
     print_info,
     print_success,
     print_warning,
@@ -31,13 +32,6 @@ app = typer.Typer(
     invoke_without_command=True,
     no_args_is_help=True,
 )
-
-
-class OutputFormat(str, Enum):
-    """Output format options for filesystem scan."""
-
-    TABLE = "table"
-    JSON = "json"
 
 
 @app.command()
@@ -77,39 +71,30 @@ def scan(
     ] = None,
 ) -> None:
     """Scan filesystem for orphaned directories and files."""
-    scanner = FilesystemScanner(include_files=files, include_etc=include_etc)
-
-    # Collect orphans only (ORPHAN status)
-    orphans: list[ScannedPath] = []
-    for path in scanner.scan():
-        if path.status == PathStatus.ORPHAN:
-            orphans.append(path)
+    orphans = collect_domain_orphans("filesystem", include_files=files, include_etc=include_etc)
 
     if not orphans:
         print_success("Filesystem is clean. No orphaned entries found.")
         return
-
-    # Sort by confidence descending (most confident orphans first)
-    orphans.sort(key=lambda p: p.confidence, reverse=True)
 
     # Apply limit
     display_orphans = orphans[:limit] if limit else orphans
 
     # Handle export
     if export_path is not None:
-        _export_results(orphans, export_path)  # Export ALL, not limited
+        export_orphan_results([p.to_dict() for p in orphans], export_path)
 
     # JSON output
     if output_format == OutputFormat.JSON:
-        _print_json(display_orphans)
+        console.print_json(json.dumps([p.to_dict() for p in display_orphans]))
         return
 
     # Table output (default)
-    _print_table(display_orphans)
+    print_orphan_table("Orphaned Filesystem Entries", display_orphans)
 
     # Summary
     total_size = sum(p.size_bytes or 0 for p in orphans)
-    size_str = _format_size(total_size)
+    size_str = format_size(total_size)
     console.print(f"\n[dim]Found {len(orphans)} orphaned entries ({size_str} total)[/dim]")
     if limit and len(display_orphans) < len(orphans):
         console.print(
@@ -153,7 +138,7 @@ def clean(
         return
 
     # Display planned deletions
-    _print_deletion_plan(paths_to_delete, remove_paths, dry_run)
+    print_deletion_plan(paths_to_delete, remove_paths, dry_run)
 
     # Confirm unless --yes or --dry-run
     if not dry_run and not yes:
@@ -170,14 +155,14 @@ def clean(
     results = operator.delete(paths_to_delete)
 
     # Display results
-    _print_deletion_results(results)
+    print_deletion_results(results)
 
     # Record to history (only actual deletions, not dry-run)
     if not dry_run:
         successful_paths = [r.path for r in results if r.success]
         if successful_paths:
             try:
-                record_fs_deletions(successful_paths, command="popctl fs clean")
+                record_domain_deletions("filesystem", successful_paths, command="popctl fs clean")
                 print_info("Deletions recorded to history.")
             except (OSError, RuntimeError) as e:
                 print_warning(f"Could not record to history: {e}")
@@ -185,138 +170,3 @@ def clean(
     # Exit with error if any deletion failed
     if any(not r.success for r in results):
         raise typer.Exit(code=1)
-
-
-# === Private helper functions ===
-
-
-def _print_table(orphans: list[ScannedPath]) -> None:
-    """Display orphans as a Rich table."""
-    table = Table(title="Orphaned Filesystem Entries", show_lines=False)
-    table.add_column("Path", style="bold")
-    table.add_column("Type", width=10)
-    table.add_column("Size", justify="right", width=10)
-    table.add_column("Confidence", justify="right", width=10)
-    table.add_column("Reason", style="dim")
-
-    for p in orphans:
-        size_str = _format_size(p.size_bytes) if p.size_bytes else "-"
-        conf_str = f"{p.confidence:.0%}"
-        reason = p.orphan_reason.value if p.orphan_reason else "-"
-        table.add_row(p.path, p.path_type.value, size_str, conf_str, reason)
-
-    console.print(table)
-
-
-def _print_json(orphans: list[ScannedPath]) -> None:
-    """Display orphans as JSON."""
-    data = [
-        {
-            "path": p.path,
-            "path_type": p.path_type.value,
-            "status": p.status.value,
-            "size_bytes": p.size_bytes,
-            "mtime": p.mtime,
-            "parent_target": p.parent_target,
-            "orphan_reason": p.orphan_reason.value if p.orphan_reason else None,
-            "confidence": p.confidence,
-            "description": p.description,
-        }
-        for p in orphans
-    ]
-    console.print_json(json.dumps(data))
-
-
-def _export_results(orphans: list[ScannedPath], export_path: Path) -> None:
-    """Export orphan results to a JSON file."""
-    export_path = export_path.resolve()
-    if export_path.is_dir():
-        print_error(f"Export path is a directory: {export_path}")
-        raise typer.Exit(code=1)
-
-    data = [
-        {
-            "path": p.path,
-            "path_type": p.path_type.value,
-            "status": p.status.value,
-            "size_bytes": p.size_bytes,
-            "mtime": p.mtime,
-            "parent_target": p.parent_target,
-            "orphan_reason": p.orphan_reason.value if p.orphan_reason else None,
-            "confidence": p.confidence,
-        }
-        for p in orphans
-    ]
-    try:
-        export_path.parent.mkdir(parents=True, exist_ok=True)
-        export_path.write_text(json.dumps(data, indent=2))
-        print_info(f"Results exported to {export_path}")
-    except OSError as e:
-        print_error(f"Failed to export: {e}")
-        raise typer.Exit(code=1) from e
-
-
-def _print_deletion_plan(
-    paths: list[str],
-    entries: dict[str, FilesystemEntry],
-    dry_run: bool,
-) -> None:
-    """Display planned deletions."""
-    label = "Planned Deletions (dry-run)" if dry_run else "Planned Deletions"
-    table = Table(title=label, show_lines=False)
-    table.add_column("Path", style="bold")
-    table.add_column("Reason", style="dim")
-
-    for path_str in paths:
-        entry = entries.get(path_str)
-        reason = "-"
-        if isinstance(entry, FilesystemEntry) and entry.reason:
-            reason = entry.reason
-        table.add_row(path_str, reason)
-
-    console.print(table)
-
-
-def _print_deletion_results(results: list[FilesystemActionResult]) -> None:
-    """Display deletion results."""
-    table = Table(title="Deletion Results", show_lines=False)
-    table.add_column("Path", style="bold")
-    table.add_column("Status", width=10)
-    table.add_column("Details", style="dim")
-
-    for r in results:
-        if r.dry_run:
-            status = "[info]dry-run[/]"
-            detail = "Would delete"
-        elif r.success:
-            status = "[success]deleted[/]"
-            detail = ""
-        else:
-            status = "[error]failed[/]"
-            detail = r.error or "Unknown error"
-        table.add_row(r.path, status, detail)
-
-    console.print(table)
-
-    success_count = sum(1 for r in results if r.success)
-    fail_count = sum(1 for r in results if not r.success and not r.dry_run)
-    dry_count = sum(1 for r in results if r.dry_run)
-
-    if dry_count:
-        print_info(f"Dry-run: {dry_count} path(s) would be deleted.")
-    elif fail_count:
-        print_warning(f"{success_count} succeeded, {fail_count} failed")
-    else:
-        print_success(f"All {success_count} path(s) processed successfully.")
-
-
-def _format_size(size_bytes: int | None) -> str:
-    """Format byte count as human-readable string."""
-    if size_bytes is None or size_bytes == 0:
-        return "0 B"
-    size = float(size_bytes)
-    for unit in ("B", "KB", "MB", "GB"):
-        if abs(size) < 1024:
-            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
-        size /= 1024
-    return f"{size:.1f} TB"

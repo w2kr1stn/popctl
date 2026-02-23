@@ -11,9 +11,9 @@ from typing import Annotated
 import typer
 from rich.table import Table
 
-from popctl.core.state import StateManager
+from popctl.core.state import get_history
 from popctl.models.history import HistoryEntry
-from popctl.utils.formatting import console, print_info
+from popctl.utils.formatting import console, print_error, print_info
 
 app = typer.Typer(
     name="history",
@@ -24,7 +24,6 @@ app = typer.Typer(
 
 @app.callback(invoke_without_command=True)
 def history(
-    ctx: typer.Context,
     limit: Annotated[
         int,
         typer.Option(
@@ -60,31 +59,15 @@ def history(
         popctl history --since 2026-01-01
         popctl history --json       # JSON output for scripting
     """
-    if ctx.invoked_subcommand is not None:
-        return
-
-    state = StateManager()
-    entries = state.get_history(limit=limit)
-
-    # Apply since filter if provided
+    # Validate since format before passing to core
     if since:
         try:
-            # Parse since date and make it timezone-aware (UTC) for comparison
-            since_parsed = datetime.fromisoformat(since)
-            # If no timezone info, treat as start of day UTC
-            if since_parsed.tzinfo is None:
-                since_date = since_parsed.strftime("%Y-%m-%d")
-                entries = [e for e in entries if e.timestamp[:10] >= since_date]
-            else:
-                # Both have timezone info, can compare directly
-                entries = [
-                    e
-                    for e in entries
-                    if datetime.fromisoformat(e.timestamp.replace("Z", "+00:00")) >= since_parsed
-                ]
+            datetime.fromisoformat(since)
         except ValueError:
-            typer.echo(f"Invalid date format: {since}. Use YYYY-MM-DD.", err=True)
+            print_error(f"Invalid date format: {since}. Use YYYY-MM-DD.")
             raise typer.Exit(code=1) from None
+
+    entries = get_history(limit=limit, since=since)
 
     if not entries:
         print_info("No history entries found.")
@@ -120,28 +103,15 @@ def _print_table(entries: list[HistoryEntry]) -> None:
 
         table.add_row(
             entry.id[:8],
-            _format_timestamp(entry.timestamp),
+            datetime.fromisoformat(entry.timestamp.replace("Z", "+00:00")).strftime(
+                "%Y-%m-%d %H:%M"
+            ),
             entry.action_type.value,
             pkg_names,
             "[green]Yes[/]" if entry.reversible else "[red]No[/]",
         )
 
     console.print(table)
-
-
-def _format_timestamp(iso_timestamp: str) -> str:
-    """Format ISO timestamp for display.
-
-    Converts an ISO 8601 timestamp to a human-readable format.
-
-    Args:
-        iso_timestamp: ISO format timestamp string.
-
-    Returns:
-        Formatted timestamp string (YYYY-MM-DD HH:MM).
-    """
-    dt = datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00"))
-    return dt.strftime("%Y-%m-%d %H:%M")
 
 
 def _print_json(entries: list[HistoryEntry]) -> None:
@@ -154,4 +124,4 @@ def _print_json(entries: list[HistoryEntry]) -> None:
         entries: List of history entries to output.
     """
     output = [entry.to_dict() for entry in entries]
-    console.print(json.dumps(output, indent=2))
+    console.print_json(json.dumps(output, indent=2))

@@ -3,8 +3,9 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from popctl.configs.models import ConfigOrphanReason, ConfigStatus, ConfigType
 from popctl.configs.scanner import ConfigScanner
+from popctl.domain.models import OrphanReason, OrphanStatus, PathType
+from popctl.domain.ownership import classify_path_type
 from popctl.utils.shell import CommandResult
 
 
@@ -75,7 +76,7 @@ def _route_command_no_apps(args: list[str], **_kwargs: object) -> CommandResult:
 class TestScanEmptyConfigDir:
     """Tests for scanning empty or missing config directories."""
 
-    @patch("popctl.configs.scanner.run_command", side_effect=_route_command_no_apps)
+    @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
     def test_scan_empty_config_dir(
         self,
         _mock_cmd: object,
@@ -91,7 +92,7 @@ class TestScanEmptyConfigDir:
 
         assert results == []
 
-    @patch("popctl.configs.scanner.run_command", side_effect=_route_command_no_apps)
+    @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
     def test_scan_handles_missing_config_dir(
         self,
         _mock_cmd: object,
@@ -109,8 +110,8 @@ class TestScanEmptyConfigDir:
 class TestScanFindsOrphans:
     """Tests for orphan detection in ~/.config/."""
 
-    @patch("popctl.configs.scanner.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_finds_orphans(
         self,
         _mock_protected: object,
@@ -128,19 +129,19 @@ class TestScanFindsOrphans:
             results = list(scanner.scan())
 
         assert len(results) == 1
-        assert results[0].status == ConfigStatus.ORPHAN
+        assert results[0].status == OrphanStatus.ORPHAN
         assert results[0].path == str(orphan_dir)
-        assert results[0].config_type == ConfigType.DIRECTORY
+        assert results[0].path_type == PathType.DIRECTORY
 
-    @patch("popctl.configs.scanner.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_orphan_has_correct_fields(
         self,
         _mock_protected: object,
         _mock_cmd: object,
         tmp_path: Path,
     ) -> None:
-        """Orphaned ScannedConfig has all expected fields populated."""
+        """Orphaned ScannedEntry has all expected fields populated."""
         config_dir = tmp_path / ".config"
         config_dir.mkdir()
         orphan = config_dir / "stale-app"
@@ -153,17 +154,16 @@ class TestScanFindsOrphans:
 
         assert len(results) == 1
         result = results[0]
-        assert result.orphan_reason == ConfigOrphanReason.NO_PACKAGE_MATCH
+        assert result.orphan_reason == OrphanReason.NO_PACKAGE_MATCH
         assert result.confidence > 0.0
         assert result.mtime is not None
         assert result.size_bytes is not None
-        assert result.description is None
 
 
 class TestScanSkipsOwnedPackages:
     """Tests for dpkg ownership detection."""
 
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_skips_owned_packages(
         self,
         _mock_protected: object,
@@ -181,7 +181,7 @@ class TestScanSkipsOwnedPackages:
             return _no_apps()
 
         with (
-            patch("popctl.configs.scanner.run_command", side_effect=route),
+            patch("popctl.domain.ownership.run_command", side_effect=route),
             patch("popctl.configs.scanner.Path.home", return_value=tmp_path),
         ):
             scanner = ConfigScanner()
@@ -193,7 +193,7 @@ class TestScanSkipsOwnedPackages:
 class TestScanSkipsProtectedConfigs:
     """Tests for protected config handling."""
 
-    @patch("popctl.configs.scanner.run_command", side_effect=_route_command_no_apps)
+    @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
     def test_scan_skips_protected_configs(
         self,
         _mock_cmd: object,
@@ -207,11 +207,11 @@ class TestScanSkipsProtectedConfigs:
         orphan_dir = config_dir / "unknown-app"
         orphan_dir.mkdir()
 
-        def mock_protected(path: str) -> bool:
+        def mock_protected(path: str, _domain: str = "configs") -> bool:
             return "popctl" in path
 
         with (
-            patch("popctl.configs.scanner.is_protected_config", side_effect=mock_protected),
+            patch("popctl.configs.scanner.is_protected", side_effect=mock_protected),
             patch("popctl.configs.scanner.Path.home", return_value=tmp_path),
         ):
             scanner = ConfigScanner()
@@ -225,8 +225,8 @@ class TestScanSkipsProtectedConfigs:
 class TestScanConfidence:
     """Tests for confidence score assignment."""
 
-    @patch("popctl.configs.scanner.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_confidence_directory(
         self,
         _mock_protected: object,
@@ -245,10 +245,10 @@ class TestScanConfidence:
 
         assert len(results) == 1
         assert results[0].confidence == 0.70
-        assert results[0].config_type == ConfigType.DIRECTORY
+        assert results[0].path_type == PathType.DIRECTORY
 
-    @patch("popctl.configs.scanner.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_confidence_dotfile(
         self,
         _mock_protected: object,
@@ -268,14 +268,14 @@ class TestScanConfidence:
         dotfile_results = [r for r in results if r.path == str(dotfile)]
         assert len(dotfile_results) == 1
         assert dotfile_results[0].confidence == 0.60
-        assert dotfile_results[0].config_type == ConfigType.FILE
+        assert dotfile_results[0].path_type == PathType.FILE
 
 
 class TestScanDotfiles:
     """Tests for shell dotfile scanning."""
 
-    @patch("popctl.configs.scanner.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_dotfiles(
         self,
         _mock_protected: object,
@@ -297,8 +297,8 @@ class TestScanDotfiles:
         assert str(tmp_path / ".curlrc") in paths
         assert str(tmp_path / ".tmux.conf") in paths
 
-    @patch("popctl.configs.scanner.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_dotfiles_nonexistent_skipped(
         self,
         _mock_protected: object,
@@ -317,8 +317,8 @@ class TestScanDotfiles:
 class TestScanHandlesPermissionError:
     """Tests for permission error handling."""
 
-    @patch("popctl.configs.scanner.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_handles_permission_error(
         self,
         _mock_protected: object,
@@ -340,8 +340,8 @@ class TestScanHandlesPermissionError:
         finally:
             config_dir.chmod(0o755)
 
-    @patch("popctl.configs.scanner.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_handles_permission_error_on_entry(
         self,
         _mock_protected: object,
@@ -371,110 +371,54 @@ class TestScanHandlesPermissionError:
             problem_file.chmod(0o644)
 
 
-class TestDpkgOwnsPath:
-    """Tests for _dpkg_owns_path method."""
+class TestNormalizedNameMatch:
+    """Tests for config-specific normalized name matching."""
 
-    def test_dpkg_owns_path_true(self, tmp_path: Path) -> None:
-        """dpkg -S returning 0 means the path is owned."""
-        target = tmp_path / "vim"
-        target.mkdir()
-
-        with patch("popctl.configs.scanner.run_command", return_value=_dpkg_found()):
-            scanner = ConfigScanner()
-            assert scanner._dpkg_owns_path(target) is True
-
-    def test_dpkg_owns_path_false(self, tmp_path: Path) -> None:
-        """dpkg -S returning non-zero means the path is not owned."""
-        target = tmp_path / "unknown"
-        target.mkdir()
-
-        with patch("popctl.configs.scanner.run_command", return_value=_dpkg_not_found()):
-            scanner = ConfigScanner()
-            assert scanner._dpkg_owns_path(target) is False
-
-    def test_dpkg_owns_path_caching(self, tmp_path: Path) -> None:
-        """dpkg -S results are cached per path."""
-        target = tmp_path / "app1"
-        target.mkdir()
-
-        call_count = 0
-
-        def counting_cmd(args: list[str], **_kw: object) -> CommandResult:
-            nonlocal call_count
-            if args[0] == "dpkg":
-                call_count += 1
-                return _dpkg_not_found()
-            return _no_apps()
-
-        with patch("popctl.configs.scanner.run_command", side_effect=counting_cmd):
-            scanner = ConfigScanner()
-            scanner._dpkg_owns_path(target)
-            scanner._dpkg_owns_path(target)
-
-        assert call_count == 1
-
-    def test_dpkg_owns_path_handles_exception(self, tmp_path: Path) -> None:
-        """FileNotFoundError when dpkg is missing returns False."""
-        target = tmp_path / "app"
-        target.mkdir()
-
-        with patch(
-            "popctl.configs.scanner.run_command",
-            side_effect=FileNotFoundError("dpkg not found"),
-        ):
-            scanner = ConfigScanner()
-            assert scanner._dpkg_owns_path(target) is False
-
-
-class TestAppNameMatches:
-    """Tests for app name matching (dpkg/flatpak/snap)."""
-
-    def test_app_name_matches_flatpak(self) -> None:
-        """Flatpak reverse-DNS component matching works."""
+    @staticmethod
+    def _setup_scanner(packages: set[str], apps: set[str]) -> ConfigScanner:
+        """Create a ConfigScanner with pre-populated caches."""
         scanner = ConfigScanner()
-        scanner._packages_cache = set()
-        scanner._apps_cache = {"org.mozilla.firefox", "org.gnome.Calculator"}
+        scanner._packages_cache = packages
+        scanner._normalized_packages = {
+            p.lower().replace(".", "").replace("-", "") for p in packages
+        }
+        scanner._apps_cache = apps
+        scanner._normalized_apps = {a.lower().replace(".", "").replace("-", "") for a in apps}
+        return scanner
 
-        assert scanner._app_name_matches("firefox") is True
-        assert scanner._app_name_matches("Calculator") is True
-        assert scanner._app_name_matches("unknown-app") is False
+    def test_normalized_match_dpkg_package(self) -> None:
+        """Normalized dpkg package name matching strips dots and dashes."""
+        scanner = self._setup_scanner({"libreoffice-common"}, set())
 
-    def test_app_name_matches_snap(self) -> None:
-        """Snap exact name matching works."""
-        scanner = ConfigScanner()
-        scanner._packages_cache = set()
-        scanner._apps_cache = {"spotify", "discord"}
+        assert scanner._normalized_name_match("libreofficecommon") is True
+        assert scanner._normalized_name_match("LibreOffice-Common") is True
 
-        assert scanner._app_name_matches("spotify") is True
-        assert scanner._app_name_matches("Spotify") is True  # Case-insensitive
-        assert scanner._app_name_matches("unknown") is False
+    def test_normalized_match_app(self) -> None:
+        """Normalized app name matching works."""
+        scanner = self._setup_scanner(set(), {"spotify"})
 
-    def test_app_name_matches_dpkg_package(self) -> None:
-        """dpkg package name matching works with normalization."""
-        scanner = ConfigScanner()
-        scanner._packages_cache = {"vlc", "libreoffice-common"}
-        scanner._apps_cache = set()
+        assert scanner._normalized_name_match("spotify") is True
+        assert scanner._normalized_name_match("Spotify") is True
 
-        assert scanner._app_name_matches("vlc") is True
-        assert scanner._app_name_matches("VLC") is True
-        assert scanner._app_name_matches("unknown") is False
+    def test_normalized_no_match(self) -> None:
+        """No match when names differ after normalization."""
+        scanner = self._setup_scanner({"vim"}, {"org.mozilla.firefox"})
 
-    def test_app_name_matches_case_insensitive(self) -> None:
-        """App name matching is case-insensitive."""
-        scanner = ConfigScanner()
-        scanner._packages_cache = set()
-        scanner._apps_cache = {"org.mozilla.Firefox"}
+        assert scanner._normalized_name_match("unknown") is False
 
-        assert scanner._app_name_matches("firefox") is True
-        assert scanner._app_name_matches("Firefox") is True
-        assert scanner._app_name_matches("FIREFOX") is True
+    def test_normalized_match_case_insensitive(self) -> None:
+        """Normalized matching is case-insensitive."""
+        scanner = self._setup_scanner({"VLC"}, set())
+
+        assert scanner._normalized_name_match("vlc") is True
+        assert scanner._normalized_name_match("VLC") is True
 
 
 class TestDeadSymlinkDetection:
     """Tests for dead symlink detection."""
 
-    @patch("popctl.configs.scanner.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_dead_symlink_detection(
         self,
         _mock_protected: object,
@@ -492,12 +436,12 @@ class TestDeadSymlinkDetection:
             results = list(scanner.scan())
 
         assert len(results) == 1
-        assert results[0].config_type == ConfigType.FILE
-        assert results[0].orphan_reason == ConfigOrphanReason.DEAD_LINK
-        assert results[0].status == ConfigStatus.ORPHAN
+        assert results[0].path_type == PathType.DEAD_SYMLINK
+        assert results[0].orphan_reason == OrphanReason.DEAD_LINK
+        assert results[0].status == OrphanStatus.ORPHAN
 
-    @patch("popctl.configs.scanner.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_dead_symlink_dotfile(
         self,
         _mock_protected: object,
@@ -514,13 +458,13 @@ class TestDeadSymlinkDetection:
 
         dotfile_results = [r for r in results if r.path == str(dead_link)]
         assert len(dotfile_results) == 1
-        assert dotfile_results[0].orphan_reason == ConfigOrphanReason.DEAD_LINK
+        assert dotfile_results[0].orphan_reason == OrphanReason.DEAD_LINK
 
 
 class TestCachesResetPerScan:
     """Tests for cache reset behavior between scan() calls."""
 
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_caches_reset_per_scan(
         self,
         _mock_protected: object,
@@ -541,7 +485,7 @@ class TestCachesResetPerScan:
             return _no_apps()
 
         with (
-            patch("popctl.configs.scanner.run_command", side_effect=counting_route),
+            patch("popctl.domain.ownership.run_command", side_effect=counting_route),
             patch("popctl.configs.scanner.Path.home", return_value=tmp_path),
         ):
             scanner = ConfigScanner()
@@ -559,221 +503,35 @@ class TestCachesResetPerScan:
         assert first_count > 0
 
 
-class TestGetInstalledPackages:
-    """Tests for installed package querying."""
+class TestGetPathType:
+    """Tests for path type detection via shared classify_path_type."""
 
-    def test_get_installed_packages_caching(self) -> None:
-        """_get_installed_packages only calls dpkg-query once (cached)."""
-        call_count = 0
-
-        def counting_route(args: list[str], **_kw: object) -> CommandResult:
-            nonlocal call_count
-            if args[0] == "dpkg-query":
-                call_count += 1
-                return CommandResult(
-                    stdout="vim\ncurl\n",
-                    stderr="",
-                    returncode=0,
-                )
-            return _no_apps()
-
-        with patch("popctl.configs.scanner.run_command", side_effect=counting_route):
-            scanner = ConfigScanner()
-            result1 = scanner._get_installed_packages()
-            result2 = scanner._get_installed_packages()
-
-        assert call_count == 1
-        assert result1 is result2
-        assert "vim" in result1
-        assert "curl" in result1
-
-    def test_get_installed_packages_handles_failure(self) -> None:
-        """_get_installed_packages returns empty set on failure."""
-
-        def fail(_args: list[str], **_kw: object) -> CommandResult:
-            return CommandResult(stdout="", stderr="error", returncode=1)
-
-        with patch("popctl.configs.scanner.run_command", side_effect=fail):
-            scanner = ConfigScanner()
-            result = scanner._get_installed_packages()
-
-        assert result == set()
-
-    def test_get_installed_packages_handles_exception(self) -> None:
-        """_get_installed_packages returns empty set on FileNotFoundError."""
-        with patch(
-            "popctl.configs.scanner.run_command",
-            side_effect=FileNotFoundError("dpkg-query not found"),
-        ):
-            scanner = ConfigScanner()
-            result = scanner._get_installed_packages()
-
-        assert result == set()
-
-
-class TestGetInstalledApps:
-    """Tests for installed app querying (flatpak + snap)."""
-
-    def test_get_installed_apps_flatpak_and_snap(self) -> None:
-        """_get_installed_apps combines flatpak and snap results."""
-        with patch("popctl.configs.scanner.run_command", side_effect=_route_command):
-            scanner = ConfigScanner()
-            apps = scanner._get_installed_apps()
-
-        assert "org.mozilla.firefox" in apps
-        assert "org.gnome.Calculator" in apps
-        assert "spotify" in apps
-
-    def test_get_installed_apps_caching(self) -> None:
-        """_get_installed_apps only queries once (cached)."""
-        call_count = 0
-
-        def counting_route(args: list[str], **_kw: object) -> CommandResult:
-            nonlocal call_count
-            call_count += 1
-            if args[0] == "flatpak":
-                return _flatpak_apps()
-            if args[0] == "snap":
-                return _snap_apps()
-            return _no_apps()
-
-        with patch("popctl.configs.scanner.run_command", side_effect=counting_route):
-            scanner = ConfigScanner()
-            result1 = scanner._get_installed_apps()
-            first_count = call_count
-            result2 = scanner._get_installed_apps()
-
-        assert result1 is result2
-        assert call_count == first_count
-
-    def test_get_installed_apps_handles_missing_flatpak(self) -> None:
-        """Missing flatpak does not prevent snap apps from being returned."""
-
-        def route(args: list[str], **_kw: object) -> CommandResult:
-            if args[0] == "flatpak":
-                raise FileNotFoundError("flatpak not found")
-            if args[0] == "snap":
-                return _snap_apps()
-            return _no_apps()
-
-        with patch("popctl.configs.scanner.run_command", side_effect=route):
-            scanner = ConfigScanner()
-            apps = scanner._get_installed_apps()
-
-        assert "spotify" in apps
-
-    def test_get_installed_apps_handles_missing_snap(self) -> None:
-        """Missing snap does not prevent flatpak apps from being returned."""
-
-        def route(args: list[str], **_kw: object) -> CommandResult:
-            if args[0] == "flatpak":
-                return _flatpak_apps()
-            if args[0] == "snap":
-                raise FileNotFoundError("snap not found")
-            return _no_apps()
-
-        with patch("popctl.configs.scanner.run_command", side_effect=route):
-            scanner = ConfigScanner()
-            apps = scanner._get_installed_apps()
-
-        assert "org.mozilla.firefox" in apps
-
-    def test_get_installed_apps_both_unavailable(self) -> None:
-        """Both flatpak and snap unavailable returns empty set."""
-        with patch(
-            "popctl.configs.scanner.run_command",
-            side_effect=FileNotFoundError("not found"),
-        ):
-            scanner = ConfigScanner()
-            apps = scanner._get_installed_apps()
-
-        assert apps == set()
-
-
-class TestGetConfigType:
-    """Tests for config type detection."""
-
-    def test_get_config_type_directory(self, tmp_path: Path) -> None:
+    def test_get_path_type_directory(self, tmp_path: Path) -> None:
         """Regular directories are classified as DIRECTORY."""
         d = tmp_path / "mydir"
         d.mkdir()
-        scanner = ConfigScanner()
-        assert scanner._get_config_type(d) == ConfigType.DIRECTORY
+        assert classify_path_type(d) == PathType.DIRECTORY
 
-    def test_get_config_type_file(self, tmp_path: Path) -> None:
+    def test_get_path_type_file(self, tmp_path: Path) -> None:
         """Regular files are classified as FILE."""
         f = tmp_path / "myfile.conf"
         f.write_text("content")
-        scanner = ConfigScanner()
-        assert scanner._get_config_type(f) == ConfigType.FILE
+        assert classify_path_type(f) == PathType.FILE
 
-    def test_get_config_type_symlink_is_file(self, tmp_path: Path) -> None:
-        """Symlinks (even to directories) are classified as FILE."""
+    def test_get_path_type_symlink(self, tmp_path: Path) -> None:
+        """Live symlinks are classified as SYMLINK."""
         target = tmp_path / "target"
         target.mkdir()
         link = tmp_path / "link"
         link.symlink_to(target)
-        scanner = ConfigScanner()
-        assert scanner._get_config_type(link) == ConfigType.FILE
-
-
-class TestGetSize:
-    """Tests for size calculation."""
-
-    def test_get_size_file(self, tmp_path: Path) -> None:
-        """File size is returned correctly."""
-        f = tmp_path / "file.txt"
-        f.write_text("hello world")
-        scanner = ConfigScanner()
-        size = scanner._get_size(f)
-        assert size is not None
-        assert size > 0
-
-    def test_get_size_directory(self, tmp_path: Path) -> None:
-        """Directory size sums all files recursively."""
-        d = tmp_path / "mydir"
-        d.mkdir()
-        (d / "a.txt").write_text("aaa")
-        (d / "b.txt").write_text("bbbb")
-        scanner = ConfigScanner()
-        size = scanner._get_size(d)
-        assert size is not None
-        assert size == 7  # 3 + 4 bytes
-
-    def test_get_size_empty_directory(self, tmp_path: Path) -> None:
-        """Empty directory returns 0."""
-        d = tmp_path / "empty"
-        d.mkdir()
-        scanner = ConfigScanner()
-        size = scanner._get_size(d)
-        assert size == 0
-
-
-class TestGetMtime:
-    """Tests for modification time retrieval."""
-
-    def test_get_mtime_returns_iso_format(self, tmp_path: Path) -> None:
-        """Mtime is returned as ISO 8601 string."""
-        f = tmp_path / "file.txt"
-        f.write_text("content")
-        scanner = ConfigScanner()
-        mtime = scanner._get_mtime(f)
-        assert mtime is not None
-        # ISO 8601 format should contain 'T' and timezone info
-        assert "T" in mtime
-
-    def test_get_mtime_nonexistent_returns_none(self, tmp_path: Path) -> None:
-        """Nonexistent path returns None for mtime."""
-        scanner = ConfigScanner()
-        mtime = scanner._get_mtime(tmp_path / "nonexistent")
-        assert mtime is None
+        assert classify_path_type(link) == PathType.SYMLINK
 
 
 class TestScanIntegration:
     """Integration-level tests for the full config scan pipeline."""
 
-    @patch("popctl.configs.scanner.run_command", side_effect=_route_command)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.domain.ownership.run_command", side_effect=_route_command)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_skips_owned_by_app(
         self,
         _mock_protected: object,
@@ -798,8 +556,8 @@ class TestScanIntegration:
         assert str(firefox_dir) not in paths
         assert str(unknown_dir) in paths
 
-    @patch("popctl.configs.scanner.run_command", side_effect=_route_command_no_apps)
-    @patch("popctl.configs.scanner.is_protected_config", return_value=False)
+    @patch("popctl.domain.ownership.run_command", side_effect=_route_command_no_apps)
+    @patch("popctl.configs.scanner.is_protected", return_value=False)
     def test_scan_multiple_orphans(
         self,
         _mock_protected: object,

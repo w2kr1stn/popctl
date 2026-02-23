@@ -27,10 +27,7 @@ class SnapScanner(Scanner):
     all remaining snaps are classified as MANUAL.
     """
 
-    @property
-    def source(self) -> PackageSource:
-        """Return SNAP as the package source."""
-        return PackageSource.SNAP
+    source = PackageSource.SNAP
 
     def is_available(self) -> bool:
         """Check if snap CLI is available."""

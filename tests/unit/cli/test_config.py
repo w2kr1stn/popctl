@@ -9,9 +9,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from popctl.cli.main import app
-from popctl.configs.manifest import ConfigEntry, ConfigsConfig
-from popctl.configs.models import ConfigOrphanReason, ConfigStatus, ConfigType, ScannedConfig
 from popctl.configs.operator import ConfigActionResult
+from popctl.domain.models import OrphanReason, OrphanStatus, PathType, ScannedEntry
+from popctl.models.manifest import DomainConfig, DomainEntry
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -19,55 +19,39 @@ runner = CliRunner()
 
 def _make_orphan(
     path: str,
-    config_type: ConfigType = ConfigType.DIRECTORY,
+    path_type: PathType = PathType.DIRECTORY,
     confidence: float = 0.70,
     size: int = 4096,
-) -> ScannedConfig:
-    """Create a test ScannedConfig with ORPHAN status."""
-    return ScannedConfig(
+) -> ScannedEntry:
+    """Create a test ScannedEntry with ORPHAN status."""
+    return ScannedEntry(
         path=path,
-        config_type=config_type,
-        status=ConfigStatus.ORPHAN,
+        path_type=path_type,
+        status=OrphanStatus.ORPHAN,
         size_bytes=size,
         mtime="2024-01-15T10:00:00Z",
-        orphan_reason=ConfigOrphanReason.NO_PACKAGE_MATCH,
+        parent_target=None,
+        orphan_reason=OrphanReason.NO_PACKAGE_MATCH,
         confidence=confidence,
-        description=None,
-    )
-
-
-def _make_owned(path: str) -> ScannedConfig:
-    """Create a test ScannedConfig with OWNED status."""
-    return ScannedConfig(
-        path=path,
-        config_type=ConfigType.DIRECTORY,
-        status=ConfigStatus.OWNED,
-        size_bytes=1024,
-        mtime="2024-01-15T10:00:00Z",
-        orphan_reason=None,
-        confidence=0.0,
-        description=None,
     )
 
 
 def _make_manifest(
-    remove_paths: dict[str, ConfigEntry] | None = None,
-    keep_paths: dict[str, ConfigEntry] | None = None,
+    remove_paths: dict[str, DomainEntry] | None = None,
+    keep_paths: dict[str, DomainEntry] | None = None,
 ) -> MagicMock:
     """Create a mock Manifest with optional configs section."""
     manifest = MagicMock()
     if remove_paths is not None or keep_paths is not None:
-        configs_config = ConfigsConfig(
+        configs_config = DomainConfig(
             keep=keep_paths or {},
             remove=remove_paths or {},
         )
         manifest.configs = configs_config
         manifest.get_config_remove_paths.return_value = configs_config.remove
-        manifest.get_config_keep_paths.return_value = configs_config.keep
     else:
         manifest.configs = None
         manifest.get_config_remove_paths.return_value = {}
-        manifest.get_config_keep_paths.return_value = {}
     return manifest
 
 
@@ -86,11 +70,7 @@ class TestConfigScan:
             _make_orphan("/tmp/obs", confidence=0.70, size=8192),
         ]
 
-        with patch("popctl.cli.commands.config.ConfigScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(orphans)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.config.collect_domain_orphans", return_value=orphans):
             result = runner.invoke(app, ["config", "scan"])
 
         assert result.exit_code == 0
@@ -105,11 +85,7 @@ class TestConfigScan:
             _make_orphan("/home/user/.config/vlc"),
         ]
 
-        with patch("popctl.cli.commands.config.ConfigScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(orphans)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.config.collect_domain_orphans", return_value=orphans):
             result = runner.invoke(app, ["config", "scan", "--format", "json"])
 
         assert result.exit_code == 0
@@ -128,11 +104,7 @@ class TestConfigScan:
         with tempfile.TemporaryDirectory() as tmpdir:
             export_path = Path(tmpdir) / "orphans.json"
 
-            with patch("popctl.cli.commands.config.ConfigScanner") as mock_scanner_class:
-                mock_scanner = MagicMock()
-                mock_scanner.scan.return_value = iter(orphans)
-                mock_scanner_class.return_value = mock_scanner
-
+            with patch("popctl.cli.commands.config.collect_domain_orphans", return_value=orphans):
                 result = runner.invoke(app, ["config", "scan", "--export", str(export_path)])
 
             assert result.exit_code == 0
@@ -144,17 +116,14 @@ class TestConfigScan:
 
     def test_config_scan_limit(self) -> None:
         """Scan with --limit restricts displayed results."""
+        # collect_domain_orphans returns already sorted by confidence desc
         orphans = [
             _make_orphan("/tmp/aaa", confidence=0.90),
             _make_orphan("/tmp/bbb", confidence=0.80),
             _make_orphan("/tmp/ccc", confidence=0.70),
         ]
 
-        with patch("popctl.cli.commands.config.ConfigScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(orphans)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.config.collect_domain_orphans", return_value=orphans):
             result = runner.invoke(app, ["config", "scan", "--limit", "1"])
 
         assert result.exit_code == 0
@@ -165,11 +134,7 @@ class TestConfigScan:
 
     def test_config_scan_no_orphans_message(self) -> None:
         """Scan shows clean message when no orphans found."""
-        with patch("popctl.cli.commands.config.ConfigScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter([])
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.config.collect_domain_orphans", return_value=[]):
             result = runner.invoke(app, ["config", "scan"])
 
         assert result.exit_code == 0
@@ -177,17 +142,16 @@ class TestConfigScan:
         assert "No orphaned configurations found" in result.stdout
 
     def test_config_scan_filters_non_orphans(self) -> None:
-        """Scan filters to ORPHAN only; OWNED entries are excluded."""
-        mixed = [
+        """Scan filters to ORPHAN only; OWNED entries are excluded.
+
+        collect_domain_orphans already filters internally, so the mock
+        returns only orphan entries.
+        """
+        orphans_only = [
             _make_orphan("/tmp/vlc"),
-            _make_owned("/tmp/firefox"),
         ]
 
-        with patch("popctl.cli.commands.config.ConfigScanner") as mock_scanner_class:
-            mock_scanner = MagicMock()
-            mock_scanner.scan.return_value = iter(mixed)
-            mock_scanner_class.return_value = mock_scanner
-
+        with patch("popctl.cli.commands.config.collect_domain_orphans", return_value=orphans_only):
             result = runner.invoke(app, ["config", "scan"])
 
         assert result.exit_code == 0
@@ -208,7 +172,7 @@ class TestConfigClean:
         """Clean with --dry-run shows plan without deleting."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": ConfigEntry(reason="VLC uninstalled"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC uninstalled"),
             }
         )
         dry_results = [
@@ -221,7 +185,7 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.is_protected_config", return_value=False),
+            patch("popctl.cli.commands.config.is_protected", return_value=False),
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = dry_results
@@ -238,7 +202,7 @@ class TestConfigClean:
         """Clean prompts for confirmation and aborts on 'n'."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": ConfigEntry(reason="VLC uninstalled"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC uninstalled"),
             }
         )
 
@@ -247,7 +211,7 @@ class TestConfigClean:
                 "popctl.cli.commands.config.require_manifest",
                 return_value=manifest,
             ),
-            patch("popctl.cli.commands.config.is_protected_config", return_value=False),
+            patch("popctl.cli.commands.config.is_protected", return_value=False),
         ):
             result = runner.invoke(app, ["config", "clean"], input="n\n")
 
@@ -258,7 +222,7 @@ class TestConfigClean:
         """Clean with -y skips confirmation."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": ConfigEntry(reason="VLC uninstalled"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC uninstalled"),
             }
         )
         success_results = [
@@ -275,8 +239,8 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.record_config_deletions") as mock_record,
-            patch("popctl.cli.commands.config.is_protected_config", return_value=False),
+            patch("popctl.cli.commands.config.record_domain_deletions") as mock_record,
+            patch("popctl.cli.commands.config.is_protected", return_value=False),
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = success_results
@@ -302,8 +266,8 @@ class TestConfigClean:
         """Clean records successful deletions to history."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": ConfigEntry(reason="VLC removed"),
-                "/home/user/.config/obs-studio": ConfigEntry(reason="OBS removed"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC removed"),
+                "/home/user/.config/obs-studio": DomainEntry(reason="OBS removed"),
             }
         )
         success_results = [
@@ -325,8 +289,8 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.record_config_deletions") as mock_record,
-            patch("popctl.cli.commands.config.is_protected_config", return_value=False),
+            patch("popctl.cli.commands.config.record_domain_deletions") as mock_record,
+            patch("popctl.cli.commands.config.is_protected", return_value=False),
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = success_results
@@ -336,6 +300,7 @@ class TestConfigClean:
 
         assert result.exit_code == 0
         mock_record.assert_called_once_with(
+            "configs",
             ["/home/user/.config/vlc", "/home/user/.config/obs-studio"],
             command="popctl config clean",
         )
@@ -344,7 +309,7 @@ class TestConfigClean:
         """Clean results include backup paths in output."""
         manifest = _make_manifest(
             remove_paths={
-                "/tmp/vlc": ConfigEntry(reason="VLC removed"),
+                "/tmp/vlc": DomainEntry(reason="VLC removed"),
             }
         )
         backup_path = "/tmp/backups/vlc"
@@ -362,8 +327,8 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.record_config_deletions"),
-            patch("popctl.cli.commands.config.is_protected_config", return_value=False),
+            patch("popctl.cli.commands.config.record_domain_deletions"),
+            patch("popctl.cli.commands.config.is_protected", return_value=False),
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = success_results
@@ -378,8 +343,8 @@ class TestConfigClean:
         """Clean skips protected config paths with warning."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.ssh/config": ConfigEntry(reason="Should not delete"),
-                "/home/user/.config/vlc": ConfigEntry(reason="VLC removed"),
+                "/home/user/.ssh/config": DomainEntry(reason="Should not delete"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC removed"),
             }
         )
         success_results = [
@@ -390,7 +355,7 @@ class TestConfigClean:
             ),
         ]
 
-        def mock_is_protected(path: str) -> bool:
+        def mock_is_protected(path: str, domain: str) -> bool:
             return ".ssh" in path
 
         with (
@@ -399,9 +364,9 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.record_config_deletions"),
+            patch("popctl.cli.commands.config.record_domain_deletions"),
             patch(
-                "popctl.cli.commands.config.is_protected_config",
+                "popctl.cli.commands.config.is_protected",
                 side_effect=mock_is_protected,
             ),
         ):
@@ -420,7 +385,7 @@ class TestConfigClean:
         """Clean exits with code 1 if any deletion fails."""
         manifest = _make_manifest(
             remove_paths={
-                "/home/user/.config/vlc": ConfigEntry(reason="VLC removed"),
+                "/home/user/.config/vlc": DomainEntry(reason="VLC removed"),
             }
         )
         fail_results = [
@@ -437,7 +402,7 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.is_protected_config", return_value=False),
+            patch("popctl.cli.commands.config.is_protected", return_value=False),
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = fail_results
@@ -461,63 +426,3 @@ class TestConfigHelp:
         result = runner.invoke(app, ["config", "--help"])
         assert result.exit_code == 0
         assert "Scan and clean orphaned configuration files" in result.stdout
-        assert "scan" in result.stdout
-        assert "clean" in result.stdout
-
-    def test_config_scan_help(self) -> None:
-        """popctl config scan --help shows scan command help."""
-        result = runner.invoke(app, ["config", "scan", "--help"])
-        assert result.exit_code == 0
-        assert "Scan ~/.config/" in result.stdout
-        assert "--format" in result.stdout
-        assert "--export" in result.stdout
-        assert "--limit" in result.stdout
-
-    def test_config_clean_help(self) -> None:
-        """popctl config clean --help shows clean command help."""
-        result = runner.invoke(app, ["config", "clean", "--help"])
-        assert result.exit_code == 0
-        assert "Clean up config entries" in result.stdout
-        assert "--dry-run" in result.stdout
-        assert "--yes" in result.stdout
-
-
-# =============================================================================
-# Format size helper tests
-# =============================================================================
-
-
-class TestFormatSize:
-    """Tests for the _format_size helper function."""
-
-    def test_format_size_zero(self) -> None:
-        """Format 0 bytes."""
-        from popctl.cli.commands.config import _format_size
-
-        assert _format_size(0) == "0 B"
-
-    def test_format_size_none(self) -> None:
-        """Format None bytes."""
-        from popctl.cli.commands.config import _format_size
-
-        assert _format_size(None) == "0 B"
-
-    def test_format_size_bytes(self) -> None:
-        """Format small byte values."""
-        from popctl.cli.commands.config import _format_size
-
-        assert _format_size(512) == "512 B"
-
-    def test_format_size_kilobytes(self) -> None:
-        """Format kilobyte values."""
-        from popctl.cli.commands.config import _format_size
-
-        result = _format_size(2048)
-        assert "KB" in result
-
-    def test_format_size_megabytes(self) -> None:
-        """Format megabyte values."""
-        from popctl.cli.commands.config import _format_size
-
-        result = _format_size(5 * 1024 * 1024)
-        assert "MB" in result

@@ -5,17 +5,14 @@ Tests operator factory, action execution dispatch, and history recording.
 
 from unittest.mock import MagicMock, patch
 
-from popctl.cli.types import SourceChoice
 from popctl.core.executor import (
-    ACTION_TO_HISTORY,
     execute_actions,
-    get_available_operators,
-    get_operators,
     record_actions_to_history,
 )
 from popctl.models.action import Action, ActionResult, ActionType
 from popctl.models.history import HistoryActionType
 from popctl.models.package import PackageSource
+from popctl.operators import get_available_operators
 from popctl.operators.apt import AptOperator
 from popctl.operators.flatpak import FlatpakOperator
 from popctl.operators.snap import SnapOperator
@@ -48,49 +45,8 @@ def _make_result(
     return ActionResult(
         action=action,
         success=success,
-        message="ok" if success else None,
-        error=None if success else "failed",
+        detail="ok" if success else "failed",
     )
-
-
-# ---------------------------------------------------------------------------
-# get_operators
-# ---------------------------------------------------------------------------
-
-
-class TestGetOperators:
-    """Tests for the get_operators factory function."""
-
-    def test_get_operators_apt_only(self) -> None:
-        """SourceChoice.APT returns only AptOperator."""
-        ops = get_operators(SourceChoice.APT)
-        assert len(ops) == 1
-        assert isinstance(ops[0], AptOperator)
-
-    def test_get_operators_flatpak_only(self) -> None:
-        """SourceChoice.FLATPAK returns only FlatpakOperator."""
-        ops = get_operators(SourceChoice.FLATPAK)
-        assert len(ops) == 1
-        assert isinstance(ops[0], FlatpakOperator)
-
-    def test_get_operators_snap_only(self) -> None:
-        """SourceChoice.SNAP returns only SnapOperator."""
-        ops = get_operators(SourceChoice.SNAP)
-        assert len(ops) == 1
-        assert isinstance(ops[0], SnapOperator)
-
-    def test_get_operators_all(self) -> None:
-        """SourceChoice.ALL returns AptOperator, FlatpakOperator, and SnapOperator."""
-        ops = get_operators(SourceChoice.ALL)
-        assert len(ops) == 3
-        types = {type(op) for op in ops}
-        assert types == {AptOperator, FlatpakOperator, SnapOperator}
-
-    def test_get_operators_dry_run_flag(self) -> None:
-        """dry_run=True is forwarded to every operator."""
-        ops = get_operators(SourceChoice.ALL, dry_run=True)
-        for op in ops:
-            assert op.dry_run is True
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +64,7 @@ class TestGetAvailableOperators:
             patch.object(FlatpakOperator, "is_available", return_value=False),
             patch.object(SnapOperator, "is_available", return_value=False),
         ):
-            ops = get_available_operators(SourceChoice.ALL)
+            ops = get_available_operators()
 
         assert len(ops) == 1
         assert isinstance(ops[0], AptOperator)
@@ -122,8 +78,8 @@ class TestGetAvailableOperators:
 class TestExecuteActions:
     """Tests for the execute_actions dispatcher."""
 
-    def test_execute_actions_dispatches_by_source(self) -> None:
-        """Actions are dispatched to operators matching their source."""
+    def test_dispatches_installs_by_source(self) -> None:
+        """Install actions are dispatched to operators matching their source."""
         apt_action = _make_action(package="vim", source=PackageSource.APT)
         flatpak_action = _make_action(
             package="com.example.App",
@@ -135,22 +91,76 @@ class TestExecuteActions:
 
         apt_op = MagicMock(spec=AptOperator)
         apt_op.source = PackageSource.APT
-        apt_op.execute.return_value = [apt_result]
+        apt_op.install.return_value = [apt_result]
 
         flatpak_op = MagicMock(spec=FlatpakOperator)
         flatpak_op.source = PackageSource.FLATPAK
-        flatpak_op.execute.return_value = [flatpak_result]
+        flatpak_op.install.return_value = [flatpak_result]
 
         results = execute_actions(
             [apt_action, flatpak_action],
             [apt_op, flatpak_op],
         )
 
-        apt_op.execute.assert_called_once_with([apt_action])
-        flatpak_op.execute.assert_called_once_with([flatpak_action])
+        apt_op.install.assert_called_once_with(["vim"])
+        flatpak_op.install.assert_called_once_with(["com.example.App"])
         assert results == [apt_result, flatpak_result]
 
-    def test_execute_actions_empty_list(self) -> None:
+    def test_dispatches_removes_with_purge_false(self) -> None:
+        """Remove actions are dispatched with purge=False."""
+        action = _make_action(package="bloat", action_type=ActionType.REMOVE)
+        result = _make_result(action)
+
+        op = MagicMock(spec=AptOperator)
+        op.source = PackageSource.APT
+        op.remove.return_value = [result]
+
+        results = execute_actions([action], [op])
+
+        op.remove.assert_called_once_with(["bloat"], purge=False)
+        assert results == [result]
+
+    def test_dispatches_purges_with_purge_true(self) -> None:
+        """Purge actions are dispatched with purge=True."""
+        action = _make_action(package="bloat", action_type=ActionType.PURGE)
+        result = _make_result(action)
+
+        op = MagicMock(spec=AptOperator)
+        op.source = PackageSource.APT
+        op.remove.return_value = [result]
+
+        results = execute_actions([action], [op])
+
+        op.remove.assert_called_once_with(["bloat"], purge=True)
+        assert results == [result]
+
+    def test_groups_mixed_action_types(self) -> None:
+        """Mixed action types are grouped and dispatched correctly."""
+        install_action = _make_action(package="vim", action_type=ActionType.INSTALL)
+        remove_action = _make_action(package="bloat", action_type=ActionType.REMOVE)
+        purge_action = _make_action(package="junk", action_type=ActionType.PURGE)
+
+        install_result = _make_result(install_action)
+        remove_result = _make_result(remove_action)
+        purge_result = _make_result(purge_action)
+
+        op = MagicMock(spec=AptOperator)
+        op.source = PackageSource.APT
+        op.install.return_value = [install_result]
+        op.remove.side_effect = [[remove_result], [purge_result]]
+
+        results = execute_actions(
+            [install_action, remove_action, purge_action],
+            [op],
+        )
+
+        op.install.assert_called_once_with(["vim"])
+        assert op.remove.call_count == 2
+        op.remove.assert_any_call(["bloat"], purge=False)
+        op.remove.assert_any_call(["junk"], purge=True)
+        assert results == [install_result, remove_result, purge_result]
+
+    def test_empty_list_returns_empty_results(self) -> None:
         """Empty action list returns empty results."""
         op = MagicMock(spec=AptOperator)
         op.source = PackageSource.APT
@@ -158,27 +168,27 @@ class TestExecuteActions:
         results = execute_actions([], [op])
 
         assert results == []
-        op.execute.assert_not_called()
+        op.install.assert_not_called()
+        op.remove.assert_not_called()
 
+    def test_skips_operator_with_no_matching_actions(self) -> None:
+        """Operators with no matching actions are skipped entirely."""
+        action = _make_action(package="vim", source=PackageSource.APT)
+        result = _make_result(action)
 
-# ---------------------------------------------------------------------------
-# ACTION_TO_HISTORY constant
-# ---------------------------------------------------------------------------
+        apt_op = MagicMock(spec=AptOperator)
+        apt_op.source = PackageSource.APT
+        apt_op.install.return_value = [result]
 
+        flatpak_op = MagicMock(spec=FlatpakOperator)
+        flatpak_op.source = PackageSource.FLATPAK
 
-class TestActionToHistory:
-    """Tests for the ACTION_TO_HISTORY mapping constant."""
+        results = execute_actions([action], [apt_op, flatpak_op])
 
-    def test_mapping_completeness(self) -> None:
-        """All ActionType values are mapped."""
-        for at in ActionType:
-            assert at in ACTION_TO_HISTORY
-
-    def test_mapping_values(self) -> None:
-        """Mapping values are correct."""
-        assert ACTION_TO_HISTORY[ActionType.INSTALL] == HistoryActionType.INSTALL
-        assert ACTION_TO_HISTORY[ActionType.REMOVE] == HistoryActionType.REMOVE
-        assert ACTION_TO_HISTORY[ActionType.PURGE] == HistoryActionType.PURGE
+        apt_op.install.assert_called_once()
+        flatpak_op.install.assert_not_called()
+        flatpak_op.remove.assert_not_called()
+        assert results == [result]
 
 
 # ---------------------------------------------------------------------------
@@ -190,18 +200,16 @@ class TestRecordActionsToHistory:
     """Tests for the record_actions_to_history function."""
 
     def test_record_actions_to_history_success(self) -> None:
-        """Successful actions are recorded via StateManager."""
+        """Successful actions are recorded via record_action."""
         action = _make_action(package="vim", action_type=ActionType.INSTALL)
         result = _make_result(action, success=True)
 
-        with patch("popctl.core.executor.StateManager") as mock_sm:
+        with patch("popctl.core.executor.record_action") as mock_record:
             record_actions_to_history([result])
 
-        mock_sm.assert_called_once()
-        instance = mock_sm.return_value
-        instance.record_action.assert_called_once()
+        mock_record.assert_called_once()
 
-        entry = instance.record_action.call_args[0][0]
+        entry = mock_record.call_args[0][0]
         assert entry.action_type == HistoryActionType.INSTALL
         assert len(entry.items) == 1
         assert entry.items[0].name == "vim"
@@ -216,15 +224,12 @@ class TestRecordActionsToHistory:
             _make_result(remove, success=True),
         ]
 
-        with patch("popctl.core.executor.StateManager") as mock_sm:
+        with patch("popctl.core.executor.record_action") as mock_record:
             record_actions_to_history(results)
 
-        instance = mock_sm.return_value
-        assert instance.record_action.call_count == 2
+        assert mock_record.call_count == 2
 
-        recorded_types = {
-            call.args[0].action_type for call in instance.record_action.call_args_list
-        }
+        recorded_types = {call.args[0].action_type for call in mock_record.call_args_list}
         assert recorded_types == {HistoryActionType.INSTALL, HistoryActionType.REMOVE}
 
     def test_record_actions_to_history_custom_command(self) -> None:
@@ -232,10 +237,10 @@ class TestRecordActionsToHistory:
         action = _make_action()
         result = _make_result(action, success=True)
 
-        with patch("popctl.core.executor.StateManager") as mock_sm:
+        with patch("popctl.core.executor.record_action") as mock_record:
             record_actions_to_history([result], command="popctl sync")
 
-        entry = mock_sm.return_value.record_action.call_args[0][0]
+        entry = mock_record.call_args[0][0]
         assert entry.metadata["command"] == "popctl sync"
 
     def test_record_actions_to_history_handles_os_error(self) -> None:
@@ -245,7 +250,7 @@ class TestRecordActionsToHistory:
 
         with (
             patch(
-                "popctl.core.executor.StateManager",
+                "popctl.core.executor.record_action",
                 side_effect=OSError("disk full"),
             ),
             patch("popctl.core.executor.print_warning") as mock_warn,
@@ -266,13 +271,12 @@ class TestRecordActionsToHistory:
             _make_result(fail_action, success=False),
         ]
 
-        with patch("popctl.core.executor.StateManager") as mock_sm:
+        with patch("popctl.core.executor.record_action") as mock_record:
             record_actions_to_history(results)
 
-        instance = mock_sm.return_value
-        instance.record_action.assert_called_once()
+        mock_record.assert_called_once()
 
-        entry = instance.record_action.call_args[0][0]
+        entry = mock_record.call_args[0][0]
         names = [item.name for item in entry.items]
         assert "vim" in names
         assert "bad" not in names

@@ -29,7 +29,7 @@ class TestConfigOperator:
         with (
             patch("popctl.configs.operator.Path.home", return_value=home),
             patch(
-                "popctl.configs.operator.ensure_config_backup_dir",
+                "popctl.configs.operator.ensure_dir",
                 return_value=backup_base,
             ),
         ):
@@ -61,7 +61,7 @@ class TestConfigOperator:
         with (
             patch("popctl.configs.operator.Path.home", return_value=home),
             patch(
-                "popctl.configs.operator.ensure_config_backup_dir",
+                "popctl.configs.operator.ensure_dir",
                 return_value=backup_base,
             ),
         ):
@@ -87,7 +87,7 @@ class TestConfigOperator:
         backup_base.mkdir()
 
         with patch(
-            "popctl.configs.operator.ensure_config_backup_dir",
+            "popctl.configs.operator.ensure_dir",
             return_value=backup_base,
         ):
             op = ConfigOperator(dry_run=False)
@@ -106,7 +106,7 @@ class TestConfigOperator:
         backup_base.mkdir()
 
         with patch(
-            "popctl.configs.operator.ensure_config_backup_dir",
+            "popctl.configs.operator.ensure_dir",
             return_value=backup_base,
         ):
             op = ConfigOperator(dry_run=False)
@@ -132,7 +132,7 @@ class TestConfigOperator:
         with (
             patch("popctl.configs.operator.Path.home", return_value=home),
             patch(
-                "popctl.configs.operator.ensure_config_backup_dir",
+                "popctl.configs.operator.ensure_dir",
                 return_value=backup_base,
             ),
         ):
@@ -163,7 +163,7 @@ class TestConfigOperator:
         with (
             patch("popctl.configs.operator.Path.home", return_value=home),
             patch(
-                "popctl.configs.operator.ensure_config_backup_dir",
+                "popctl.configs.operator.ensure_dir",
                 return_value=backup_base,
             ),
             patch("popctl.configs.operator.shutil.copytree", side_effect=OSError("Disk full")),
@@ -193,7 +193,7 @@ class TestConfigOperator:
         with (
             patch("popctl.configs.operator.Path.home", return_value=home),
             patch(
-                "popctl.configs.operator.ensure_config_backup_dir",
+                "popctl.configs.operator.ensure_dir",
                 return_value=backup_base,
             ),
         ):
@@ -224,7 +224,7 @@ class TestConfigOperator:
         with (
             patch("popctl.configs.operator.Path.home", return_value=home),
             patch(
-                "popctl.configs.operator.ensure_config_backup_dir",
+                "popctl.configs.operator.ensure_dir",
                 return_value=backup_base,
             ),
             patch.object(Path, "unlink", side_effect=OSError("Permission denied")),
@@ -256,16 +256,16 @@ class TestConfigOperator:
         with pytest.raises(AttributeError):
             result.success = False  # type: ignore[misc]
 
-    @patch("popctl.configs.operator.is_protected_config")
+    @patch("popctl.configs.operator.is_protected")
     def test_delete_protected_via_mock(self, mock_protected: MagicMock, tmp_path: Path) -> None:
-        """Protected path check delegates to is_protected_config."""
+        """Protected path check delegates to is_protected."""
         mock_protected.return_value = True
 
         backup_base = tmp_path / "backups"
         backup_base.mkdir()
 
         with patch(
-            "popctl.configs.operator.ensure_config_backup_dir",
+            "popctl.configs.operator.ensure_dir",
             return_value=backup_base,
         ):
             op = ConfigOperator(dry_run=False)
@@ -273,4 +273,4 @@ class TestConfigOperator:
 
         assert len(results) == 1
         assert results[0].success is False
-        mock_protected.assert_called_once_with("/some/random/path")
+        mock_protected.assert_called_once_with("/some/random/path", "configs")

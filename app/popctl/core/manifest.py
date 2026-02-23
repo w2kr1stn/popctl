@@ -1,18 +1,30 @@
 """Manifest file I/O operations.
 
-This module provides functions for loading and saving manifest files
+This module provides functions for loading, saving, and creating manifest files
 in TOML format with proper validation using Pydantic models.
 """
 
+import os
+import socket
 import tomllib
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from tempfile import NamedTemporaryFile
 
 import tomli_w
 from pydantic import ValidationError
 
+from popctl.core.baseline import is_package_protected
 from popctl.core.paths import get_manifest_path
-from popctl.models.manifest import Manifest
+from popctl.models.manifest import (
+    Manifest,
+    ManifestMeta,
+    PackageConfig,
+    PackageEntry,
+    SystemConfig,
+)
+from popctl.models.package import PackageStatus
+from popctl.scanners.base import Scanner
 
 
 class ManifestError(Exception):
@@ -81,16 +93,13 @@ def save_manifest(manifest: Manifest, path: Path | None = None) -> Path:
     Raises:
         ManifestError: If the file cannot be written.
     """
-    import os
-    from tempfile import NamedTemporaryFile
-
     manifest_path = path or get_manifest_path()
 
     # Ensure parent directory exists
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Convert manifest to dictionary with proper serialization
-    data = _manifest_to_dict(manifest)
+    data = manifest.model_dump(mode="json", exclude_none=True)
 
     tmp_path: Path | None = None
     try:
@@ -127,145 +136,90 @@ def manifest_exists(path: Path | None = None) -> bool:
     return manifest_path.exists()
 
 
-def require_manifest(manifest_path: Path | None = None) -> Manifest:
-    """Load manifest or exit with helpful error message.
+# ---------------------------------------------------------------------------
+# Manifest creation helpers
+# ---------------------------------------------------------------------------
 
-    This is a convenience wrapper around load_manifest() that handles
-    common error cases by printing user-friendly messages and exiting.
+
+def collect_manual_packages(
+    scanners: list[Scanner],
+) -> tuple[dict[str, PackageEntry], list[str]]:
+    """Collect manually installed packages from all scanners.
+
+    Protected packages and auto-installed dependencies are filtered out.
 
     Args:
-        manifest_path: Optional custom manifest path.
+        scanners: List of Scanner instances to use.
 
     Returns:
-        Loaded and validated Manifest.
+        Tuple of (packages dict, list of skipped protected package names).
+    """
+    packages: dict[str, PackageEntry] = {}
+    skipped_protected: list[str] = []
+
+    for scanner in scanners:
+        source_name = scanner.source.value
+
+        for pkg in scanner.scan():
+            # Skip auto-installed packages (dependencies)
+            if pkg.status != PackageStatus.MANUAL:
+                continue
+
+            # Skip protected system packages (but track them)
+            if is_package_protected(pkg.name):
+                skipped_protected.append(pkg.name)
+                continue
+
+            packages[pkg.name] = PackageEntry(
+                source=source_name,  # type: ignore[arg-type]
+            )
+
+    return packages, skipped_protected
+
+
+def scan_and_create_manifest(
+    scanners: list[Scanner],
+) -> tuple[Manifest, dict[str, PackageEntry], list[str]]:
+    """Scan system and create a new manifest from manually installed packages.
+
+    Combines collect_manual_packages and create_manifest into a single call.
+
+    Args:
+        scanners: List of Scanner instances to use.
+
+    Returns:
+        Tuple of (manifest, packages dict, list of skipped protected names).
 
     Raises:
-        typer.Exit: If manifest cannot be loaded.
+        RuntimeError: If scanning fails.
     """
-    import typer
-
-    from popctl.utils.formatting import print_error, print_info
-
-    path = manifest_path or get_manifest_path()
-    try:
-        return load_manifest(path)
-    except ManifestNotFoundError as e:
-        print_error(f"Manifest not found: {path}")
-        print_info("Run 'popctl init' to create a manifest from your current system.")
-        raise typer.Exit(code=1) from e
-    except ManifestError as e:
-        print_error(f"Failed to load manifest: {e}")
-        raise typer.Exit(code=1) from e
+    packages, skipped = collect_manual_packages(scanners)
+    manifest = create_manifest(packages)
+    return manifest, packages, skipped
 
 
-def _manifest_to_dict(manifest: Manifest) -> dict[str, Any]:
-    """Convert a Manifest to a dictionary suitable for TOML serialization.
-
-    Handles datetime conversion and nested structures properly.
+def create_manifest(packages: dict[str, PackageEntry]) -> Manifest:
+    """Create a new manifest with the given packages.
 
     Args:
-        manifest: The Manifest object to convert.
+        packages: Dictionary of packages to include.
 
     Returns:
-        Dictionary ready for TOML serialization.
+        New Manifest object.
     """
-    result: dict[str, Any] = {
-        "meta": {
-            "version": manifest.meta.version,
-            "created": manifest.meta.created.isoformat(),
-            "updated": manifest.meta.updated.isoformat(),
-        },
-        "system": {
-            "name": manifest.system.name,
-            "base": manifest.system.base,
-            **({"description": manifest.system.description} if manifest.system.description else {}),
-        },
-        "packages": {
-            "keep": {
-                name: _package_entry_to_dict(entry)
-                for name, entry in manifest.packages.keep.items()
-            },
-            "remove": {
-                name: _package_entry_to_dict(entry)
-                for name, entry in manifest.packages.remove.items()
-            },
-        },
-    }
+    now = datetime.now(UTC)
 
-    if manifest.filesystem is not None:
-        result["filesystem"] = {
-            "keep": {
-                path: _fs_entry_to_dict(entry) for path, entry in manifest.filesystem.keep.items()
-            },
-            "remove": {
-                path: _fs_entry_to_dict(entry) for path, entry in manifest.filesystem.remove.items()
-            },
-        }
-
-    if manifest.configs is not None:
-        result["configs"] = {
-            "keep": {
-                path: _config_entry_to_dict(entry) for path, entry in manifest.configs.keep.items()
-            },
-            "remove": {
-                path: _config_entry_to_dict(entry)
-                for path, entry in manifest.configs.remove.items()
-            },
-        }
-
-    return result
-
-
-def _package_entry_to_dict(entry: Any) -> dict[str, Any]:
-    """Convert a PackageEntry to a dictionary for TOML serialization.
-
-    Args:
-        entry: The PackageEntry object to convert.
-
-    Returns:
-        Dictionary with source and optional reason.
-    """
-    result: dict[str, Any] = {"source": entry.source}
-    if entry.status != "keep":
-        result["status"] = entry.status
-    if entry.reason:
-        result["reason"] = entry.reason
-    return result
-
-
-def _fs_entry_to_dict(entry: Any) -> dict[str, Any]:
-    """Convert a FilesystemEntry to a dictionary for TOML serialization.
-
-    Only includes fields that have non-None values to keep TOML output clean.
-
-    Args:
-        entry: The FilesystemEntry object to convert.
-
-    Returns:
-        Dictionary with optional reason and category fields.
-    """
-    result: dict[str, Any] = {}
-    if entry.reason:
-        result["reason"] = entry.reason
-    if entry.category:
-        result["category"] = entry.category
-    return result
-
-
-def _config_entry_to_dict(entry: Any) -> dict[str, Any]:
-    """Convert a ConfigEntry to a dictionary for TOML serialization.
-
-    Only includes fields that have non-None values to keep TOML output clean.
-
-    Args:
-        entry: The ConfigEntry object to convert.
-
-    Returns:
-        Dictionary with optional reason and category fields.
-    """
-    result: dict[str, Any] = {}
-    if entry.reason:
-        result["reason"] = entry.reason
-    if entry.category:
-        result["category"] = entry.category
-    return result
+    return Manifest(
+        meta=ManifestMeta(
+            created=now,
+            updated=now,
+        ),
+        system=SystemConfig(
+            name=socket.gethostname(),
+            base="pop-os-24.04",
+        ),
+        packages=PackageConfig(
+            keep=packages,
+            remove={},
+        ),
+    )

@@ -29,7 +29,6 @@ def install_action() -> Action:
         action_type=ActionType.INSTALL,
         package="vim",
         source=PackageSource.APT,
-        reason="Package in manifest but not installed",
     )
 
 
@@ -40,7 +39,6 @@ def remove_action() -> Action:
         action_type=ActionType.REMOVE,
         package="bloatware",
         source=PackageSource.APT,
-        reason="Package marked for removal in manifest",
     )
 
 
@@ -51,7 +49,6 @@ def purge_action() -> Action:
         action_type=ActionType.PURGE,
         package="old-tool",
         source=PackageSource.APT,
-        reason="Package marked for removal in manifest",
     )
 
 
@@ -62,7 +59,6 @@ def flatpak_remove_action() -> Action:
         action_type=ActionType.REMOVE,
         package="com.example.App",
         source=PackageSource.FLATPAK,
-        reason="Package marked for removal in manifest",
     )
 
 
@@ -72,7 +68,7 @@ def success_result(install_action: Action) -> ActionResult:
     return ActionResult(
         action=install_action,
         success=True,
-        message="Installed successfully",
+        detail="Installed successfully",
     )
 
 
@@ -82,7 +78,7 @@ def failure_result(remove_action: Action) -> ActionResult:
     return ActionResult(
         action=remove_action,
         success=False,
-        error="Permission denied",
+        detail="Permission denied",
     )
 
 
@@ -120,10 +116,10 @@ class TestCreateActionsTable:
     """Tests for create_actions_table."""
 
     def test_create_actions_table_has_columns(self, install_action: Action) -> None:
-        """Table has Action, Source, Package, and Reason columns."""
+        """Table has Action, Source, and Package columns."""
         table = create_actions_table([install_action])
         column_names = [col.header for col in table.columns]
-        assert column_names == ["Action", "Source", "Package", "Reason"]
+        assert column_names == ["Action", "Source", "Package"]
 
     def test_create_actions_table_install_row(self, install_action: Action) -> None:
         """Install action shows '+install' with 'added' style."""
@@ -191,24 +187,6 @@ class TestCreateActionsTable:
         assert table.row_count == 0
         assert table.title == "Planned Actions"
 
-    def test_create_actions_table_no_reason(self) -> None:
-        """Action without reason shows empty string in Reason column."""
-        action = Action(
-            action_type=ActionType.INSTALL,
-            package="curl",
-            source=PackageSource.APT,
-            reason=None,
-        )
-        table = create_actions_table([action])
-
-        buf = io.StringIO()
-        test_console = Console(theme=get_theme(), file=buf, color_system=None)
-        test_console.print(table)
-        output = buf.getvalue()
-
-        assert "curl" in output
-        assert "+install" in output
-
 
 # ===========================================================================
 # create_results_table
@@ -255,7 +233,7 @@ class TestCreateResultsTable:
 
     def test_create_results_table_failure_no_error(self, install_action: Action) -> None:
         """Failed result without error shows 'Unknown error'."""
-        result = ActionResult(action=install_action, success=False, error=None)
+        result = ActionResult(action=install_action, success=False, detail=None)
         table = create_results_table([result])
 
         buf = io.StringIO()
@@ -360,6 +338,6 @@ class TestPrintResultsSummary:
             )
             for i in range(5)
         ]
-        results = [ActionResult(action=a, success=True, message="OK") for a in actions]
+        results = [ActionResult(action=a, success=True, detail="OK") for a in actions]
         output = _capture_console_output(print_results_summary, results)
         assert "All 5 action(s) completed successfully" in output

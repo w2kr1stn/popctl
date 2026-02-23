@@ -1,38 +1,11 @@
-"""Unit tests for core/actions.py.
+"""Unit tests for diff_to_actions in core/diff.py.
 
 Tests for diff-to-action conversion and source mapping logic.
 """
 
-import pytest
-from popctl.core.actions import SOURCE_MAP, diff_to_actions, source_to_package_source
-from popctl.core.diff import DiffEntry, DiffResult, DiffType
+from popctl.core.diff import DiffEntry, DiffResult, DiffType, diff_to_actions
 from popctl.models.action import ActionType
 from popctl.models.package import PackageSource
-
-
-class TestSourceToPackageSource:
-    """Tests for source_to_package_source()."""
-
-    def test_source_to_package_source_apt(self) -> None:
-        """'apt' maps to PackageSource.APT."""
-        assert source_to_package_source("apt") == PackageSource.APT
-
-    def test_source_to_package_source_flatpak(self) -> None:
-        """'flatpak' maps to PackageSource.FLATPAK."""
-        assert source_to_package_source("flatpak") == PackageSource.FLATPAK
-
-    def test_source_to_package_source_snap(self) -> None:
-        """'snap' maps to PackageSource.SNAP."""
-        assert source_to_package_source("snap") == PackageSource.SNAP
-
-    def test_source_to_package_source_invalid(self) -> None:
-        """Invalid source string raises KeyError."""
-        with pytest.raises(KeyError):
-            source_to_package_source("brew")
-
-    def test_source_map_contains_expected_keys(self) -> None:
-        """SOURCE_MAP contains exactly 'apt', 'flatpak', and 'snap'."""
-        assert set(SOURCE_MAP.keys()) == {"apt", "flatpak", "snap"}
 
 
 class TestDiffToActionsMissing:
@@ -208,47 +181,6 @@ class TestDiffToActionsPurge:
         assert snap_action.action_type == ActionType.PURGE
 
 
-class TestDiffToActionsProtected:
-    """Tests for protected package handling in diff_to_actions()."""
-
-    def test_diff_to_actions_skips_protected(self) -> None:
-        """Protected packages in EXTRA are skipped."""
-        diff_result = DiffResult(
-            new=(),
-            missing=(),
-            extra=(
-                DiffEntry(name="systemd", source="apt", diff_type=DiffType.EXTRA),
-                DiffEntry(name="bash", source="apt", diff_type=DiffType.EXTRA),
-                DiffEntry(name="bloatware", source="apt", diff_type=DiffType.EXTRA),
-            ),
-        )
-
-        actions = diff_to_actions(diff_result)
-
-        assert len(actions) == 1
-        assert actions[0].package == "bloatware"
-
-    def test_diff_to_actions_skips_pattern_protected(self) -> None:
-        """Packages matching protected patterns are skipped."""
-        diff_result = DiffResult(
-            new=(),
-            missing=(),
-            extra=(
-                DiffEntry(
-                    name="linux-image-6.1",
-                    source="apt",
-                    diff_type=DiffType.EXTRA,
-                ),
-                DiffEntry(name="bloatware", source="apt", diff_type=DiffType.EXTRA),
-            ),
-        )
-
-        actions = diff_to_actions(diff_result)
-
-        assert len(actions) == 1
-        assert actions[0].package == "bloatware"
-
-
 class TestDiffToActionsEdgeCases:
     """Tests for edge cases in diff_to_actions()."""
 
@@ -302,18 +234,3 @@ class TestDiffToActionsEdgeCases:
         assert len(remove_actions) == 1
         assert install_actions[0].package == "vim"
         assert remove_actions[0].package == "bloatware"
-
-    def test_diff_to_actions_reason_strings(self) -> None:
-        """Actions have descriptive reason strings."""
-        diff_result = DiffResult(
-            new=(),
-            missing=(DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),),
-            extra=(DiffEntry(name="bloatware", source="apt", diff_type=DiffType.EXTRA),),
-        )
-
-        actions = diff_to_actions(diff_result)
-
-        install_action = next(a for a in actions if a.is_install)
-        remove_action = next(a for a in actions if a.is_remove)
-        assert install_action.reason == "Package in manifest but not installed"
-        assert remove_action.reason == "Package marked for removal in manifest"

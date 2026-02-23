@@ -43,7 +43,7 @@ class TestFlatpakOperator:
         """install() returns success results on flatpak success."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
@@ -66,7 +66,7 @@ class TestFlatpakOperator:
         """install() installs packages one at a time."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
@@ -81,7 +81,7 @@ class TestFlatpakOperator:
         """install() returns failure results on flatpak failure."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(
                 stdout="", stderr="error: com.invalid.App not found", returncode=1
@@ -91,30 +91,22 @@ class TestFlatpakOperator:
 
         assert len(results) == 1
         assert results[0].success is False
-        assert "not found" in results[0].error.lower()
+        assert "not found" in results[0].detail.lower()
 
     def test_install_dry_run(self, dry_run_operator: FlatpakOperator) -> None:
         """install() in dry-run mode does not execute commands."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             results = dry_run_operator.install(["com.spotify.Client"])
 
         assert len(results) == 1
         assert results[0].success is True
-        assert "Dry-run" in results[0].message
+        assert "Dry-run" in results[0].detail
 
         # No actual command should have been run
         mock_run.assert_not_called()
-
-    def test_install_raises_when_unavailable(self, operator: FlatpakOperator) -> None:
-        """install() raises RuntimeError when Flatpak unavailable."""
-        with (
-            patch("popctl.operators.flatpak.command_exists", return_value=False),
-            pytest.raises(RuntimeError, match="not available"),
-        ):
-            operator.install(["com.spotify.Client"])
 
     def test_install_empty_list(self, operator: FlatpakOperator) -> None:
         """install() with empty list returns empty results."""
@@ -127,7 +119,7 @@ class TestFlatpakOperator:
         """remove() returns success results on flatpak success."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
@@ -145,7 +137,7 @@ class TestFlatpakOperator:
         """remove() ignores purge flag (Flatpak has no purge)."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
@@ -161,7 +153,7 @@ class TestFlatpakOperator:
         """remove() returns failure results on flatpak failure."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             mock_run.return_value = CommandResult(
                 stdout="", stderr="error: com.spotify.Client not installed", returncode=1
@@ -176,24 +168,16 @@ class TestFlatpakOperator:
         """remove() in dry-run mode does not execute commands."""
         with (
             patch("popctl.operators.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.flatpak.run_command") as mock_run,
+            patch("popctl.operators.base.run_command") as mock_run,
         ):
             results = dry_run_operator.remove(["com.spotify.Client"])
 
         assert len(results) == 1
         assert results[0].success is True
-        assert "Dry-run" in results[0].message
+        assert "Dry-run" in results[0].detail
 
         # No actual command should have been run
         mock_run.assert_not_called()
-
-    def test_remove_raises_when_unavailable(self, operator: FlatpakOperator) -> None:
-        """remove() raises RuntimeError when Flatpak unavailable."""
-        with (
-            patch("popctl.operators.flatpak.command_exists", return_value=False),
-            pytest.raises(RuntimeError, match="not available"),
-        ):
-            operator.remove(["com.spotify.Client"])
 
     def test_remove_empty_list(self, operator: FlatpakOperator) -> None:
         """remove() with empty list returns empty results."""

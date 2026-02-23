@@ -209,33 +209,3 @@ class TestFlatpakScannerSizeParsing:
         assert scanner._parse_size("unknown") is None
         assert scanner._parse_size("abc MB") is None
         assert scanner._parse_size("100 XX") is None
-
-
-class TestFlatpakScannerManualOnly:
-    """Tests for scan_manual_only method."""
-
-    @pytest.fixture
-    def scanner(self) -> FlatpakScanner:
-        """Create FlatpakScanner instance."""
-        return FlatpakScanner()
-
-    def test_scan_manual_only_returns_all(
-        self,
-        scanner: FlatpakScanner,
-        mock_flatpak_output: str,
-    ) -> None:
-        """scan_manual_only returns all packages since all are manual."""
-        with (
-            patch("popctl.scanners.flatpak.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.run_command") as mock_run,
-        ):
-            mock_run.return_value = CommandResult(
-                stdout=mock_flatpak_output, stderr="", returncode=0
-            )
-
-            all_packages = list(scanner.scan())
-            manual_packages = list(scanner.scan_manual_only())
-
-        # For Flatpak, scan_manual_only should return same as scan
-        # since all packages are manual
-        assert len(manual_packages) == len(all_packages)

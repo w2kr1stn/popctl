@@ -55,30 +55,12 @@ class TestAgentResult:
             result.success = False  # type: ignore[misc]
 
 
-class TestAgentRunnerIsContainerMode:
-    """Tests for AgentRunner._is_container_mode method."""
-
-    def test_host_mode_when_container_mode_false(self) -> None:
-        """_is_container_mode returns False when container_mode is False."""
-        config = AdvisorConfig(container_mode=False)
-        runner = AgentRunner(config=config)
-
-        assert runner._is_container_mode() is False
-
-    def test_container_mode_when_enabled(self) -> None:
-        """_is_container_mode returns True when container_mode is True."""
-        config = AdvisorConfig(container_mode=True)
-        runner = AgentRunner(config=config)
-
-        assert runner._is_container_mode() is True
-
-
 class TestAgentRunnerBuildHeadlessCommand:
     """Tests for AgentRunner._build_headless_command method."""
 
-    def test_build_command_host_mode_claude(self, tmp_path: Path) -> None:
-        """_build_headless_command builds correct command for claude in host mode."""
-        config = AdvisorConfig(provider="claude", container_mode=False)
+    def test_build_command_claude(self, tmp_path: Path) -> None:
+        """_build_headless_command builds correct command for claude without model."""
+        config = AdvisorConfig(provider="claude")
         runner = AgentRunner(config=config)
 
         command = runner._build_headless_command(tmp_path)
@@ -87,55 +69,40 @@ class TestAgentRunnerBuildHeadlessCommand:
         assert "-p" in command
         assert "--output-format" in command
         assert "json" in command
+        assert "--model" not in command
 
-    def test_build_command_host_mode_gemini(self, tmp_path: Path) -> None:
-        """_build_headless_command builds correct command for gemini in host mode."""
-        config = AdvisorConfig(provider="gemini", container_mode=False)
+    def test_build_command_gemini(self, tmp_path: Path) -> None:
+        """_build_headless_command builds correct command for gemini without model."""
+        config = AdvisorConfig(provider="gemini")
         runner = AgentRunner(config=config)
 
         command = runner._build_headless_command(tmp_path)
 
         assert command[0] == "gemini"
         assert "--prompt" in command
+        assert "--model" not in command
 
-    def test_build_command_container_mode_claude(self, tmp_path: Path) -> None:
-        """_build_headless_command builds codeagent command in container mode."""
-        config = AdvisorConfig(provider="claude", container_mode=True, model="opus")
+    def test_build_headless_command_with_model_claude(self, tmp_path: Path) -> None:
+        """_build_headless_command includes --model when model is explicitly set (claude)."""
+        config = AdvisorConfig(provider="claude", model="claude-sonnet-4-5-20250514")
         runner = AgentRunner(config=config)
 
         command = runner._build_headless_command(tmp_path)
 
-        assert command[0] == "codeagent"
-        assert "run" in command
-        assert "claude" in command
-        assert "--write" in command
-        assert "--mount" in command
-        assert str(tmp_path) in command
+        assert command[0] == "claude"
         assert "--model" in command
-        assert "opus" in command
+        assert "claude-sonnet-4-5-20250514" in command
 
-    def test_build_command_container_mode_gemini(self, tmp_path: Path) -> None:
-        """_build_headless_command builds codeagent command for gemini."""
-        config = AdvisorConfig(provider="gemini", container_mode=True, model="gemini-2.5-flash")
+    def test_build_headless_command_with_model_gemini(self, tmp_path: Path) -> None:
+        """_build_headless_command includes --model when model is explicitly set (gemini)."""
+        config = AdvisorConfig(provider="gemini", model="gemini-2.5-flash")
         runner = AgentRunner(config=config)
 
         command = runner._build_headless_command(tmp_path)
 
-        assert command[0] == "codeagent"
-        assert "run" in command
-        assert "gemini" in command
-        assert "--write" in command
+        assert command[0] == "gemini"
         assert "--model" in command
         assert "gemini-2.5-flash" in command
-
-    def test_build_command_uses_effective_model(self, tmp_path: Path) -> None:
-        """_build_headless_command uses effective_model when model is None."""
-        config = AdvisorConfig(provider="claude", container_mode=True, model=None)
-        runner = AgentRunner(config=config)
-
-        command = runner._build_headless_command(tmp_path)
-
-        assert "sonnet" in command
 
 
 class TestAgentRunnerRunHeadless:
@@ -150,7 +117,7 @@ class TestAgentRunnerRunHeadless:
         decisions_file = output_dir / "decisions.toml"
         decisions_file.write_text('[packages.apt]\nkeep = ["vim"]')
 
-        config = AdvisorConfig(provider="claude", container_mode=False)
+        config = AdvisorConfig(provider="claude")
         runner = AgentRunner(config=config)
 
         mock_result = MagicMock()
@@ -159,7 +126,7 @@ class TestAgentRunnerRunHeadless:
         mock_result.stderr = ""
         mock_result.returncode = 0
 
-        with patch("popctl.utils.shell.run_command", return_value=mock_result):
+        with patch("popctl.advisor.runner.run_command", return_value=mock_result):
             result = runner.run_headless(workspace_dir)
 
         assert result.success is True
@@ -173,9 +140,8 @@ class TestAgentRunnerRunHeadless:
         workspace_dir = tmp_path / "workspace"
         workspace_dir.mkdir()
         (workspace_dir / "output").mkdir()
-        # Note: decisions.toml is NOT created
 
-        config = AdvisorConfig(provider="claude", container_mode=False)
+        config = AdvisorConfig(provider="claude")
         runner = AgentRunner(config=config)
 
         mock_result = MagicMock()
@@ -184,7 +150,7 @@ class TestAgentRunnerRunHeadless:
         mock_result.stderr = ""
         mock_result.returncode = 0
 
-        with patch("popctl.utils.shell.run_command", return_value=mock_result):
+        with patch("popctl.advisor.runner.run_command", return_value=mock_result):
             result = runner.run_headless(workspace_dir)
 
         assert result.success is False
@@ -197,7 +163,7 @@ class TestAgentRunnerRunHeadless:
         workspace_dir.mkdir()
         (workspace_dir / "output").mkdir()
 
-        config = AdvisorConfig(provider="claude", container_mode=False)
+        config = AdvisorConfig(provider="claude")
         runner = AgentRunner(config=config)
 
         mock_result = MagicMock()
@@ -206,7 +172,7 @@ class TestAgentRunnerRunHeadless:
         mock_result.stderr = "API key invalid"
         mock_result.returncode = 1
 
-        with patch("popctl.utils.shell.run_command", return_value=mock_result):
+        with patch("popctl.advisor.runner.run_command", return_value=mock_result):
             result = runner.run_headless(workspace_dir)
 
         assert result.success is False
@@ -218,11 +184,11 @@ class TestAgentRunnerRunHeadless:
         workspace_dir.mkdir()
         (workspace_dir / "output").mkdir()
 
-        config = AdvisorConfig(provider="claude", container_mode=False, timeout_seconds=60)
+        config = AdvisorConfig(provider="claude", timeout_seconds=60)
         runner = AgentRunner(config=config)
 
         with patch(
-            "popctl.utils.shell.run_command",
+            "popctl.advisor.runner.run_command",
             side_effect=subprocess.TimeoutExpired(cmd=["claude"], timeout=60),
         ):
             result = runner.run_headless(workspace_dir)
@@ -238,11 +204,11 @@ class TestAgentRunnerRunHeadless:
         workspace_dir.mkdir()
         (workspace_dir / "output").mkdir()
 
-        config = AdvisorConfig(provider="claude", container_mode=False)
+        config = AdvisorConfig(provider="claude")
         runner = AgentRunner(config=config)
 
         with patch(
-            "popctl.utils.shell.run_command",
+            "popctl.advisor.runner.run_command",
             side_effect=FileNotFoundError("claude not found"),
         ):
             result = runner.run_headless(workspace_dir)
@@ -256,11 +222,11 @@ class TestAgentRunnerRunHeadless:
         workspace_dir.mkdir()
         (workspace_dir / "output").mkdir()
 
-        config = AdvisorConfig(provider="claude", container_mode=False)
+        config = AdvisorConfig(provider="claude")
         runner = AgentRunner(config=config)
 
         with patch(
-            "popctl.utils.shell.run_command",
+            "popctl.advisor.runner.run_command",
             side_effect=OSError("Permission denied"),
         ):
             result = runner.run_headless(workspace_dir)
@@ -276,7 +242,7 @@ class TestAgentRunnerRunHeadless:
         output_dir.mkdir()
         (output_dir / "decisions.toml").write_text("[packages.apt]")
 
-        config = AdvisorConfig(provider="claude", container_mode=False)
+        config = AdvisorConfig(provider="claude")
         runner = AgentRunner(config=config)
 
         mock_result = MagicMock()
@@ -285,7 +251,7 @@ class TestAgentRunnerRunHeadless:
         mock_result.stderr = ""
         mock_result.returncode = 0
 
-        with patch("popctl.utils.shell.run_command", return_value=mock_result) as mock_run:
+        with patch("popctl.advisor.runner.run_command", return_value=mock_result) as mock_run:
             runner.run_headless(workspace_dir)
 
         mock_run.assert_called_once()
@@ -300,7 +266,7 @@ class TestAgentRunnerRunHeadless:
         output_dir.mkdir()
         (output_dir / "decisions.toml").write_text("[packages.apt]")
 
-        config = AdvisorConfig(provider="claude", container_mode=False, timeout_seconds=300)
+        config = AdvisorConfig(provider="claude", timeout_seconds=300)
         runner = AgentRunner(config=config)
 
         mock_result = MagicMock()
@@ -309,7 +275,7 @@ class TestAgentRunnerRunHeadless:
         mock_result.stderr = ""
         mock_result.returncode = 0
 
-        with patch("popctl.utils.shell.run_command", return_value=mock_result) as mock_run:
+        with patch("popctl.advisor.runner.run_command", return_value=mock_result) as mock_run:
             runner.run_headless(workspace_dir)
 
         mock_run.assert_called_once()
@@ -322,7 +288,7 @@ class TestAgentRunnerLaunchInteractive:
 
     def test_launch_interactive_non_tty_returns_manual(self, tmp_path: Path) -> None:
         """launch_interactive returns manual instructions when not a TTY."""
-        config = AdvisorConfig(provider="claude", container_mode=False)
+        config = AdvisorConfig(provider="claude")
         runner = AgentRunner(config=config)
 
         with patch("sys.stdin") as mock_stdin:
@@ -333,38 +299,27 @@ class TestAgentRunnerLaunchInteractive:
         assert result.error == "manual_mode"
         assert str(tmp_path) in result.output
 
-    def test_launch_interactive_container_exec_success(self, tmp_path: Path) -> None:
-        """launch_interactive succeeds via container exec."""
+    def test_launch_interactive_host_exec_success(self, tmp_path: Path) -> None:
+        """launch_interactive succeeds when CLI tool is available and decisions exist."""
         workspace_dir = tmp_path / "workspace"
         workspace_dir.mkdir()
         output_dir = workspace_dir / "output"
         output_dir.mkdir()
 
-        config = AdvisorConfig(provider="claude", container_mode=True)
+        config = AdvisorConfig(provider="claude")
         runner = AgentRunner(config=config)
 
-        # Create decisions file after docker cp would bring it back
-        def mock_docker_cp_back(src: str, dest: str) -> MagicMock:
-            if "output/decisions.toml" in src:
-                (output_dir / "decisions.toml").write_text("[packages.apt]")
-            result = MagicMock()
-            result.success = True
-            return result
+        def mock_run_interactive(cmd: list[str], **kwargs: object) -> int:
+            # Simulate agent creating decisions.toml
+            (output_dir / "decisions.toml").write_text("[packages.apt]")
+            return 0
 
         with (
             patch("sys.stdin") as mock_stdin,
+            patch("shutil.which", return_value="/usr/bin/claude"),
             patch(
-                "popctl.utils.shell.find_running_container",
-                return_value="ai-dev",
-            ),
-            patch("popctl.utils.shell.run_command"),
-            patch(
-                "popctl.utils.shell.docker_cp",
-                side_effect=mock_docker_cp_back,
-            ),
-            patch(
-                "popctl.utils.shell.run_interactive",
-                return_value=0,
+                "popctl.advisor.runner.run_interactive",
+                side_effect=mock_run_interactive,
             ),
         ):
             mock_stdin.isatty.return_value = True
@@ -372,70 +327,56 @@ class TestAgentRunnerLaunchInteractive:
 
         assert result.success is True
         assert result.workspace_path == workspace_dir
+        assert result.decisions_path == output_dir / "decisions.toml"
 
-    def test_launch_interactive_container_not_running_tries_codeagent(self, tmp_path: Path) -> None:
-        """launch_interactive starts container via codeagent, then delegates to container exec."""
+    def test_launch_interactive_host_exec_no_decisions(self, tmp_path: Path) -> None:
+        """launch_interactive returns failure when agent doesn't create decisions."""
         workspace_dir = tmp_path / "workspace"
         workspace_dir.mkdir()
-        output_dir = workspace_dir / "output"
-        output_dir.mkdir()
+        (workspace_dir / "output").mkdir()
 
-        config = AdvisorConfig(provider="claude", container_mode=True)
-        runner = AgentRunner(config=config)
-
-        def mock_docker_cp_back(src: str, dest: str) -> MagicMock:
-            if "output/decisions.toml" in src:
-                (output_dir / "decisions.toml").write_text("[packages.apt]")
-            result = MagicMock()
-            result.success = True
-            return result
-
-        mock_process = MagicMock()
-        mock_process.poll.return_value = None  # Still running
-
-        with (
-            patch("sys.stdin") as mock_stdin,
-            patch(
-                "popctl.utils.shell.find_running_container",
-                side_effect=[None, "ai-dev-base-dev-1"],
-            ),
-            patch("popctl.utils.shell.is_container_running", return_value=True),
-            patch("shutil.which", return_value="/usr/bin/codeagent"),
-            patch("subprocess.Popen", return_value=mock_process),
-            patch("time.sleep"),
-            patch("popctl.utils.shell.run_command"),
-            patch("popctl.utils.shell.docker_cp", side_effect=mock_docker_cp_back),
-            patch("popctl.utils.shell.run_interactive", return_value=0),
-        ):
-            mock_stdin.isatty.return_value = True
-            result = runner.launch_interactive(workspace_dir)
-
-        assert result.success is True
-        assert result.workspace_path == workspace_dir
-        mock_process.terminate.assert_called()
-
-    def test_launch_interactive_host_exec_replaces_process(self, tmp_path: Path) -> None:
-        """launch_interactive calls os.execvp for host mode."""
-        config = AdvisorConfig(provider="claude", container_mode=False)
+        config = AdvisorConfig(provider="claude")
         runner = AgentRunner(config=config)
 
         with (
             patch("sys.stdin") as mock_stdin,
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("os.chdir") as mock_chdir,
-            patch("os.execvp") as mock_execvp,
+            patch("popctl.advisor.runner.run_interactive", return_value=0),
         ):
             mock_stdin.isatty.return_value = True
-            runner.launch_interactive(tmp_path)
+            result = runner.launch_interactive(workspace_dir)
 
-        mock_chdir.assert_called_once_with(tmp_path)
-        mock_execvp.assert_called_once()
-        args = mock_execvp.call_args
-        assert args[0][0] == "claude"
+        assert result.success is False
+        assert result.decisions_path is None
+
+    def test_launch_interactive_persists_memory(self, tmp_path: Path) -> None:
+        """launch_interactive persists memory.md after session."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        (workspace_dir / "output").mkdir()
+
+        config = AdvisorConfig(provider="claude")
+        runner = AgentRunner(config=config)
+
+        def mock_run_interactive(cmd: list[str], **kwargs: object) -> int:
+            # Simulate agent creating memory.md
+            (workspace_dir / "memory.md").write_text("# Memory\n")
+            return 0
+
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("popctl.advisor.runner.run_interactive", side_effect=mock_run_interactive),
+            patch.object(runner, "_persist_memory") as mock_persist,
+        ):
+            mock_stdin.isatty.return_value = True
+            runner.launch_interactive(workspace_dir)
+
+        mock_persist.assert_called_once_with(workspace_dir / "memory.md")
 
     def test_launch_interactive_manual_fallback(self, tmp_path: Path) -> None:
         """launch_interactive falls back to manual when nothing available."""
-        config = AdvisorConfig(provider="claude", container_mode=False)
+        config = AdvisorConfig(provider="claude")
         runner = AgentRunner(config=config)
 
         with (
@@ -450,103 +391,73 @@ class TestAgentRunnerLaunchInteractive:
         assert "Workspace prepared" in result.output
         assert "popctl advisor apply" in result.output
 
-    def test_container_exec_copyback_failure_returns_failure(self, tmp_path: Path) -> None:
-        """_try_container_exec returns failure when copy-back doesn't produce file."""
-        workspace_dir = tmp_path / "workspace"
-        workspace_dir.mkdir()
-        output_dir = workspace_dir / "output"
-        output_dir.mkdir()
-        # Note: decisions.toml is NOT created (copy-back fails silently)
-
-        config = AdvisorConfig(provider="claude", container_mode=True)
-        runner = AgentRunner(config=config)
-
-        mock_cp = MagicMock()
-        mock_cp.success = True
-
-        with (
-            patch("sys.stdin") as mock_stdin,
-            patch(
-                "popctl.utils.shell.find_running_container",
-                return_value="ai-dev-base-dev-1",
-            ),
-            patch("popctl.utils.shell.run_command"),
-            patch("popctl.utils.shell.docker_cp", return_value=mock_cp),
-            patch("popctl.utils.shell.run_interactive", return_value=0),
-        ):
-            mock_stdin.isatty.return_value = True
-            result = runner.launch_interactive(workspace_dir)
-
-        assert result.success is False
-        assert result.error is not None
-        assert "exited with code" in result.error
-        assert result.workspace_path == workspace_dir
-
-    def test_codeagent_start_exit_cascades_to_manual(self, tmp_path: Path) -> None:
-        """_try_codeagent_start returns None when process exits early, cascade reaches manual."""
+    def test_launch_interactive_gemini(self, tmp_path: Path) -> None:
+        """launch_interactive works with gemini provider."""
         workspace_dir = tmp_path / "workspace"
         workspace_dir.mkdir()
         (workspace_dir / "output").mkdir()
 
-        config = AdvisorConfig(provider="claude", container_mode=True)
+        config = AdvisorConfig(provider="gemini")
         runner = AgentRunner(config=config)
-
-        def mock_which(cmd: str) -> str | None:
-            if cmd == "codeagent":
-                return "/usr/bin/codeagent"
-            return None
-
-        mock_process = MagicMock()
-        mock_process.poll.return_value = 1  # Exited prematurely
 
         with (
             patch("sys.stdin") as mock_stdin,
-            patch("popctl.utils.shell.find_running_container", return_value=None),
-            patch("shutil.which", side_effect=mock_which),
-            patch("subprocess.Popen", return_value=mock_process),
+            patch("shutil.which", return_value="/usr/bin/gemini"),
+            patch("popctl.advisor.runner.run_interactive", return_value=0) as mock_run,
         ):
             mock_stdin.isatty.return_value = True
-            result = runner.launch_interactive(workspace_dir)
+            runner.launch_interactive(workspace_dir)
 
-        assert result.success is False
-        assert result.error == "manual_mode"
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "gemini"
+        assert "--prompt" in cmd
+        assert "--model" not in cmd
 
-    def test_container_exec_run_interactive_raises_cascades(self, tmp_path: Path) -> None:
-        """_try_container_exec returns None on FileNotFoundError, cascade continues."""
+    def test_launch_interactive_with_model_claude(self, tmp_path: Path) -> None:
+        """launch_interactive passes --model to claude when model is set."""
         workspace_dir = tmp_path / "workspace"
         workspace_dir.mkdir()
         (workspace_dir / "output").mkdir()
 
-        config = AdvisorConfig(provider="claude", container_mode=True)
+        config = AdvisorConfig(provider="claude", model="claude-sonnet-4-5-20250514")
         runner = AgentRunner(config=config)
-
-        mock_cp = MagicMock()
-        mock_cp.success = True
 
         with (
             patch("sys.stdin") as mock_stdin,
-            patch(
-                "popctl.utils.shell.find_running_container",
-                return_value="ai-dev-base-dev-1",
-            ),
-            patch("popctl.utils.shell.run_command"),
-            patch("popctl.utils.shell.docker_cp", return_value=mock_cp),
-            patch(
-                "popctl.utils.shell.run_interactive",
-                side_effect=FileNotFoundError("docker not found"),
-            ),
-            patch("shutil.which", return_value=None),
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("popctl.advisor.runner.run_interactive", return_value=0) as mock_run,
         ):
             mock_stdin.isatty.return_value = True
-            result = runner.launch_interactive(workspace_dir)
+            runner.launch_interactive(workspace_dir)
 
-        # FileNotFoundError caught → None → codeagent (no which) → host (no which) → manual
-        assert result.success is False
-        assert result.error == "manual_mode"
+        cmd = mock_run.call_args[0][0]
+        assert "--model" in cmd
+        assert "claude-sonnet-4-5-20250514" in cmd
+
+    def test_launch_interactive_with_model_gemini(self, tmp_path: Path) -> None:
+        """launch_interactive passes --model to gemini when model is set."""
+        workspace_dir = tmp_path / "workspace"
+        workspace_dir.mkdir()
+        (workspace_dir / "output").mkdir()
+
+        config = AdvisorConfig(provider="gemini", model="gemini-2.5-flash")
+        runner = AgentRunner(config=config)
+
+        with (
+            patch("sys.stdin") as mock_stdin,
+            patch("shutil.which", return_value="/usr/bin/gemini"),
+            patch("popctl.advisor.runner.run_interactive", return_value=0) as mock_run,
+        ):
+            mock_stdin.isatty.return_value = True
+            runner.launch_interactive(workspace_dir)
+
+        cmd = mock_run.call_args[0][0]
+        assert "--model" in cmd
+        assert "gemini-2.5-flash" in cmd
 
     def test_manual_instructions_include_provider(self, tmp_path: Path) -> None:
         """Manual instructions mention the configured provider."""
-        config = AdvisorConfig(provider="gemini", container_mode=False)
+        config = AdvisorConfig(provider="gemini")
         runner = AgentRunner(config=config)
 
         result = runner._manual_instructions(tmp_path)
@@ -567,18 +478,12 @@ class TestAgentRunnerPersistMemory:
         persistent_dir = tmp_path / "state" / "popctl" / "advisor"
         persistent_path = persistent_dir / "memory.md"
 
-        config = AdvisorConfig(container_mode=False)
+        config = AdvisorConfig()
         runner = AgentRunner(config=config)
 
-        with (
-            patch(
-                "popctl.core.paths.ensure_advisor_memory_dir",
-                return_value=persistent_dir,
-            ),
-            patch(
-                "popctl.core.paths.get_advisor_memory_path",
-                return_value=persistent_path,
-            ),
+        with patch(
+            "popctl.advisor.runner.ensure_dir",
+            return_value=persistent_dir,
         ):
             persistent_dir.mkdir(parents=True, exist_ok=True)
             runner._persist_memory(workspace_memory)
@@ -587,19 +492,24 @@ class TestAgentRunnerPersistMemory:
         assert "Advisor Memory" in persistent_path.read_text()
 
     def test_persist_memory_handles_runtime_error(self, tmp_path: Path) -> None:
-        """_persist_memory logs warning on failure without raising."""
+        """_persist_memory logs warning and prints user-visible warning on failure."""
         workspace_memory = tmp_path / "memory.md"
         workspace_memory.write_text("# Memory\n")
 
-        config = AdvisorConfig(container_mode=False)
+        config = AdvisorConfig()
         runner = AgentRunner(config=config)
 
-        with patch(
-            "popctl.core.paths.ensure_advisor_memory_dir",
-            side_effect=RuntimeError("Permission denied"),
+        with (
+            patch(
+                "popctl.advisor.runner.ensure_dir",
+                side_effect=RuntimeError("Permission denied"),
+            ),
+            patch("popctl.advisor.runner.print_warning") as mock_warn,
         ):
             # Should not raise
             runner._persist_memory(workspace_memory)
+
+        mock_warn.assert_called_once_with("Could not persist advisor memory: Permission denied")
 
 
 class TestAgentRunnerIntegration:
@@ -607,31 +517,22 @@ class TestAgentRunnerIntegration:
 
     def test_runner_with_default_config(self, tmp_path: Path) -> None:
         """AgentRunner works with default AdvisorConfig."""
-        config = AdvisorConfig()  # All defaults
+        config = AdvisorConfig()
         runner = AgentRunner(config=config)
 
-        # Should be container mode (container_mode defaults to True)
-        assert runner._is_container_mode() is True
-
-        # Container mode builds codeagent command
         command = runner._build_headless_command(tmp_path)
-        assert command[0] == "codeagent"
+        assert command[0] == "claude"
 
     def test_runner_configuration_propagation(self, tmp_path: Path) -> None:
         """AgentRunner correctly uses all config settings."""
         config = AdvisorConfig(
             provider="gemini",
             model="gemini-2.5-flash",
-            container_mode=True,
             timeout_seconds=120,
         )
         runner = AgentRunner(config=config)
 
-        # Container mode
-        assert runner._is_container_mode() is True
-
-        # Correct model in command
         command = runner._build_headless_command(tmp_path)
-        assert "codeagent" in command
-        assert "gemini" in command
+        assert command[0] == "gemini"
+        assert "--model" in command
         assert "gemini-2.5-flash" in command

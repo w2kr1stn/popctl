@@ -40,32 +40,12 @@ def main(
             help="Show version and exit.",
         ),
     ] = None,
-    verbose: Annotated[
-        bool,
-        typer.Option(
-            "--verbose",
-            "-v",
-            help="Enable verbose output.",
-        ),
-    ] = False,
-    quiet: Annotated[
-        bool,
-        typer.Option(
-            "--quiet",
-            "-q",
-            help="Suppress non-essential output.",
-        ),
-    ] = False,
 ) -> None:
     """popctl - Declarative system configuration for Pop!_OS.
 
     Define your desired system state in a manifest file and
     automatically maintain that state over time.
     """
-    # Store options in context for subcommands
-    ctx.ensure_object(dict)
-    ctx.obj["verbose"] = verbose
-    ctx.obj["quiet"] = quiet
 
 
 # Register commands

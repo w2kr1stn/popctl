@@ -8,7 +8,7 @@ import re
 from collections.abc import Iterator
 
 from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
-from popctl.scanners.base import Scanner
+from popctl.scanners.base import Scanner, parse_tab_fields
 from popctl.utils.shell import command_exists, run_command
 
 logger = logging.getLogger(__name__)
@@ -34,10 +34,7 @@ class FlatpakScanner(Scanner):
         "TB": 1024 * 1024 * 1024 * 1024,
     }
 
-    @property
-    def source(self) -> PackageSource:
-        """Return FLATPAK as the package source."""
-        return PackageSource.FLATPAK
+    source = PackageSource.FLATPAK
 
     def is_available(self) -> bool:
         """Check if flatpak CLI is available."""
@@ -91,17 +88,11 @@ class FlatpakScanner(Scanner):
         Returns:
             ScannedPackage if parsing succeeds, None otherwise.
         """
-        parts = line.split("\t")
-        if len(parts) < 2:
-            logger.debug("Skipping malformed flatpak line (parts=%d): %r", len(parts), line[:100])
+        parsed = parse_tab_fields(line, "flatpak")
+        if parsed is None:
             return None
 
-        name = parts[0].strip()
-        version = parts[1].strip()
-
-        if not name or not version:
-            logger.debug("Skipping flatpak line with empty name/version: %r", line[:100])
-            return None
+        name, version, parts = parsed
 
         # Parse optional fields
         size_bytes: int | None = None
