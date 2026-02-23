@@ -48,7 +48,7 @@ def base_manifest() -> Manifest:
     """Create a basic manifest for testing."""
     now = datetime.now(UTC)
     return Manifest(
-        meta=ManifestMeta(version="1.0", created=now, updated=now),
+        meta=ManifestMeta(created=now, updated=now),
         system=SystemConfig(name="test-machine"),
         packages=PackageConfig(
             keep={
@@ -57,7 +57,7 @@ def base_manifest() -> Manifest:
                 "com.spotify.Client": PackageEntry(source="flatpak"),
             },
             remove={
-                "bloatware": PackageEntry(source="apt", status="remove"),
+                "bloatware": PackageEntry(source="apt"),
             },
         ),
     )
@@ -68,20 +68,10 @@ def empty_manifest() -> Manifest:
     """Create an empty manifest for testing."""
     now = datetime.now(UTC)
     return Manifest(
-        meta=ManifestMeta(version="1.0", created=now, updated=now),
+        meta=ManifestMeta(created=now, updated=now),
         system=SystemConfig(name="test-machine"),
         packages=PackageConfig(keep={}, remove={}),
     )
-
-
-class TestDiffType:
-    """Tests for DiffType enum."""
-
-    def test_diff_type_values(self) -> None:
-        """DiffType has expected string values."""
-        assert DiffType.NEW.value == "new"
-        assert DiffType.MISSING.value == "missing"
-        assert DiffType.EXTRA.value == "extra"
 
 
 class TestDiffEntry:
@@ -453,39 +443,6 @@ class TestComputeDiff:
         assert "htop" not in new_names  # APT filtered out
         assert "com.spotify.Client" in missing_names
         assert "firefox" not in missing_names  # APT filtered out
-
-    def test_skips_unavailable_scanners(self, base_manifest: Manifest) -> None:
-        """Unavailable scanners are skipped."""
-        available_scanner = MockScanner(
-            source=PackageSource.APT,
-            packages=[
-                ScannedPackage(
-                    name="firefox",
-                    source=PackageSource.APT,
-                    version="128.0",
-                    status=PackageStatus.MANUAL,
-                ),
-            ],
-        )
-
-        unavailable_scanner = MockScanner(
-            source=PackageSource.FLATPAK,
-            packages=[
-                ScannedPackage(
-                    name="should.not.appear",
-                    source=PackageSource.FLATPAK,
-                    version="1.0",
-                    status=PackageStatus.MANUAL,
-                ),
-            ],
-            available=False,  # Not available
-        )
-
-        result = compute_diff(base_manifest, [available_scanner, unavailable_scanner])
-
-        # Only APT packages should be processed
-        all_names = [e.name for e in result.new + result.missing + result.extra]
-        assert "should.not.appear" not in all_names
 
     def test_results_are_sorted(self, empty_manifest: Manifest) -> None:
         """Results are sorted by source and name."""

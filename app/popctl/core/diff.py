@@ -10,9 +10,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from popctl.core.baseline import is_protected
+from popctl.core.baseline import is_package_protected
+from popctl.models.action import Action, ActionType
 from popctl.models.manifest import PackageSourceType
-from popctl.models.package import PackageStatus
+from popctl.models.package import PackageSource, PackageStatus
 
 if TYPE_CHECKING:
     from popctl.models.manifest import Manifest
@@ -103,30 +104,23 @@ class DiffResult:
                 "extra": len(self.extra),
                 "total": self.total_changes,
             },
-            "new": [_entry_to_dict(e) for e in self.new],
-            "missing": [_entry_to_dict(e) for e in self.missing],
-            "extra": [_entry_to_dict(e) for e in self.extra],
+            "new": [self._entry_to_dict(e) for e in self.new],
+            "missing": [self._entry_to_dict(e) for e in self.missing],
+            "extra": [self._entry_to_dict(e) for e in self.extra],
         }
 
-
-def _entry_to_dict(entry: DiffEntry) -> dict[str, str]:
-    """Convert a DiffEntry to a dictionary.
-
-    Args:
-        entry: The DiffEntry to convert.
-
-    Returns:
-        Dictionary with non-None fields.
-    """
-    result: dict[str, str] = {
-        "name": entry.name,
-        "source": entry.source,
-    }
-    if entry.version is not None:
-        result["version"] = entry.version
-    if entry.description is not None:
-        result["description"] = entry.description
-    return result
+    @staticmethod
+    def _entry_to_dict(entry: DiffEntry) -> dict[str, str]:
+        """Convert a DiffEntry to a dictionary."""
+        result: dict[str, str] = {
+            "name": entry.name,
+            "source": entry.source,
+        }
+        if entry.version is not None:
+            result["version"] = entry.version
+        if entry.description is not None:
+            result["description"] = entry.description
+        return result
 
 
 def compute_diff(
@@ -155,9 +149,6 @@ def compute_diff(
     installed: dict[str, tuple[str, str | None, str | None]] = {}
 
     for scanner in scanners:
-        if not scanner.is_available():
-            continue
-
         source_name = scanner.source.value
 
         # Skip if source filter is active and doesn't match
@@ -170,7 +161,7 @@ def compute_diff(
                 continue
 
             # Skip protected packages
-            if is_protected(pkg.name):
+            if is_package_protected(pkg.name):
                 continue
 
             installed[pkg.name] = (source_name, pkg.version, pkg.description)
@@ -198,7 +189,7 @@ def compute_diff(
     for name, entry in keep_packages.items():
         if name not in installed:
             # Skip protected packages from missing check too
-            if is_protected(name):
+            if is_package_protected(name):
                 continue
             missing_entries.append(
                 DiffEntry(
@@ -233,3 +224,52 @@ def compute_diff(
         missing=tuple(missing_entries),
         extra=tuple(extra_entries),
     )
+
+
+def diff_to_actions(diff_result: DiffResult, purge: bool = False) -> list[Action]:
+    """Convert diff result to list of actions.
+
+    Only MISSING and EXTRA diffs are converted to actions:
+    - MISSING: Package in manifest but not installed -> INSTALL
+    - EXTRA: Package marked for removal but still installed -> REMOVE/PURGE
+
+    NEW packages (installed but not in manifest) are ignored - the user
+    must explicitly add them to the remove list in the manifest.
+
+    Note: Protected packages are already filtered by compute_diff() and
+    will not appear in the diff_result.
+
+    Args:
+        diff_result: Result from compute_diff().
+        purge: If True, use PURGE instead of REMOVE for APT packages.
+
+    Returns:
+        List of Action objects to execute.
+    """
+    actions: list[Action] = []
+
+    # MISSING -> INSTALL
+    for entry in diff_result.missing:
+        pkg_source = PackageSource(entry.source)
+        action = Action(
+            action_type=ActionType.INSTALL,
+            package=entry.name,
+            source=pkg_source,
+        )
+        actions.append(action)
+
+    # EXTRA -> REMOVE/PURGE
+    for entry in diff_result.extra:
+        pkg_source = PackageSource(entry.source)
+
+        # Purge applies to APT and Snap packages
+        use_purge = purge and pkg_source in (PackageSource.APT, PackageSource.SNAP)
+
+        action = Action(
+            action_type=ActionType.PURGE if use_purge else ActionType.REMOVE,
+            package=entry.name,
+            source=pkg_source,
+        )
+        actions.append(action)
+
+    return actions

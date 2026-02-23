@@ -3,42 +3,17 @@
 Tests for the CLI apply command implementation.
 """
 
-from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from popctl.cli.main import app
 from popctl.core.diff import DiffEntry, DiffResult, DiffType
-from popctl.models.manifest import (
-    Manifest,
-    ManifestMeta,
-    PackageConfig,
-    PackageEntry,
-    SystemConfig,
-)
+from popctl.models.manifest import Manifest
+from popctl.utils.shell import CommandResult
 from typer.testing import CliRunner
 
 runner = CliRunner()
-
-
-@pytest.fixture
-def sample_manifest() -> Manifest:
-    """Create a sample manifest for testing."""
-    now = datetime.now(UTC)
-    return Manifest(
-        meta=ManifestMeta(version="1.0", created=now, updated=now),
-        system=SystemConfig(name="test-machine"),
-        packages=PackageConfig(
-            keep={
-                "firefox": PackageEntry(source="apt"),
-                "neovim": PackageEntry(source="apt"),
-            },
-            remove={
-                "bloatware": PackageEntry(source="apt", status="remove"),
-            },
-        ),
-    )
 
 
 @pytest.fixture
@@ -77,51 +52,46 @@ class TestApplyCommandHelp:
 
     def test_apply_help_shows_options(self) -> None:
         """Apply help shows all available options."""
+        from tests.unit.conftest import strip_ansi
+
         result = runner.invoke(app, ["apply", "--help"])
-        assert "--yes" in result.stdout
-        assert "--dry-run" in result.stdout
-        assert "--source" in result.stdout
-        assert "--purge" in result.stdout
+        output = strip_ansi(result.stdout)
+        assert "--yes" in output
+        assert "--dry-run" in output
+        assert "--source" in output
+        assert "--purge" in output
 
 
-class TestApplyNoManifest:
-    """Tests for apply command when no manifest exists."""
+def test_apply_no_manifest_error(tmp_path: Path) -> None:
+    """Apply shows error when manifest doesn't exist."""
+    from popctl.core.manifest import ManifestNotFoundError
 
-    def test_apply_no_manifest_error(self, tmp_path: Path) -> None:
-        """Apply shows error when manifest doesn't exist."""
-        from popctl.core.manifest import ManifestNotFoundError
+    with patch(
+        "popctl.core.manifest.load_manifest",
+        side_effect=ManifestNotFoundError("Manifest not found"),
+    ):
+        result = runner.invoke(app, ["apply"])
 
-        with patch(
-            "popctl.core.manifest.load_manifest",
-            side_effect=ManifestNotFoundError("Manifest not found"),
-        ):
-            result = runner.invoke(app, ["apply"])
-
-        assert result.exit_code == 1
-        assert "Manifest not found" in (result.stdout + result.stderr)
-        assert "popctl init" in (result.stdout + result.stderr)
+    assert result.exit_code == 1
+    assert "Manifest not found" in (result.stdout + result.stderr)
+    assert "popctl init" in (result.stdout + result.stderr)
 
 
-class TestApplyInSync:
-    """Tests for apply command when system is in sync."""
+def test_apply_in_sync_message(sample_manifest: Manifest, in_sync_result: DiffResult) -> None:
+    """Apply shows success message when in sync."""
+    with (
+        patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+        patch("popctl.scanners.apt.command_exists", return_value=True),
+        patch("popctl.scanners.flatpak.command_exists", return_value=False),
+        patch(
+            "popctl.cli.commands.apply.compute_system_diff",
+            return_value=in_sync_result,
+        ),
+    ):
+        result = runner.invoke(app, ["apply"])
 
-    def test_apply_in_sync_message(
-        self, sample_manifest: Manifest, in_sync_result: DiffResult
-    ) -> None:
-        """Apply shows success message when in sync."""
-        with (
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch(
-                "popctl.cli.commands.apply.compute_diff",
-                return_value=in_sync_result,
-            ),
-        ):
-            result = runner.invoke(app, ["apply"])
-
-        assert result.exit_code == 0
-        assert "in sync" in result.stdout.lower() or "nothing to do" in result.stdout.lower()
+    assert result.exit_code == 0
+    assert "in sync" in result.stdout.lower() or "nothing to do" in result.stdout.lower()
 
 
 class TestApplyDryRun:
@@ -136,7 +106,7 @@ class TestApplyDryRun:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.apply.compute_diff",
+                "popctl.cli.commands.apply.compute_system_diff",
                 return_value=diff_result_with_actions,
             ),
         ):
@@ -159,7 +129,7 @@ class TestApplyDryRun:
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
             patch(
-                "popctl.cli.commands.apply.compute_diff",
+                "popctl.cli.commands.apply.compute_system_diff",
                 return_value=diff_result_with_actions,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
@@ -183,7 +153,7 @@ class TestApplyConfirmation:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.apply.compute_diff",
+                "popctl.cli.commands.apply.compute_system_diff",
                 return_value=diff_result_with_actions,
             ),
         ):
@@ -204,14 +174,12 @@ class TestApplyConfirmation:
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
             patch(
-                "popctl.cli.commands.apply.compute_diff",
+                "popctl.cli.commands.apply.compute_system_diff",
                 return_value=diff_result_with_actions,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
         ):
-            mock_run.return_value = __import__(
-                "popctl.utils.shell", fromlist=["CommandResult"]
-            ).CommandResult(stdout="", stderr="", returncode=0)
+            mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
             result = runner.invoke(app, ["apply", "--yes"])
 
@@ -236,14 +204,12 @@ class TestApplyExecution:
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
             patch(
-                "popctl.cli.commands.apply.compute_diff",
+                "popctl.cli.commands.apply.compute_system_diff",
                 return_value=missing_only,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
         ):
-            mock_run.return_value = __import__(
-                "popctl.utils.shell", fromlist=["CommandResult"]
-            ).CommandResult(stdout="", stderr="", returncode=0)
+            mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
             runner.invoke(app, ["apply", "--yes"])
 
@@ -267,14 +233,12 @@ class TestApplyExecution:
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
             patch(
-                "popctl.cli.commands.apply.compute_diff",
+                "popctl.cli.commands.apply.compute_system_diff",
                 return_value=extra_only,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
         ):
-            mock_run.return_value = __import__(
-                "popctl.utils.shell", fromlist=["CommandResult"]
-            ).CommandResult(stdout="", stderr="", returncode=0)
+            mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
             runner.invoke(app, ["apply", "--yes"])
 
@@ -298,14 +262,12 @@ class TestApplyExecution:
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
             patch(
-                "popctl.cli.commands.apply.compute_diff",
+                "popctl.cli.commands.apply.compute_system_diff",
                 return_value=extra_only,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
         ):
-            mock_run.return_value = __import__(
-                "popctl.utils.shell", fromlist=["CommandResult"]
-            ).CommandResult(stdout="", stderr="", returncode=0)
+            mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
             runner.invoke(app, ["apply", "--yes", "--purge"])
 
@@ -314,155 +276,103 @@ class TestApplyExecution:
         assert "purge" in args
 
 
-class TestApplyNewPackages:
-    """Tests for NEW packages handling."""
+def test_apply_ignores_new_packages(sample_manifest: Manifest) -> None:
+    """Apply does NOT remove NEW packages (not in manifest)."""
+    new_only = DiffResult(
+        new=(DiffEntry(name="htop", source="apt", diff_type=DiffType.NEW),),
+        missing=(),
+        extra=(),
+    )
 
-    def test_apply_ignores_new_packages(self, sample_manifest: Manifest) -> None:
-        """Apply does NOT remove NEW packages (not in manifest)."""
-        new_only = DiffResult(
-            new=(DiffEntry(name="htop", source="apt", diff_type=DiffType.NEW),),
-            missing=(),
-            extra=(),
+    with (
+        patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+        patch("popctl.scanners.apt.command_exists", return_value=True),
+        patch("popctl.scanners.flatpak.command_exists", return_value=False),
+        patch(
+            "popctl.cli.commands.apply.compute_system_diff",
+            return_value=new_only,
+        ),
+    ):
+        result = runner.invoke(app, ["apply"])
+
+    # Should report nothing to do since NEW packages are ignored
+    assert result.exit_code == 0
+    assert "Nothing to do" in result.stdout or "in sync" in result.stdout.lower()
+
+
+def test_apply_no_scanners_available(sample_manifest: Manifest) -> None:
+    """Apply fails gracefully when no scanners available."""
+    with (
+        patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+        patch("popctl.scanners.apt.command_exists", return_value=False),
+        patch("popctl.scanners.flatpak.command_exists", return_value=False),
+    ):
+        result = runner.invoke(app, ["apply"])
+
+    assert result.exit_code == 1
+    assert "not available" in (result.stdout + result.stderr).lower()
+
+
+def test_apply_source_apt_only(sample_manifest: Manifest) -> None:
+    """Apply --source apt only processes APT packages."""
+    apt_result = DiffResult(
+        new=(),
+        missing=(DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),),
+        extra=(),
+    )
+
+    with (
+        patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+        patch("popctl.scanners.apt.command_exists", return_value=True),
+        patch("popctl.scanners.flatpak.command_exists", return_value=True),
+        patch("popctl.operators.apt.command_exists", return_value=True),
+        patch(
+            "popctl.cli.commands.apply.compute_system_diff",
+            return_value=apt_result,
+        ) as mock_diff,
+        patch("popctl.operators.apt.run_command") as mock_run,
+    ):
+        mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
+
+        result = runner.invoke(app, ["apply", "--yes", "--source", "apt"])
+
+    assert result.exit_code == 0
+    # Verify source filter was passed to compute_system_diff
+    mock_diff.assert_called_once()
+    call_args = mock_diff.call_args
+    # compute_system_diff(source) — first positional is SourceChoice
+    assert call_args[0][0].value == "apt"
+
+
+def test_apply_reports_failures(sample_manifest: Manifest) -> None:
+    """Apply reports failed actions in results."""
+    missing_only = DiffResult(
+        new=(),
+        missing=(DiffEntry(name="nonexistent-pkg", source="apt", diff_type=DiffType.MISSING),),
+        extra=(),
+    )
+
+    with (
+        patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
+        patch("popctl.scanners.apt.command_exists", return_value=True),
+        patch("popctl.scanners.flatpak.command_exists", return_value=False),
+        patch("popctl.operators.apt.command_exists", return_value=True),
+        patch(
+            "popctl.cli.commands.apply.compute_system_diff",
+            return_value=missing_only,
+        ),
+        patch("popctl.operators.apt.run_command") as mock_run,
+    ):
+        mock_run.return_value = CommandResult(
+            stdout="", stderr="E: Package not found", returncode=100
         )
 
-        with (
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch(
-                "popctl.cli.commands.apply.compute_diff",
-                return_value=new_only,
-            ),
-        ):
-            result = runner.invoke(app, ["apply"])
+        result = runner.invoke(app, ["apply", "--yes"])
 
-        # Should report nothing to do since NEW packages are ignored
-        assert result.exit_code == 0
-        assert "Nothing to do" in result.stdout or "in sync" in result.stdout.lower()
-
-
-class TestApplyProtectedPackages:
-    """Tests for protected package handling."""
-
-    def test_apply_does_not_remove_protected(self, sample_manifest: Manifest) -> None:
-        """Apply does not create remove actions for protected packages."""
-        # Even if somehow a protected package ends up in EXTRA, it should be filtered
-        protected_extra = DiffResult(
-            new=(),
-            missing=(),
-            extra=(
-                DiffEntry(name="systemd", source="apt", diff_type=DiffType.EXTRA),
-                DiffEntry(name="bloatware", source="apt", diff_type=DiffType.EXTRA),
-            ),
-        )
-
-        with (
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch("popctl.operators.apt.command_exists", return_value=True),
-            patch(
-                "popctl.cli.commands.apply.compute_diff",
-                return_value=protected_extra,
-            ),
-            patch("popctl.operators.apt.run_command") as mock_run,
-        ):
-            mock_run.return_value = __import__(
-                "popctl.utils.shell", fromlist=["CommandResult"]
-            ).CommandResult(stdout="", stderr="", returncode=0)
-
-            runner.invoke(app, ["apply", "--yes"])
-
-        # Should only have bloatware in the remove call, not systemd
-        args = mock_run.call_args[0][0]
-        assert "bloatware" in args
-        assert "systemd" not in args
-
-
-class TestApplyScannerAvailability:
-    """Tests for scanner availability handling."""
-
-    def test_apply_no_scanners_available(self, sample_manifest: Manifest) -> None:
-        """Apply fails gracefully when no scanners available."""
-        with (
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=False),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
-        ):
-            result = runner.invoke(app, ["apply"])
-
-        assert result.exit_code == 1
-        assert "not available" in (result.stdout + result.stderr).lower()
-
-
-class TestApplySourceFilter:
-    """Tests for apply --source option."""
-
-    def test_apply_source_apt_only(self, sample_manifest: Manifest) -> None:
-        """Apply --source apt only processes APT packages."""
-        apt_result = DiffResult(
-            new=(),
-            missing=(DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),),
-            extra=(),
-        )
-
-        with (
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=True),
-            patch("popctl.operators.apt.command_exists", return_value=True),
-            patch(
-                "popctl.cli.commands.apply.compute_diff",
-                return_value=apt_result,
-            ) as mock_diff,
-            patch("popctl.operators.apt.run_command") as mock_run,
-        ):
-            mock_run.return_value = __import__(
-                "popctl.utils.shell", fromlist=["CommandResult"]
-            ).CommandResult(stdout="", stderr="", returncode=0)
-
-            result = runner.invoke(app, ["apply", "--yes", "--source", "apt"])
-
-        assert result.exit_code == 0
-        # Verify source filter was passed to compute_diff
-        mock_diff.assert_called_once()
-        call_args = mock_diff.call_args
-        # compute_diff(manifest, scanners, source_filter) — all positional
-        assert call_args[0][2] == "apt"
-
-
-class TestApplyFailures:
-    """Tests for apply command failure handling."""
-
-    def test_apply_reports_failures(self, sample_manifest: Manifest) -> None:
-        """Apply reports failed actions in results."""
-        missing_only = DiffResult(
-            new=(),
-            missing=(DiffEntry(name="nonexistent-pkg", source="apt", diff_type=DiffType.MISSING),),
-            extra=(),
-        )
-
-        with (
-            patch("popctl.core.manifest.load_manifest", return_value=sample_manifest),
-            patch("popctl.scanners.apt.command_exists", return_value=True),
-            patch("popctl.scanners.flatpak.command_exists", return_value=False),
-            patch("popctl.operators.apt.command_exists", return_value=True),
-            patch(
-                "popctl.cli.commands.apply.compute_diff",
-                return_value=missing_only,
-            ),
-            patch("popctl.operators.apt.run_command") as mock_run,
-        ):
-            mock_run.return_value = __import__(
-                "popctl.utils.shell", fromlist=["CommandResult"]
-            ).CommandResult(stdout="", stderr="E: Package not found", returncode=100)
-
-            result = runner.invoke(app, ["apply", "--yes"])
-
-        # Should exit with error code
-        assert result.exit_code == 1
-        # Should show failure in output
-        assert "FAIL" in result.stdout or "failed" in result.stdout.lower()
+    # Should exit with error code
+    assert result.exit_code == 1
+    # Should show failure in output
+    assert "FAIL" in result.stdout or "failed" in result.stdout.lower()
 
 
 class TestApplyHistory:
@@ -482,15 +392,13 @@ class TestApplyHistory:
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
             patch(
-                "popctl.cli.commands.apply.compute_diff",
+                "popctl.cli.commands.apply.compute_system_diff",
                 return_value=missing_only,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
             patch("popctl.core.executor.record_action") as mock_record_action,
         ):
-            mock_run.return_value = __import__(
-                "popctl.utils.shell", fromlist=["CommandResult"]
-            ).CommandResult(stdout="", stderr="", returncode=0)
+            mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
             result = runner.invoke(app, ["apply", "--yes"])
 
@@ -509,7 +417,7 @@ class TestApplyHistory:
             patch("popctl.scanners.apt.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch(
-                "popctl.cli.commands.apply.compute_diff",
+                "popctl.cli.commands.apply.compute_system_diff",
                 return_value=diff_result_with_actions,
             ),
             patch("popctl.core.executor.record_action") as mock_record_action,
@@ -539,16 +447,14 @@ class TestApplyHistory:
             patch("popctl.scanners.flatpak.command_exists", return_value=False),
             patch("popctl.operators.apt.command_exists", return_value=True),
             patch(
-                "popctl.cli.commands.apply.compute_diff",
+                "popctl.cli.commands.apply.compute_system_diff",
                 return_value=mixed_result,
             ),
             patch("popctl.operators.apt.run_command") as mock_run,
             patch("popctl.cli.commands.apply.record_actions_to_history") as mock_record,
         ):
             # Both packages will be attempted in a single apt-get call
-            mock_run.return_value = __import__(
-                "popctl.utils.shell", fromlist=["CommandResult"]
-            ).CommandResult(stdout="", stderr="", returncode=0)
+            mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
 
             runner.invoke(app, ["apply", "--yes"])
 
