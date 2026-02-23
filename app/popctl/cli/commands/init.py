@@ -8,15 +8,14 @@ from typing import Annotated
 
 import typer
 
-from popctl.cli.types import get_available_scanners
 from popctl.core.manifest import (
-    collect_manual_packages,
-    create_manifest,
     manifest_exists,
     save_manifest,
+    scan_and_create_manifest,
 )
-from popctl.core.paths import ensure_config_dir, get_manifest_path
+from popctl.core.paths import get_manifest_path
 from popctl.models.manifest import Manifest
+from popctl.scanners import get_available_scanners
 from popctl.utils.formatting import (
     console,
     print_error,
@@ -135,18 +134,15 @@ def init_manifest(
     source_names = [s.source.value.upper() for s in scanners]
     print_info(f"Scanning system packages: {', '.join(source_names)}")
 
-    # Collect packages
+    # Collect packages and create manifest
     try:
-        packages, skipped_protected = collect_manual_packages(scanners)
+        manifest, packages, skipped_protected = scan_and_create_manifest(scanners)
     except RuntimeError as e:
         print_error(f"Scan failed: {e}")
         raise typer.Exit(code=1) from e
 
     if not packages:
         print_warning("No manually installed packages found (excluding protected system packages).")
-
-    # Create manifest
-    manifest = create_manifest(packages)
 
     # Show summary
     _show_manifest_summary(manifest, output_path, skipped_protected)
@@ -155,9 +151,6 @@ def init_manifest(
     if dry_run:
         print_info("[DRY-RUN] No files were written.")
         return
-
-    # Ensure config directory exists
-    ensure_config_dir()
 
     # Save manifest
     try:

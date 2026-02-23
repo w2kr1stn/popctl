@@ -7,24 +7,23 @@ followed by optional filesystem scanning and cleanup phases.
 
 from __future__ import annotations
 
-import logging
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 import typer
 
 from popctl.advisor import AgentRunner, import_decisions
-from popctl.advisor.config import AdvisorConfigError
+from popctl.advisor.config import AdvisorConfigError, load_or_create_config
 from popctl.advisor.exchange import (
     DecisionsResult,
     DomainDecisions,
-    OrphanEntry,
     apply_decisions_to_manifest,
+    apply_domain_decisions_to_manifest,
+    record_advisor_apply_to_history,
 )
-from popctl.advisor.history import record_advisor_apply_to_history
+from popctl.advisor.runner import MANUAL_MODE_SENTINEL
 from popctl.advisor.scanning import scan_system
-from popctl.advisor.workspace import create_session_workspace, ensure_advisor_sessions_dir
-from popctl.cli.commands.advisor import load_or_create_config
+from popctl.advisor.workspace import create_full_session_workspace
 from popctl.cli.display import (
     create_actions_table,
     create_results_table,
@@ -34,29 +33,25 @@ from popctl.cli.display import (
 )
 from popctl.cli.types import (
     SourceChoice,
-    get_available_scanners,
-    get_checked_scanners,
-    require_manifest,
+    collect_domain_orphans,
+    compute_system_diff,
 )
-from popctl.configs.operator import ConfigOperator
-from popctl.configs.scanner import ConfigScanner
-from popctl.core.actions import diff_to_actions
-from popctl.core.diff import DiffResult, compute_diff
-from popctl.core.executor import execute_actions, get_available_operators, record_actions_to_history
+from popctl.configs import ConfigOperator
+from popctl.core.diff import DiffResult, diff_to_actions
+from popctl.core.executor import execute_actions, record_actions_to_history
 from popctl.core.manifest import (
     ManifestError,
-    collect_manual_packages,
-    create_manifest,
     load_manifest,
     manifest_exists,
     save_manifest,
+    scan_and_create_manifest,
 )
-from popctl.core.paths import ensure_config_dir, get_manifest_path, get_state_dir
-from popctl.domain.history import record_domain_deletions
-from popctl.domain.manifest import DomainConfig, DomainEntry
-from popctl.domain.models import OrphanStatus, ScannedEntry
-from popctl.filesystem.operator import FilesystemOperator
-from popctl.filesystem.scanner import FilesystemScanner
+from popctl.core.state import record_domain_deletions
+from popctl.domain.models import ScannedEntry
+from popctl.domain.protected import is_protected
+from popctl.filesystem import FilesystemOperator
+from popctl.operators import get_available_operators
+from popctl.scanners import get_available_scanners
 from popctl.utils.formatting import (
     console,
     print_error,
@@ -64,8 +59,6 @@ from popctl.utils.formatting import (
     print_success,
     print_warning,
 )
-
-logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     help="Full system synchronization.",
@@ -96,17 +89,13 @@ def _ensure_manifest() -> None:
     print_info(f"Scanning system packages: {', '.join(source_names)}")
 
     try:
-        packages, _skipped = collect_manual_packages(scanners)
+        manifest, packages, _ = scan_and_create_manifest(scanners)
     except RuntimeError as e:
         print_error(f"Scan failed: {e}")
         raise typer.Exit(code=1) from e
 
     if not packages:
         print_warning("No manually installed packages found (excluding protected system packages).")
-
-    manifest = create_manifest(packages)
-
-    ensure_config_dir()
 
     try:
         saved_path = save_manifest(manifest)
@@ -116,36 +105,12 @@ def _ensure_manifest() -> None:
         raise typer.Exit(code=1) from e
 
 
-def _compute_diff(source: SourceChoice) -> DiffResult:
-    """Compute diff between manifest and system state.
-
-    Args:
-        source: Package source filter.
-
-    Returns:
-        Diff result with NEW, MISSING, and EXTRA entries.
-
-    Raises:
-        typer.Exit: If diff computation fails.
-    """
-    manifest = require_manifest()
-
-    available_scanners = get_checked_scanners(source)
-
-    source_filter = source.to_source_filter()
-    try:
-        return compute_diff(manifest, available_scanners, source_filter)
-    except RuntimeError as e:
-        print_error(f"Scan failed: {e}")
-        raise typer.Exit(code=1) from e
-
-
 def _invoke_advisor(
     *,
     auto: bool,
     domain: str,
-    filesystem_orphans: list[OrphanEntry] | None = None,
-    config_orphans: list[OrphanEntry] | None = None,
+    filesystem_orphans: list[dict[str, Any]] | None = None,
+    config_orphans: list[dict[str, Any]] | None = None,
 ) -> DecisionsResult | None:
     """Shared advisor workflow: config -> scan -> workspace -> run -> import.
 
@@ -175,15 +140,8 @@ def _invoke_advisor(
         return None
 
     try:
-        sessions_dir = ensure_advisor_sessions_dir()
-        manifest_path = get_manifest_path()
-        memory_path = get_state_dir() / "advisor" / "memory.md"
-
-        workspace_dir = create_session_workspace(
+        workspace_dir = create_full_session_workspace(
             scan_result,
-            sessions_dir,
-            manifest_path=manifest_path if manifest_path.exists() else None,
-            memory_path=memory_path if memory_path.exists() else None,
             filesystem_orphans=filesystem_orphans,
             config_orphans=config_orphans,
         )
@@ -202,7 +160,7 @@ def _invoke_advisor(
         print_warning(f"Advisor execution failed: {e}")
         return None
 
-    if result.error == "manual_mode":
+    if result.error == MANUAL_MODE_SENTINEL:
         console.print()
         console.print(result.output)
         return None
@@ -215,7 +173,7 @@ def _invoke_advisor(
         return None
 
     try:
-        return import_decisions(result.decisions_path.parent)
+        return import_decisions(result.decisions_path)
     except (FileNotFoundError, ValueError) as e:
         print_warning(f"Could not load advisor decisions: {e}")
         return None
@@ -396,7 +354,7 @@ def sync(
     _ensure_manifest()
 
     # Phase 2: Compute diff
-    diff_result = _compute_diff(source)
+    diff_result = compute_system_diff(source)
 
     # Check if system is already in sync
     if diff_result.is_in_sync:
@@ -438,7 +396,7 @@ def sync(
         _run_advisor(diff_result, auto)
 
         # Phase 5: Re-diff after advisor changes
-        diff_result = _compute_diff(source)
+        diff_result = compute_system_diff(source)
 
         if diff_result.is_in_sync:
             print_success(
@@ -607,14 +565,11 @@ def _domain_scan(domain: Literal["filesystem", "configs"]) -> list[ScannedEntry]
         domain: Which domain to scan.
 
     Returns:
-        List of scanned objects with ORPHAN status.
+        List of orphan entries sorted by confidence (desc).
         Empty list if the scan fails or finds nothing.
     """
-    scanner_cls = FilesystemScanner if domain == "filesystem" else ConfigScanner  # type: ignore[assignment]
-
     try:
-        scanner = scanner_cls()
-        return [item for item in scanner.scan() if item.status == OrphanStatus.ORPHAN]
+        return collect_domain_orphans(domain)
     except (OSError, RuntimeError) as e:
         print_warning(f"{domain.capitalize()} scan failed: {e}")
         return []
@@ -638,18 +593,11 @@ def _domain_run_advisor(
     Returns:
         Domain decisions or None if advisor is unavailable/fails.
     """
-    entries = [
-        OrphanEntry(
-            path=p.path,
-            path_type=p.path_type.value,
-            size_bytes=p.size_bytes,
-            mtime=p.mtime,
-            parent_target=p.parent_target,
-            orphan_reason=p.orphan_reason.value if p.orphan_reason else "unknown",
-            confidence=p.confidence,
-        )
-        for p in orphans
-    ]
+    entries: list[dict[str, Any]] = []
+    for p in orphans:
+        d = {k: v for k, v in p.to_dict().items() if v is not None}
+        d.setdefault("orphan_reason", "unknown")
+        entries.append(d)
     key = "filesystem_orphans" if domain == "filesystem" else "config_orphans"
     advisor_kwargs: dict[str, Any] = {key: entries}
 
@@ -670,8 +618,8 @@ def _domain_apply_decisions(
 ) -> None:
     """Apply advisor decisions to the manifest for a domain.
 
-    Merges the advisor's keep/remove classifications into the manifest's
-    domain section, preserving existing entries that are not reclassified.
+    Thin CLI wrapper around apply_domain_decisions_to_manifest() that
+    handles manifest I/O and user-facing output.
 
     Args:
         domain: Which domain section to update ("filesystem" or "configs").
@@ -683,49 +631,25 @@ def _domain_apply_decisions(
         print_warning(f"Could not load manifest for {domain} apply: {e}")
         return
 
-    keep_entries: dict[str, DomainEntry] = {}
-    remove_entries: dict[str, DomainEntry] = {}
-
-    for decision in decisions.keep:
-        keep_entries[decision.path] = DomainEntry(
-            reason=decision.reason,
-            category=decision.category,
-        )
-
-    for decision in decisions.remove:
-        remove_entries[decision.path] = DomainEntry(
-            reason=decision.reason,
-            category=decision.category,
-        )
-
-    existing = getattr(manifest, domain)
-    if existing:
-        for path, entry in existing.keep.items():
-            if path not in keep_entries and path not in remove_entries:
-                keep_entries[path] = entry
-        for path, entry in existing.remove.items():
-            if path not in keep_entries and path not in remove_entries:
-                remove_entries[path] = entry
-
-    setattr(manifest, domain, DomainConfig(keep=keep_entries, remove=remove_entries))
+    ask_decisions = apply_domain_decisions_to_manifest(manifest, domain, decisions)
     manifest.meta.updated = datetime.now(UTC)
 
     try:
         save_manifest(manifest)
         print_success(
             f"{domain.capitalize()} decisions applied to manifest "
-            f"({len(keep_entries)} keep, {len(remove_entries)} remove)."
+            f"({len(decisions.keep)} keep, {len(decisions.remove)} remove)."
         )
     except (OSError, ManifestError) as e:
         print_warning(f"Could not save manifest after {domain} apply: {e}")
         return
 
-    if decisions.ask:
+    if ask_decisions:
         print_warning(
-            f"{len(decisions.ask)} {domain} path(s) require manual decision. "
+            f"{len(ask_decisions)} {domain} path(s) require manual decision. "
             "Run 'popctl advisor session' to classify them interactively."
         )
-        for decision in decisions.ask:
+        for decision in ask_decisions:
             console.print(f"  [dim]-[/dim] {decision.path}: {decision.reason}")
 
 
@@ -757,7 +681,16 @@ def _domain_clean(domain: Literal["filesystem", "configs"], *, yes: bool) -> lis
         print_info(f"No {label} entries marked for removal.")
         return []
 
-    paths_to_delete = list(remove_paths.keys())
+    # Filter out protected paths (defense-in-depth: operators also check)
+    paths_to_delete: list[str] = []
+    for path_str in remove_paths:
+        if is_protected(path_str, domain):
+            print_warning(f"Skipping protected {label} path: {path_str}")
+            continue
+        paths_to_delete.append(path_str)
+    if not paths_to_delete:
+        print_info(f"No unprotected {label} entries to delete.")
+        return []
     print_info(f"{len(paths_to_delete)} {label} path(s) marked for removal.")
 
     if not yes:

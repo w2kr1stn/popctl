@@ -77,25 +77,10 @@ def ensure_dir(path: Path, name: str) -> Path:
     """
     try:
         path.mkdir(parents=True, exist_ok=True)
-    except PermissionError as e:
-        msg = f"Cannot create {name} directory {path}: Permission denied"
-        raise RuntimeError(msg) from e
     except OSError as e:
         msg = f"Cannot create {name} directory {path}: {e}"
         raise RuntimeError(msg) from e
     return path
-
-
-def ensure_config_dir() -> Path:
-    """Create the configuration directory if it doesn't exist.
-
-    Returns:
-        Path to the configuration directory.
-
-    Raises:
-        RuntimeError: If the directory cannot be created.
-    """
-    return ensure_dir(get_config_dir(), "config")
 
 
 def ensure_config_backup_dir() -> Path:

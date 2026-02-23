@@ -93,7 +93,6 @@ def test_sync_auto_init(sample_manifest: Manifest, in_sync_result: DiffResult) -
             "popctl.cli.commands.sync.scan_and_create_manifest",
             return_value=(sample_manifest, {"firefox": PackageEntry(source="apt")}, []),
         ),
-        patch("popctl.core.paths.ensure_config_dir"),
         patch("popctl.cli.commands.sync.save_manifest", return_value=Path("/tmp/manifest.toml")),
         # For compute_system_diff phase
         patch(

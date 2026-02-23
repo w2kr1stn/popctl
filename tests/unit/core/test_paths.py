@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 from popctl.core.paths import (
     APP_NAME,
-    ensure_config_dir,
     get_config_dir,
     get_manifest_path,
     get_state_dir,
@@ -68,27 +67,3 @@ class TestConveniencePaths:
             result = get_manifest_path()
 
         assert result == Path.home() / ".config" / APP_NAME / "manifest.toml"
-
-
-class TestEnsureDirs:
-    """Tests for directory creation functions."""
-
-    def test_ensure_config_dir_creates_directory(self, tmp_path: Path) -> None:
-        """ensure_config_dir creates the config directory."""
-        config_dir = tmp_path / "config" / APP_NAME
-
-        with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(tmp_path / "config")}):
-            result = ensure_config_dir()
-
-        assert result == config_dir
-        assert config_dir.exists()
-        assert config_dir.is_dir()
-
-    def test_ensure_config_dir_idempotent(self, tmp_path: Path) -> None:
-        """ensure_config_dir is idempotent (can be called multiple times)."""
-        with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(tmp_path / "config")}):
-            result1 = ensure_config_dir()
-            result2 = ensure_config_dir()
-
-        assert result1 == result2
-        assert result1.exists()
