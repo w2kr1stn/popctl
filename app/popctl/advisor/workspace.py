@@ -6,6 +6,8 @@ directory with all files needed for classification.
 
 Workspace structure:
     <session_dir>/
+        .claude/
+            settings.json   — Auto-allow permissions with deny blacklist
         CLAUDE.md           — Agent instructions (auto-picked up by Claude Code)
         scan.json           — Package scan data
         manifest.toml       — Current manifest (if exists)
@@ -32,6 +34,81 @@ if TYPE_CHECKING:
     from typing import Any
 
     from popctl.models.package import ScannedPackage, ScanResult
+
+# Claude Code project-level permissions for ephemeral advisor workspaces.
+# Allow: all tools auto-approved (no manual confirmation).
+# Deny: comprehensive blacklist — deny always overrides allow.
+WORKSPACE_SETTINGS: dict[str, object] = {
+    "permissions": {
+        "allow": ["Bash", "Read", "Edit", "Write"],
+        "deny": [
+            # Löschen
+            "Bash(rm *)",
+            "Bash(* rm *)",
+            "Bash(rmdir *)",
+            "Bash(* rmdir *)",
+            "Bash(unlink *)",
+            "Bash(shred *)",
+            "Bash(truncate *)",
+            # Rechte / Eigentümer
+            "Bash(chmod *)",
+            "Bash(chown *)",
+            "Bash(chgrp *)",
+            # Privilegien-Eskalation
+            "Bash(sudo *)",
+            "Bash(su *)",
+            "Bash(doas *)",
+            # Netzwerk
+            "Bash(curl *)",
+            "Bash(wget *)",
+            "Bash(nc *)",
+            "Bash(ssh *)",
+            "Bash(scp *)",
+            "Bash(rsync *)",
+            "Bash(telnet *)",
+            "Bash(ftp *)",
+            "Bash(nmap *)",
+            # System
+            "Bash(shutdown *)",
+            "Bash(reboot *)",
+            "Bash(halt *)",
+            "Bash(poweroff *)",
+            "Bash(systemctl *)",
+            "Bash(service *)",
+            "Bash(kill *)",
+            "Bash(killall *)",
+            "Bash(pkill *)",
+            # Paketmanager
+            "Bash(apt *)",
+            "Bash(apt-get *)",
+            "Bash(dpkg *)",
+            "Bash(pip *)",
+            "Bash(pip3 *)",
+            "Bash(npm *)",
+            "Bash(yarn *)",
+            "Bash(snap *)",
+            "Bash(flatpak *)",
+            "Bash(uv *)",
+            # Git remote
+            "Bash(git push *)",
+            "Bash(git remote *)",
+            "Bash(git clone *)",
+            "Bash(git fetch *)",
+            "Bash(git pull *)",
+            # Container (kein Docker-in-Docker)
+            "Bash(docker *)",
+            "Bash(podman *)",
+            # Gefährliche Shell-Konstrukte
+            "Bash(eval *)",
+            "Bash(exec *)",
+            "Bash(dd *)",
+            "Bash(mkfs *)",
+            "Bash(fdisk *)",
+            "Bash(mount *)",
+            "Bash(umount *)",
+        ],
+    },
+}
 
 
 def ensure_advisor_sessions_dir() -> Path:
@@ -133,6 +210,13 @@ def create_session_workspace(
 
     # Copy memory.md for cross-session learning
     _copy_memory_to_workspace(memory_path, sessions_dir, session_dir)
+
+    # Write Claude Code permissions (auto-allow with deny blacklist)
+    settings_dir = session_dir / ".claude"
+    settings_dir.mkdir(exist_ok=True)
+    (settings_dir / "settings.json").write_text(
+        json.dumps(WORKSPACE_SETTINGS, indent=2), encoding="utf-8"
+    )
 
     return session_dir
 

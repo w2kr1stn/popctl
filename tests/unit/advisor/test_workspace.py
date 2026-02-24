@@ -165,6 +165,18 @@ class TestCreateSessionWorkspace:
         assert (workspace / "memory.md").exists()
         assert "Previous Memory" in (workspace / "memory.md").read_text()
 
+    def test_creates_claude_settings_json(self, tmp_path: Path) -> None:
+        """Workspace includes .claude/settings.json with auto-allow permissions."""
+        scan = _make_scan_result()
+
+        workspace = create_session_workspace(scan, tmp_path)
+
+        settings_file = workspace / ".claude" / "settings.json"
+        assert settings_file.exists()
+        data = json.loads(settings_file.read_text())
+        assert "Bash" in data["permissions"]["allow"]
+        assert any("rm" in rule for rule in data["permissions"]["deny"])
+
     def test_raises_on_permission_error(self, tmp_path: Path) -> None:
         """Raises RuntimeError when directory cannot be created."""
         scan = _make_scan_result()
