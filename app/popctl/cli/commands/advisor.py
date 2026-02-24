@@ -19,13 +19,16 @@ from rich.table import Table
 
 from popctl.advisor import (
     AgentRunner,
-    find_latest_decisions,
+    cleanup_empty_sessions,
+    delete_session,
+    find_all_unapplied_decisions,
     import_decisions,
 )
 from popctl.advisor.config import (
     load_or_create_config,
 )
 from popctl.advisor.exchange import (
+    DecisionsResult,
     apply_decisions_to_manifest,
     record_advisor_apply_to_history,
 )
@@ -231,86 +234,85 @@ def apply(
 ) -> None:
     """Apply AI classification decisions to manifest.
 
-    Reads decisions.toml from the last classification session and updates
-    the manifest accordingly.
+    Finds ALL unapplied decisions across sessions and applies them
+    idempotently. Each session is marked as applied after processing.
 
     Examples:
-        popctl advisor apply              # Apply from latest session
+        popctl advisor apply              # Apply all unapplied sessions
         popctl advisor apply --dry-run    # Preview only
         popctl advisor apply -i dec.toml  # From specific file
     """
-    # Step 1: Determine decisions.toml path
+    # Clean up empty sessions first
+    sessions_dir = ensure_advisor_sessions_dir()
+    cleaned = cleanup_empty_sessions(sessions_dir)
+    if cleaned:
+        print_info(f"Cleaned up {cleaned} empty session(s).")
+
+    # Step 1: Collect decisions to apply
     if input_file is not None:
-        decisions_path = input_file
+        decisions_paths = [input_file]
     else:
-        sessions_dir = ensure_advisor_sessions_dir()
-        latest = find_latest_decisions(sessions_dir)
-        if latest is None:
-            print_error("No advisor decisions found. Run 'popctl advisor classify' first.")
+        decisions_paths = find_all_unapplied_decisions(sessions_dir)
+        if not decisions_paths:
+            print_error(
+                "No unapplied advisor decisions found. Run 'popctl advisor classify' first."
+            )
             raise typer.Exit(code=1)
-        decisions_path = latest
 
-    print_info(f"Decisions from: {decisions_path}")
+    print_info(f"Found {len(decisions_paths)} unapplied decision file(s).")
 
-    # Step 2: Load decisions
-    try:
-        decisions = import_decisions(decisions_path)
-    except FileNotFoundError as err:
-        print_error(f"decisions.toml not found at {decisions_path}")
-        print_info("Run 'popctl advisor classify' first to generate classifications.")
-        raise typer.Exit(code=1) from err
-    except ValueError as e:
-        print_error(f"Invalid decisions.toml: {e}")
-        raise typer.Exit(code=1) from e
-
-    # Step 3: Load current manifest
+    # Step 2: Load current manifest
     manifest = require_manifest()
 
-    # Step 4: Apply decisions and collect statistics
-    stats, ask_packages = apply_decisions_to_manifest(manifest, decisions)
-
-    # Step 5: Display summary
-    console.print()
-
-    # Create summary table
-    table = Table(title="Classification Summary", show_header=True)
-    table.add_column("Source", style="cyan")
-    table.add_column("Keep", style="green", justify="right")
-    table.add_column("Remove", style="red", justify="right")
-    table.add_column("Ask", style="yellow", justify="right")
-
+    # Step 3: Apply all decisions in chronological order
     total_keep = 0
     total_remove = 0
     total_ask = 0
+    all_ask_packages: list[tuple[str, str, str, float]] = []
+    all_decisions_for_history: list[tuple[Path, DecisionsResult]] = []
 
-    for source, counts in stats.items():
-        table.add_row(
-            source.upper(),
-            str(counts["keep"]),
-            str(counts["remove"]),
-            str(counts["ask"]),
-        )
-        total_keep += counts["keep"]
-        total_remove += counts["remove"]
-        total_ask += counts["ask"]
+    for decisions_path in decisions_paths:
+        print_info(f"Applying: {decisions_path}")
 
-    if stats:
-        table.add_row("", "", "", "", style="dim")
-        table.add_row(
-            "Total",
-            str(total_keep),
-            str(total_remove),
-            str(total_ask),
-            style="bold",
-        )
+        try:
+            decisions = import_decisions(decisions_path)
+        except FileNotFoundError:
+            print_error(f"  decisions.toml not found at {decisions_path}")
+            continue
+        except ValueError as e:
+            print_error(f"  Invalid decisions.toml: {e}")
+            continue
 
+        stats, ask_packages = apply_decisions_to_manifest(manifest, decisions)
+
+        for _source, counts in stats.items():
+            total_keep += counts["keep"]
+            total_remove += counts["remove"]
+            total_ask += counts["ask"]
+
+        all_ask_packages.extend(ask_packages)
+        all_decisions_for_history.append((decisions_path, decisions))
+
+    if not all_decisions_for_history:
+        print_error("All decision files failed to load. Nothing applied.")
+        raise typer.Exit(code=1)
+
+    # Step 4: Display summary
+    console.print()
+
+    table = Table(title="Classification Summary (All Sessions)", show_header=True)
+    table.add_column("Metric", style="cyan")
+    table.add_column("Count", justify="right")
+    table.add_row("Keep", str(total_keep), style="green")
+    table.add_row("Remove", str(total_remove), style="red")
+    table.add_row("Ask", str(total_ask), style="yellow")
+    table.add_row("Sessions", str(len(decisions_paths)), style="bold")
     console.print(table)
     console.print()
 
-    # Show packages requiring manual decision
-    if ask_packages:
+    if all_ask_packages:
         console.print("[yellow]Packages requiring manual decision:[/yellow]")
-        for name, source, reason, confidence in ask_packages:
+        for name, source, reason, confidence in all_ask_packages:
             console.print(f"  [dim]-[/dim] {name} ({source}): {reason} [{confidence:.2f}]")
         console.print()
         console.print(
@@ -319,13 +321,12 @@ def apply(
         )
         console.print()
 
-    # Step 6: Save manifest (unless dry-run)
+    # Step 5: Save manifest and mark sessions (unless dry-run)
     manifest_path = get_manifest_path()
 
     if dry_run:
         console.print(f"[cyan][dry-run][/cyan] Would update manifest at {manifest_path}")
     else:
-        # Update manifest timestamp
         manifest.meta.updated = datetime.now(UTC)
 
         try:
@@ -335,6 +336,9 @@ def apply(
             print_error(f"Failed to save manifest: {e}")
             raise typer.Exit(code=1) from e
 
-        # Record to history
-        record_advisor_apply_to_history(decisions)
-        print_info("Classifications recorded to history.")
+        # Delete ephemeral sessions and record to history
+        for decisions_path, decisions in all_decisions_for_history:
+            delete_session(decisions_path)
+            record_advisor_apply_to_history(decisions)
+
+        print_info(f"{len(all_decisions_for_history)} session(s) applied and recorded to history.")

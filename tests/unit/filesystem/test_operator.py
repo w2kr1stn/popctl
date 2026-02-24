@@ -87,14 +87,13 @@ class TestFilesystemOperator:
         assert "Protected path" in results[0].error
 
     def test_delete_nonexistent_path(self) -> None:
-        """Deleting a nonexistent path returns a failure result."""
+        """Deleting a nonexistent path succeeds idempotently."""
         op = FilesystemOperator()
         results = op.delete(["/tmp/nonexistent_path_abc123xyz"])
 
         assert len(results) == 1
-        assert results[0].success is False
-        assert results[0].error is not None
-        assert "does not exist" in results[0].error
+        assert results[0].success is True
+        assert results[0].error is None
 
     def test_delete_dry_run(self, tmp_path: Path) -> None:
         """Dry-run mode returns success without deleting anything."""
@@ -180,12 +179,29 @@ class TestFilesystemOperator:
         # First: success (file deleted)
         assert results[0].success is True
         assert not good_file.exists()
-        # Second: failure (nonexistent)
-        assert results[1].success is False
-        assert results[1].error is not None
+        # Second: idempotent success (nonexistent)
+        assert results[1].success is True
         # Third: success (dir deleted)
         assert results[2].success is True
         assert not good_dir.exists()
+
+    def test_delete_tilde_path_expanded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tilde paths are expanded to absolute paths before deletion."""
+        target = tmp_path / "orphan_dir"
+        target.mkdir()
+        (target / "file.txt").write_text("content")
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        tilde_path = "~/orphan_dir"
+
+        op = FilesystemOperator()
+        results = op.delete([tilde_path])
+
+        assert len(results) == 1
+        assert results[0].success is True
+        assert not target.exists()
 
     def test_delete_empty_list(self) -> None:
         """Deleting an empty list returns empty results."""

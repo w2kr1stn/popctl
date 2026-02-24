@@ -18,8 +18,12 @@ class AptScanner(Scanner):
     to distinguish between manually and automatically installed packages.
     """
 
-    # dpkg-query format string: Package, Version, Installed-Size (KB), Description
-    _DPKG_FORMAT = "${Package}\\t${Version}\\t${Installed-Size}\\t${binary:Summary}\\n"
+    # dpkg-query format: Status, Package, Version, Installed-Size (KB), Description
+    # Status field filters out packages in 'config-files' or 'not-installed' state
+    # that linger in the dpkg database after apt-get remove (but not purge).
+    _DPKG_FORMAT = (
+        "${db:Status-Status}\\t${Package}\\t${Version}\\t${Installed-Size}\\t${binary:Summary}\\n"
+    )
 
     source = PackageSource.APT
 
@@ -91,7 +95,12 @@ class AptScanner(Scanner):
         Returns:
             ScannedPackage if parsing succeeds, None otherwise.
         """
-        parsed = parse_tab_fields(line, "dpkg")
+        # First field is dpkg status — skip anything not fully installed
+        dpkg_status, _, remainder = line.partition("\t")
+        if dpkg_status.strip() != "installed":
+            return None
+
+        parsed = parse_tab_fields(remainder, "dpkg")
         if parsed is None:
             return None
 

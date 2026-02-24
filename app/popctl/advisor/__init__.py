@@ -8,7 +8,7 @@ Public API:
 - AgentResult: Result from agent execution
 - AgentRunner: Runs AI agents for package classification
 - create_session_workspace: Create ephemeral workspace for session
-- find_latest_decisions: Find decisions from most recent session
+- find_all_unapplied_decisions: Find unapplied decisions across sessions
 - import_decisions: Import and validate decisions.toml
 
 Exchange models (DecisionsResult, SourceDecisions, etc.) are available
@@ -27,8 +27,10 @@ from popctl.advisor.exchange import (
 )
 from popctl.advisor.runner import AgentResult, AgentRunner
 from popctl.advisor.workspace import (
+    cleanup_empty_sessions,
     create_session_workspace,
-    find_latest_decisions,
+    delete_session,
+    find_all_unapplied_decisions,
 )
 
 __all__ = [
@@ -40,7 +42,9 @@ __all__ = [
     "PackageDecision",
     "PathDecision",
     "SourceDecisions",
+    "cleanup_empty_sessions",
     "create_session_workspace",
-    "find_latest_decisions",
+    "delete_session",
+    "find_all_unapplied_decisions",
     "import_decisions",
 ]

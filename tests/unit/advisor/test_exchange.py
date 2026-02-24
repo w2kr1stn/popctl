@@ -18,7 +18,7 @@ from popctl.advisor.exchange import (
     apply_domain_decisions_to_manifest,
     import_decisions,
 )
-from popctl.models.manifest import DomainConfig, DomainEntry, Manifest
+from popctl.models.manifest import DomainConfig, DomainEntry, Manifest, PackageEntry
 
 # =============================================================================
 # Test Fixtures
@@ -656,6 +656,30 @@ ask = []
 
         assert getattr(result, domain) is None
 
+    def test_import_domain_only_decisions(self, tmp_path: Path, domain: str) -> None:
+        """import_decisions parses decisions.toml with only a domain section (no packages)."""
+        decisions_toml = f"""
+[{domain}]
+keep = [
+    {{ path = "~/.config/nvim", reason = "User config", confidence = 0.95, category = "config" }},
+]
+remove = [
+    {{ path = "~/.config/vlc", reason = "VLC removed", confidence = 0.90, category = "obsolete" }},
+]
+ask = []
+"""
+        decisions_path = tmp_path / "decisions.toml"
+        decisions_path.write_text(decisions_toml)
+
+        result = import_decisions(tmp_path / "decisions.toml")
+
+        assert result.packages == {}
+        section = getattr(result, domain)
+        assert section is not None
+        assert len(section.keep) == 1
+        assert len(section.remove) == 1
+        assert section.keep[0].path == "~/.config/nvim"
+
     def test_import_decisions_domain_empty_lists(self, tmp_path: Path, domain: str) -> None:
         """import_decisions handles empty domain lists."""
         decisions_toml = f"""
@@ -940,6 +964,62 @@ class TestApplyDecisionsToManifest:
             assert source_stats["remove"] == 0
             assert source_stats["ask"] == 0
         assert ask_packages == []
+
+    def test_reclassify_keep_to_remove(self, empty_manifest: Manifest) -> None:
+        """Reclassifying a keep package as remove moves it correctly."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
+
+        empty_manifest.packages.keep["libreoffice-impress"] = PackageEntry(
+            source="apt", reason="Office suite"
+        )
+
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    remove=[
+                        PackageDecision(
+                            name="libreoffice-impress",
+                            reason="Unused component",
+                            confidence=0.92,
+                            category="office",
+                        ),
+                    ],
+                ),
+            }
+        )
+
+        apply_decisions_to_manifest(empty_manifest, decisions)
+
+        assert "libreoffice-impress" not in empty_manifest.packages.keep
+        assert "libreoffice-impress" in empty_manifest.packages.remove
+
+    def test_reclassify_remove_to_keep(self, empty_manifest: Manifest) -> None:
+        """Reclassifying a remove package as keep moves it correctly."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
+
+        empty_manifest.packages.remove["firefox"] = PackageEntry(
+            source="apt", reason="Unused browser"
+        )
+
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    keep=[
+                        PackageDecision(
+                            name="firefox",
+                            reason="Primary browser",
+                            confidence=0.95,
+                            category="desktop",
+                        ),
+                    ],
+                ),
+            }
+        )
+
+        apply_decisions_to_manifest(empty_manifest, decisions)
+
+        assert "firefox" in empty_manifest.packages.keep
+        assert "firefox" not in empty_manifest.packages.remove
 
 
 # =============================================================================

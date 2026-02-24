@@ -67,6 +67,10 @@ class AptOperator(Operator):
     ) -> list[ActionResult]:
         """Execute an apt-get command for a list of packages.
 
+        Tries a batch command first for efficiency. If the batch fails and
+        there are multiple packages, falls back to single-package operations
+        so that one resolver conflict doesn't block all packages.
+
         Args:
             action_type: Type of action (INSTALL, REMOVE, PURGE).
             packages: List of package names.
@@ -90,26 +94,67 @@ class AptOperator(Operator):
 
         result = run_command(args, timeout=self._TIMEOUT)
 
-        # Parse result (all packages succeed or fail atomically with apt-get)
-        results: list[ActionResult] = []
-
         if result.success:
             message = "Dry-run completed" if self.dry_run else "Operation completed"
-            for package in packages:
-                action = Action(
-                    action_type=action_type,
-                    package=package,
-                    source=PackageSource.APT,
+            return [
+                ActionResult(
+                    action=Action(action_type=action_type, package=pkg, source=PackageSource.APT),
+                    success=True,
+                    detail=message,
                 )
-                results.append(ActionResult(action=action, success=True, detail=message))
-        else:
-            error_msg = result.stderr.strip() or "apt-get command failed"
-            for package in packages:
-                action = Action(
-                    action_type=action_type,
-                    package=package,
-                    source=PackageSource.APT,
-                )
-                results.append(ActionResult(action=action, success=False, detail=error_msg))
+                for pkg in packages
+            ]
 
-        return results
+        # Batch failed with multiple packages — fall back to single-package ops
+        if len(packages) > 1:
+            logger.warning(
+                "Batch APT %s failed, falling back to single-package operations",
+                command,
+            )
+            results: list[ActionResult] = []
+            for pkg in packages:
+                results.append(self._execute_apt_single(action_type, pkg))
+            return results
+
+        # Single package failed
+        error_msg = result.stderr.strip() or "apt-get command failed"
+        return [
+            ActionResult(
+                action=Action(
+                    action_type=action_type, package=packages[0], source=PackageSource.APT
+                ),
+                success=False,
+                detail=error_msg,
+            ),
+        ]
+
+    def _execute_apt_single(
+        self,
+        action_type: ActionType,
+        package: str,
+    ) -> ActionResult:
+        """Execute an apt-get command for a single package.
+
+        Args:
+            action_type: Type of action (INSTALL, REMOVE, PURGE).
+            package: Package name.
+
+        Returns:
+            ActionResult for the package.
+        """
+        command = action_type.value
+        args = ["sudo", "apt-get", command, "-y"]
+        if self.dry_run:
+            args.append("--dry-run")
+        args.append(package)
+
+        logger.info("APT %s (single): %s", command, package)
+        result = run_command(args, timeout=self._TIMEOUT)
+
+        action = Action(action_type=action_type, package=package, source=PackageSource.APT)
+        if result.success:
+            message = "Dry-run completed" if self.dry_run else "Operation completed"
+            return ActionResult(action=action, success=True, detail=message)
+
+        error_msg = result.stderr.strip() or "apt-get command failed"
+        return ActionResult(action=action, success=False, detail=error_msg)

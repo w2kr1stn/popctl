@@ -6,6 +6,8 @@ directory with all files needed for classification.
 
 Workspace structure:
     <session_dir>/
+        .claude/
+            settings.json   — Auto-allow permissions with deny blacklist
         CLAUDE.md           — Agent instructions (auto-picked up by Claude Code)
         scan.json           — Package scan data
         manifest.toml       — Current manifest (if exists)
@@ -33,6 +35,81 @@ if TYPE_CHECKING:
 
     from popctl.models.package import ScannedPackage, ScanResult
 
+# Claude Code project-level permissions for ephemeral advisor workspaces.
+# Allow: all tools auto-approved (no manual confirmation).
+# Deny: comprehensive blacklist — deny always overrides allow.
+WORKSPACE_SETTINGS: dict[str, object] = {
+    "permissions": {
+        "allow": ["Bash", "Read", "Edit", "Write"],
+        "deny": [
+            # Löschen
+            "Bash(rm *)",
+            "Bash(* rm *)",
+            "Bash(rmdir *)",
+            "Bash(* rmdir *)",
+            "Bash(unlink *)",
+            "Bash(shred *)",
+            "Bash(truncate *)",
+            # Rechte / Eigentümer
+            "Bash(chmod *)",
+            "Bash(chown *)",
+            "Bash(chgrp *)",
+            # Privilegien-Eskalation
+            "Bash(sudo *)",
+            "Bash(su *)",
+            "Bash(doas *)",
+            # Netzwerk
+            "Bash(curl *)",
+            "Bash(wget *)",
+            "Bash(nc *)",
+            "Bash(ssh *)",
+            "Bash(scp *)",
+            "Bash(rsync *)",
+            "Bash(telnet *)",
+            "Bash(ftp *)",
+            "Bash(nmap *)",
+            # System
+            "Bash(shutdown *)",
+            "Bash(reboot *)",
+            "Bash(halt *)",
+            "Bash(poweroff *)",
+            "Bash(systemctl *)",
+            "Bash(service *)",
+            "Bash(kill *)",
+            "Bash(killall *)",
+            "Bash(pkill *)",
+            # Paketmanager
+            "Bash(apt *)",
+            "Bash(apt-get *)",
+            "Bash(dpkg *)",
+            "Bash(pip *)",
+            "Bash(pip3 *)",
+            "Bash(npm *)",
+            "Bash(yarn *)",
+            "Bash(snap *)",
+            "Bash(flatpak *)",
+            "Bash(uv *)",
+            # Git remote
+            "Bash(git push *)",
+            "Bash(git remote *)",
+            "Bash(git clone *)",
+            "Bash(git fetch *)",
+            "Bash(git pull *)",
+            # Container (kein Docker-in-Docker)
+            "Bash(docker *)",
+            "Bash(podman *)",
+            # Gefährliche Shell-Konstrukte
+            "Bash(eval *)",
+            "Bash(exec *)",
+            "Bash(dd *)",
+            "Bash(mkfs *)",
+            "Bash(fdisk *)",
+            "Bash(mount *)",
+            "Bash(umount *)",
+        ],
+    },
+}
+
 
 def ensure_advisor_sessions_dir() -> Path:
     """Create the advisor sessions directory if it doesn't exist.
@@ -54,6 +131,8 @@ def create_session_workspace(
     memory_path: Path | None = None,
     filesystem_orphans: list[dict[str, Any]] | None = None,
     config_orphans: list[dict[str, Any]] | None = None,
+    domain: str = "packages",
+    review: bool = False,
 ) -> Path:
     """Create an ephemeral workspace directory for a classification session.
 
@@ -68,6 +147,8 @@ def create_session_workspace(
         memory_path: Optional path to persistent memory.md to copy.
         filesystem_orphans: Optional filesystem orphan entries for FS advisor.
         config_orphans: Optional config orphan entries for config advisor.
+        domain: Classification domain ("packages", "filesystem", or "configs").
+        review: If True, include review-specific instructions in CLAUDE.md.
 
     Returns:
         Path to the created session workspace directory.
@@ -105,6 +186,8 @@ def create_session_workspace(
     claude_md_content = build_session_claude_md(
         system_info=system_info,
         summary=summary,
+        domain=domain,
+        review=review,
     )
     try:
         (session_dir / "CLAUDE.md").write_text(claude_md_content, encoding="utf-8")
@@ -132,7 +215,14 @@ def create_session_workspace(
             logging.getLogger(__name__).warning("Could not copy manifest to workspace: %s", e)
 
     # Copy memory.md for cross-session learning
-    _copy_memory_to_workspace(memory_path, sessions_dir, session_dir)
+    _copy_memory_to_workspace(memory_path, session_dir)
+
+    # Write Claude Code permissions (auto-allow with deny blacklist)
+    settings_dir = session_dir / ".claude"
+    settings_dir.mkdir(exist_ok=True)
+    (settings_dir / "settings.json").write_text(
+        json.dumps(WORKSPACE_SETTINGS, indent=2), encoding="utf-8"
+    )
 
     return session_dir
 
@@ -217,92 +307,108 @@ _MEMORY_SIZE_WARN_KB = 50
 
 def _copy_memory_to_workspace(
     memory_path: Path | None,
-    sessions_dir: Path,
     session_dir: Path,
 ) -> None:
-    """Copy memory.md into the session workspace.
-
-    Tries the persistent memory path first, then falls back to the most
-    recent previous session that contains a memory.md (for host-mode
-    where post-processing cannot persist memory back).
+    """Copy persistent memory.md into the session workspace.
 
     Args:
         memory_path: Persistent memory.md path (may be None or missing).
-        sessions_dir: Base directory containing all session workspaces.
         session_dir: Current session workspace to copy into.
     """
     logger = logging.getLogger(__name__)
 
-    # Try persistent memory path first
-    if memory_path is not None and memory_path.exists():
-        try:
-            shutil.copy2(memory_path, session_dir / "memory.md")
-        except OSError as e:
-            logger.warning("Could not copy memory.md to workspace: %s", e)
-            return
-    else:
-        # Fallback: chain from latest previous session
-        _copy_memory_from_latest_session(sessions_dir, session_dir)
+    if memory_path is None or not memory_path.exists():
+        return
+
+    try:
+        shutil.copy2(memory_path, session_dir / "memory.md")
+    except OSError as e:
+        logger.warning("Could not copy memory.md to workspace: %s", e)
+        return
 
     # Warn if memory.md is getting large
-    workspace_memory = session_dir / "memory.md"
-    if workspace_memory.exists():
-        size_kb = workspace_memory.stat().st_size / 1024
-        if size_kb > _MEMORY_SIZE_WARN_KB:
-            logger.warning(
-                "memory.md is %.1f KB (recommended max: %d KB)", size_kb, _MEMORY_SIZE_WARN_KB
-            )
+    size_kb = memory_path.stat().st_size / 1024
+    if size_kb > _MEMORY_SIZE_WARN_KB:
+        logger.warning(
+            "memory.md is %.1f KB (recommended max: %d KB)", size_kb, _MEMORY_SIZE_WARN_KB
+        )
 
 
-def _copy_memory_from_latest_session(
-    sessions_dir: Path,
-    target_session_dir: Path,
-) -> None:
-    """Copy memory.md from the most recent previous session if available.
+def find_all_unapplied_decisions(sessions_dir: Path) -> list[Path]:
+    """Find all unapplied decisions.toml files across sessions.
 
-    Provides fallback chaining for host-mode where the interactive
-    session exits before post-processing can persist memory.md back.
-
-    Args:
-        sessions_dir: Base directory containing session workspaces.
-        target_session_dir: Current session directory to copy into.
-    """
-    logger = logging.getLogger(__name__)
-
-    for session_dir in list_sessions(sessions_dir):
-        if session_dir == target_session_dir:
-            continue
-        memory_file = session_dir / "memory.md"
-        if memory_file.exists():
-            try:
-                shutil.copy2(memory_file, target_session_dir / "memory.md")
-                logger.debug("Copied memory.md from previous session %s", session_dir.name)
-            except OSError as e:
-                logger.warning("Could not copy memory.md from previous session: %s", e)
-            return
-
-
-def find_latest_decisions(sessions_dir: Path) -> Path | None:
-    """Find output/decisions.toml from the most recent session.
-
-    Scans the sessions directory for the latest session that contains
-    a decisions.toml file in its output subdirectory.
+    Returns decisions from oldest to newest so they can be applied
+    in chronological order. Sessions are deleted after apply, so any
+    remaining session with a decisions.toml is unapplied.
 
     Args:
         sessions_dir: Base directory containing session workspaces.
 
     Returns:
-        Path to decisions.toml if found, None otherwise.
+        List of paths to unapplied decisions.toml files (oldest first).
     """
     if not sessions_dir.exists():
-        return None
+        return []
 
+    unapplied: list[Path] = []
     for session_dir in list_sessions(sessions_dir):
         decisions_path = session_dir / "output" / "decisions.toml"
         if decisions_path.exists():
-            return decisions_path
+            unapplied.append(decisions_path)
 
-    return None
+    # list_sessions returns newest-first; reverse for chronological apply
+    unapplied.reverse()
+    return unapplied
+
+
+def delete_session(decisions_path: Path) -> None:
+    """Delete an applied session directory.
+
+    Removes the entire session directory after its decisions have been
+    applied. Idempotent — safe to call on already-deleted sessions.
+
+    Args:
+        decisions_path: Path to the decisions.toml that was applied.
+    """
+    logger = logging.getLogger(__name__)
+    # decisions_path is <session_dir>/output/decisions.toml
+    session_dir = decisions_path.parent.parent
+    try:
+        shutil.rmtree(session_dir)
+        logger.debug("Deleted applied session %s", session_dir.name)
+    except OSError as e:
+        logger.warning("Could not delete session %s: %s", session_dir.name, e)
+
+
+def cleanup_empty_sessions(sessions_dir: Path) -> int:
+    """Remove sessions that have no decisions.toml output.
+
+    Sessions without decisions are useless artifacts (e.g. from advisor
+    failures or interrupted runs) and should be cleaned up.
+
+    Args:
+        sessions_dir: Base directory containing session workspaces.
+
+    Returns:
+        Number of sessions removed.
+    """
+    if not sessions_dir.exists():
+        return 0
+
+    logger = logging.getLogger(__name__)
+    removed = 0
+
+    for session_dir in list_sessions(sessions_dir):
+        decisions_path = session_dir / "output" / "decisions.toml"
+        if not decisions_path.exists():
+            try:
+                shutil.rmtree(session_dir)
+                logger.debug("Cleaned up empty session %s", session_dir.name)
+                removed += 1
+            except OSError as e:
+                logger.warning("Could not clean up session %s: %s", session_dir.name, e)
+
+    return removed
 
 
 def list_sessions(sessions_dir: Path) -> list[Path]:

@@ -59,7 +59,9 @@ class TestScanCommand:
 
     def test_scan_count_only(self) -> None:
         """Scan with --count shows counts only."""
-        mock_dpkg = "firefox\t128.0\t204800\tFirefox\nneovim\t0.9.5\t51200\tNeovim"
+        mock_dpkg = (
+            "installed\tfirefox\t128.0\t204800\tFirefox\ninstalled\tneovim\t0.9.5\t51200\tNeovim"
+        )
         mock_auto = ""
 
         with (
@@ -81,7 +83,9 @@ class TestScanCommand:
 
     def test_scan_manual_only(self) -> None:
         """Scan with --manual-only shows only manual packages."""
-        mock_dpkg = "firefox\t128.0\t204800\tFirefox\nlibfoo\t1.0\t100\tLibrary"
+        mock_dpkg = (
+            "installed\tfirefox\t128.0\t204800\tFirefox\ninstalled\tlibfoo\t1.0\t100\tLibrary"
+        )
         mock_auto = "libfoo"
 
         with (
@@ -102,7 +106,11 @@ class TestScanCommand:
 
     def test_scan_with_limit(self) -> None:
         """Scan with --limit restricts output."""
-        mock_dpkg = "pkg1\t1.0\t100\tPkg1\npkg2\t1.0\t100\tPkg2\npkg3\t1.0\t100\tPkg3"
+        mock_dpkg = (
+            "installed\tpkg1\t1.0\t100\tPkg1\n"
+            "installed\tpkg2\t1.0\t100\tPkg2\n"
+            "installed\tpkg3\t1.0\t100\tPkg3"
+        )
         mock_auto = ""
 
         with (
@@ -124,7 +132,7 @@ class TestScanCommand:
 
     def test_scan_shows_table(self) -> None:
         """Scan displays packages in table format."""
-        mock_dpkg = "firefox\t128.0\t204800\tMozilla Firefox"
+        mock_dpkg = "installed\tfirefox\t128.0\t204800\tMozilla Firefox"
         mock_auto = ""
 
         with (
@@ -177,7 +185,9 @@ class TestScanOutputFormat:
 
     def test_shows_package_count_summary(self) -> None:
         """Scan shows package count summary at end."""
-        mock_dpkg = "firefox\t128.0\t204800\tFirefox\nlibfoo\t1.0\t100\tLibrary"
+        mock_dpkg = (
+            "installed\tfirefox\t128.0\t204800\tFirefox\ninstalled\tlibfoo\t1.0\t100\tLibrary"
+        )
         mock_auto = "libfoo"
 
         with (
@@ -202,7 +212,7 @@ class TestScanSourceOption:
 
     def test_scan_source_apt_only(self) -> None:
         """Scan --source apt scans only APT packages."""
-        mock_dpkg = "firefox\t128.0\t204800\tFirefox"
+        mock_dpkg = "installed\tfirefox\t128.0\t204800\tFirefox"
         mock_auto = ""
 
         with (
@@ -238,7 +248,7 @@ class TestScanSourceOption:
 
     def test_scan_source_all(self) -> None:
         """Scan --source all scans both APT and Flatpak."""
-        mock_dpkg = "firefox\t128.0\t204800\tFirefox"
+        mock_dpkg = "installed\tfirefox\t128.0\t204800\tFirefox"
         mock_auto = ""
         mock_flatpak = "com.spotify.Client\t1.2.31\t1.2 GB\tMusic"
 
@@ -264,7 +274,7 @@ class TestScanSourceOption:
 
     def test_scan_flatpak_unavailable_warning(self) -> None:
         """Scan shows warning when Flatpak is unavailable but continues with APT."""
-        mock_dpkg = "firefox\t128.0\t204800\tFirefox"
+        mock_dpkg = "installed\tfirefox\t128.0\t204800\tFirefox"
         mock_auto = ""
 
         with (
@@ -290,7 +300,7 @@ class TestScanExportOption:
 
     def test_scan_export_creates_json_file(self) -> None:
         """Scan --export creates JSON file with scan results."""
-        mock_dpkg = "firefox\t128.0\t204800\tFirefox"
+        mock_dpkg = "installed\tfirefox\t128.0\t204800\tFirefox"
         mock_auto = ""
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -323,7 +333,7 @@ class TestScanExportOption:
 
     def test_scan_export_includes_metadata(self) -> None:
         """Exported JSON includes proper metadata."""
-        mock_dpkg = "firefox\t128.0\t204800\tFirefox"
+        mock_dpkg = "installed\tfirefox\t128.0\t204800\tFirefox"
         mock_auto = ""
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -358,7 +368,7 @@ class TestScanFormatOption:
 
     def test_scan_format_json(self) -> None:
         """Scan --format json outputs JSON to stdout."""
-        mock_dpkg = "firefox\t128.0\t204800\tFirefox"
+        mock_dpkg = "installed\tfirefox\t128.0\t204800\tFirefox"
         mock_auto = ""
 
         with (
@@ -382,7 +392,7 @@ class TestScanFormatOption:
 
     def test_scan_format_table_default(self) -> None:
         """Scan defaults to table format."""
-        mock_dpkg = "firefox\t128.0\t204800\tFirefox"
+        mock_dpkg = "installed\tfirefox\t128.0\t204800\tFirefox"
         mock_auto = ""
 
         with (

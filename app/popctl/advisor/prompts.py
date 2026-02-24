@@ -45,22 +45,51 @@ def _load_template(name: str) -> str:
 
 # Module-level template constants (loaded from external files).
 SESSION_CLAUDE_MD = _load_template("session_claude_md.txt")
+SESSION_CLAUDE_MD_FILESYSTEM = _load_template("session_claude_md_filesystem.txt")
+SESSION_CLAUDE_MD_CONFIGS = _load_template("session_claude_md_configs.txt")
 INITIAL_PROMPT = _load_template("initial_prompt.txt")
+
+_DOMAIN_TEMPLATES: dict[str, str] = {
+    "packages": SESSION_CLAUDE_MD,
+    "filesystem": SESSION_CLAUDE_MD_FILESYSTEM,
+    "configs": SESSION_CLAUDE_MD_CONFIGS,
+}
+
+REVIEW_ADDENDUM = """
+
+## Review-Modus (AKTIV)
+
+Dies ist eine **Review-Session**. Das System ist bereits in sync mit dem Manifest.
+Deine Aufgabe ist NICHT neue Pakete zu klassifizieren, sondern **bestehende
+Klassifikationen kritisch zu überprüfen**:
+
+1. Lies `manifest.toml` vollständig — dort stehen alle bisherigen KEEP/REMOVE-Entscheidungen
+2. Hinterfrage jede Entscheidung: Wird das Paket noch gebraucht? Hat sich der Kontext geändert?
+3. Achte besonders auf: Dev-Tools die auf den Host gerutscht sind, verwaiste Abhängigkeiten,
+   Pakete die inzwischen durch Alternativen ersetzt wurden
+4. Schreibe nur **geänderte** Entscheidungen in `output/decisions.toml` — Pakete die korrekt
+   klassifiziert sind, müssen NICHT erneut aufgelistet werden
+"""
 
 
 def build_session_claude_md(
     system_info: dict[str, str] | None = None,
     summary: dict[str, int] | None = None,
+    domain: str = "packages",
+    review: bool = False,
 ) -> str:
     """Build CLAUDE.md content for an interactive session workspace.
 
     Creates a comprehensive CLAUDE.md file that Claude Code picks up
-    automatically from the working directory. Contains classification
-    rules, output format, and system context.
+    automatically from the working directory. Selects a domain-specific
+    template (packages, filesystem, or configs) with appropriate
+    classification rules and workflow instructions.
 
     Args:
         system_info: Optional system context (hostname, os).
         summary: Optional package count summary (total, manual, auto).
+        domain: Classification domain ("packages", "filesystem", or "configs").
+        review: If True, append review-specific instructions.
 
     Returns:
         CLAUDE.md content string.
@@ -86,7 +115,14 @@ def build_session_claude_md(
     # Format categories as bullet list
     categories_list = "\n".join(f"- `{cat}`" for cat in CATEGORIES)
 
-    return SESSION_CLAUDE_MD.format(
+    template = _DOMAIN_TEMPLATES.get(domain, SESSION_CLAUDE_MD)
+
+    content = template.format(
         system_context=system_context,
         categories=categories_list,
     )
+
+    if review:
+        content += REVIEW_ADDENDUM
+
+    return content

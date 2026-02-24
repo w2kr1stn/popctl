@@ -99,7 +99,7 @@ class TestConfigOperator:
         assert "Protected config" in results[0].error
 
     def test_delete_nonexistent_path(self, tmp_path: Path) -> None:
-        """Deleting a nonexistent path returns a failure result."""
+        """Deleting a nonexistent path succeeds idempotently."""
         nonexistent = str(tmp_path / "nonexistent_config")
 
         backup_base = tmp_path / "backups"
@@ -113,9 +113,8 @@ class TestConfigOperator:
             results = op.delete([nonexistent])
 
         assert len(results) == 1
-        assert results[0].success is False
-        assert results[0].error is not None
-        assert "does not exist" in results[0].error
+        assert results[0].success is True
+        assert results[0].error is None
 
     def test_delete_dry_run(self, tmp_path: Path) -> None:
         """Dry-run mode returns success without deleting or backing up."""
@@ -236,6 +235,36 @@ class TestConfigOperator:
         assert results[0].success is False
         assert results[0].error is not None
         assert "Permission denied" in results[0].error
+
+    def test_delete_tilde_path_expanded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tilde paths are expanded to absolute paths before deletion."""
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = home / ".config" / "old_app"
+        config_dir.mkdir(parents=True)
+        (config_dir / "settings.conf").write_text("key=value")
+
+        monkeypatch.setenv("HOME", str(home))
+        tilde_path = "~/.config/old_app"
+
+        backup_base = tmp_path / "backups"
+        backup_base.mkdir()
+
+        with (
+            patch("popctl.configs.operator.Path.home", return_value=home),
+            patch(
+                "popctl.configs.operator.ensure_dir",
+                return_value=backup_base,
+            ),
+        ):
+            op = ConfigOperator(dry_run=False)
+            results = op.delete([tilde_path])
+
+        assert len(results) == 1
+        assert results[0].success is True
+        assert not config_dir.exists()
 
     def test_delete_empty_list(self) -> None:
         """Deleting an empty list returns empty results."""

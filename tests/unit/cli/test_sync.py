@@ -182,6 +182,39 @@ class TestSyncAdvisor:
 
         mock_advisor.assert_not_called()
 
+    def test_sync_review_runs_advisor_when_in_sync(
+        self, sample_manifest: Manifest, in_sync_result: DiffResult
+    ) -> None:
+        """--review forces advisor even when system is in sync."""
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch(
+                "popctl.cli.commands.sync.compute_system_diff",
+                return_value=in_sync_result,
+            ),
+            patch("popctl.cli.commands.sync._run_advisor") as mock_advisor,
+        ):
+            runner.invoke(app, ["sync", "--review", "--no-advisor", "--no-filesystem"])
+
+        # --no-advisor overrides --review
+        mock_advisor.assert_not_called()
+
+    def test_sync_review_invokes_advisor_without_new(
+        self, sample_manifest: Manifest, in_sync_result: DiffResult
+    ) -> None:
+        """--review invokes advisor even without NEW packages."""
+        with (
+            patch("popctl.cli.commands.sync.manifest_exists", return_value=True),
+            patch(
+                "popctl.cli.commands.sync.compute_system_diff",
+                return_value=in_sync_result,
+            ),
+            patch("popctl.cli.commands.sync._run_advisor") as mock_advisor,
+        ):
+            runner.invoke(app, ["sync", "--review", "--auto", "--no-filesystem"])
+
+        mock_advisor.assert_called_once()
+
     def test_sync_advisor_failure_continues(
         self, sample_manifest: Manifest, diff_result_with_new: DiffResult
     ) -> None:
@@ -996,6 +1029,7 @@ class TestInvokeAdvisor:
                 return_value=mock_agent_result,
             ),
             patch("popctl.cli.commands.sync.import_decisions", return_value=expected_decisions),
+            patch("popctl.cli.commands.sync.delete_session"),
         ):
             result = _invoke_advisor(auto=True, domain="packages")
 
