@@ -55,6 +55,26 @@ class TestAdvisorConfig:
         with pytest.raises(ValidationError):
             AdvisorConfig(provider="invalid")  # type: ignore[arg-type]
 
+    def test_default_dev_container_path_is_none(self) -> None:
+        """dev_container_path defaults to None."""
+        config = AdvisorConfig()
+        assert config.dev_container_path is None
+
+    def test_dev_container_path_accepts_path(self) -> None:
+        """dev_container_path accepts a Path value."""
+        config = AdvisorConfig(dev_container_path=Path("/home/user/djinn"))
+        assert config.dev_container_path == Path("/home/user/djinn")
+
+    def test_container_mode_false_by_default(self) -> None:
+        """container_mode is False when dev_container_path is None."""
+        config = AdvisorConfig()
+        assert config.container_mode is False
+
+    def test_container_mode_true_when_path_set(self) -> None:
+        """container_mode is True when dev_container_path is set."""
+        config = AdvisorConfig(dev_container_path=Path("/some/path"))
+        assert config.container_mode is True
+
     def test_extra_fields_ignored(self) -> None:
         """AdvisorConfig ignores extra fields for backward compat."""
         config = AdvisorConfig.model_validate(
@@ -193,6 +213,16 @@ class TestSaveAdvisorConfig:
         assert "provider" in content
         assert "timeout_seconds" in content
 
+    def test_save_excludes_none_dev_container_path(self, tmp_path: Path) -> None:
+        """save_advisor_config omits dev_container_path when None."""
+        config_file = tmp_path / "advisor.toml"
+        config = AdvisorConfig()  # dev_container_path=None
+
+        save_advisor_config(config, config_file)
+
+        content = config_file.read_text()
+        assert "dev_container_path" not in content
+
     def test_save_roundtrip(self, tmp_path: Path) -> None:
         """save + load roundtrip preserves config values."""
         config_file = tmp_path / "advisor.toml"
@@ -204,3 +234,14 @@ class TestSaveAdvisorConfig:
         assert loaded.provider == original.provider
         assert loaded.model == original.model
         assert loaded.timeout_seconds == original.timeout_seconds
+
+    def test_save_roundtrip_with_dev_container_path(self, tmp_path: Path) -> None:
+        """save + load roundtrip preserves dev_container_path."""
+        config_file = tmp_path / "advisor.toml"
+        original = AdvisorConfig(dev_container_path=Path("/home/user/djinn"))
+
+        save_advisor_config(original, config_file)
+        loaded = load_advisor_config(config_file)
+
+        assert loaded.dev_container_path == original.dev_container_path
+        assert loaded.container_mode is True
