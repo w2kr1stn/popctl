@@ -18,7 +18,7 @@ from popctl.advisor.exchange import (
     apply_domain_decisions_to_manifest,
     import_decisions,
 )
-from popctl.models.manifest import DomainConfig, DomainEntry, Manifest
+from popctl.models.manifest import DomainConfig, DomainEntry, Manifest, PackageEntry
 
 # =============================================================================
 # Test Fixtures
@@ -940,6 +940,62 @@ class TestApplyDecisionsToManifest:
             assert source_stats["remove"] == 0
             assert source_stats["ask"] == 0
         assert ask_packages == []
+
+    def test_reclassify_keep_to_remove(self, empty_manifest: Manifest) -> None:
+        """Reclassifying a keep package as remove moves it correctly."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
+
+        empty_manifest.packages.keep["libreoffice-impress"] = PackageEntry(
+            source="apt", reason="Office suite"
+        )
+
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    remove=[
+                        PackageDecision(
+                            name="libreoffice-impress",
+                            reason="Unused component",
+                            confidence=0.92,
+                            category="office",
+                        ),
+                    ],
+                ),
+            }
+        )
+
+        apply_decisions_to_manifest(empty_manifest, decisions)
+
+        assert "libreoffice-impress" not in empty_manifest.packages.keep
+        assert "libreoffice-impress" in empty_manifest.packages.remove
+
+    def test_reclassify_remove_to_keep(self, empty_manifest: Manifest) -> None:
+        """Reclassifying a remove package as keep moves it correctly."""
+        from popctl.advisor.exchange import apply_decisions_to_manifest
+
+        empty_manifest.packages.remove["firefox"] = PackageEntry(
+            source="apt", reason="Unused browser"
+        )
+
+        decisions = DecisionsResult(
+            packages={
+                "apt": SourceDecisions(
+                    keep=[
+                        PackageDecision(
+                            name="firefox",
+                            reason="Primary browser",
+                            confidence=0.95,
+                            category="desktop",
+                        ),
+                    ],
+                ),
+            }
+        )
+
+        apply_decisions_to_manifest(empty_manifest, decisions)
+
+        assert "firefox" in empty_manifest.packages.keep
+        assert "firefox" not in empty_manifest.packages.remove
 
 
 # =============================================================================

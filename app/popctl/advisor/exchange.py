@@ -237,6 +237,7 @@ def apply_decisions_to_manifest(
         stats[source] = {"keep": 0, "remove": 0, "ask": 0}
 
         for decision in source_decisions.keep:
+            manifest.packages.remove.pop(decision.name, None)
             manifest.packages.keep[decision.name] = PackageEntry(
                 source=source,  # type: ignore[arg-type]
                 reason=decision.reason,
@@ -244,6 +245,7 @@ def apply_decisions_to_manifest(
             stats[source]["keep"] += 1
 
         for decision in source_decisions.remove:
+            manifest.packages.keep.pop(decision.name, None)
             manifest.packages.remove[decision.name] = PackageEntry(
                 source=source,  # type: ignore[arg-type]
                 reason=decision.reason,
