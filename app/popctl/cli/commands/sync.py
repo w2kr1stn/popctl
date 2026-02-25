@@ -156,6 +156,7 @@ def _invoke_advisor(
             memory_path=memory_path if memory_path.exists() else None,
             filesystem_orphans=filesystem_orphans,
             config_orphans=config_orphans,
+            domain=domain,
         )
     except (OSError, RuntimeError) as e:
         print_warning(f"Could not create advisor workspace: {e}")

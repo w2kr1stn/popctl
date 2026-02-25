@@ -45,22 +45,33 @@ def _load_template(name: str) -> str:
 
 # Module-level template constants (loaded from external files).
 SESSION_CLAUDE_MD = _load_template("session_claude_md.txt")
+SESSION_CLAUDE_MD_FILESYSTEM = _load_template("session_claude_md_filesystem.txt")
+SESSION_CLAUDE_MD_CONFIGS = _load_template("session_claude_md_configs.txt")
 INITIAL_PROMPT = _load_template("initial_prompt.txt")
+
+_DOMAIN_TEMPLATES: dict[str, str] = {
+    "packages": SESSION_CLAUDE_MD,
+    "filesystem": SESSION_CLAUDE_MD_FILESYSTEM,
+    "configs": SESSION_CLAUDE_MD_CONFIGS,
+}
 
 
 def build_session_claude_md(
     system_info: dict[str, str] | None = None,
     summary: dict[str, int] | None = None,
+    domain: str = "packages",
 ) -> str:
     """Build CLAUDE.md content for an interactive session workspace.
 
     Creates a comprehensive CLAUDE.md file that Claude Code picks up
-    automatically from the working directory. Contains classification
-    rules, output format, and system context.
+    automatically from the working directory. Selects a domain-specific
+    template (packages, filesystem, or configs) with appropriate
+    classification rules and workflow instructions.
 
     Args:
         system_info: Optional system context (hostname, os).
         summary: Optional package count summary (total, manual, auto).
+        domain: Classification domain ("packages", "filesystem", or "configs").
 
     Returns:
         CLAUDE.md content string.
@@ -86,7 +97,9 @@ def build_session_claude_md(
     # Format categories as bullet list
     categories_list = "\n".join(f"- `{cat}`" for cat in CATEGORIES)
 
-    return SESSION_CLAUDE_MD.format(
+    template = _DOMAIN_TEMPLATES.get(domain, SESSION_CLAUDE_MD)
+
+    return template.format(
         system_context=system_context,
         categories=categories_list,
     )

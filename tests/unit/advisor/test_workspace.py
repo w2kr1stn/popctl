@@ -72,6 +72,30 @@ class TestCreateSessionWorkspace:
         assert "AskUserQuestion" in content
         assert "output/decisions.toml" in content
 
+    def test_claude_md_filesystem_domain(self, tmp_path: Path) -> None:
+        """CLAUDE.md uses filesystem template when domain='filesystem'."""
+        scan = _make_scan_result()
+
+        workspace = create_session_workspace(scan, tmp_path, domain="filesystem")
+
+        content = (workspace / "CLAUDE.md").read_text()
+        assert "Dateisystem-Klassifikation" in content
+        assert "filesystem_orphans" in content
+        assert "[filesystem]" in content
+        assert "Interaktive Paket-Klassifikation" not in content
+
+    def test_claude_md_configs_domain(self, tmp_path: Path) -> None:
+        """CLAUDE.md uses configs template when domain='configs'."""
+        scan = _make_scan_result()
+
+        workspace = create_session_workspace(scan, tmp_path, domain="configs")
+
+        content = (workspace / "CLAUDE.md").read_text()
+        assert "Config-Klassifikation" in content
+        assert "config_orphans" in content
+        assert "[configs]" in content
+        assert "Interaktive Paket-Klassifikation" not in content
+
     def test_claude_md_includes_system_info(self, tmp_path: Path) -> None:
         """CLAUDE.md includes system context."""
         scan = _make_scan_result()
