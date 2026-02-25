@@ -177,3 +177,49 @@ class TestAptOperator:
             results = operator.remove([])
 
         assert results == []
+
+    def test_batch_failure_falls_back_to_single(self, operator: AptOperator) -> None:
+        """When batch remove fails, each package is retried individually."""
+        batch_fail = CommandResult(
+            stdout="", stderr="E: pkgProblemResolver::Resolve", returncode=100
+        )
+        single_ok = CommandResult(stdout="", stderr="", returncode=0)
+
+        with patch("popctl.operators.apt.run_command") as mock_run:
+            # First call (batch) fails, subsequent single calls succeed
+            mock_run.side_effect = [batch_fail, single_ok, single_ok, single_ok]
+
+            results = operator.remove(["pkg-a", "pkg-b", "pkg-c"])
+
+        assert len(results) == 3
+        assert all(r.success for r in results)
+        assert mock_run.call_count == 4  # 1 batch + 3 single
+
+    def test_batch_failure_partial_single_success(self, operator: AptOperator) -> None:
+        """Fallback reports per-package success/failure accurately."""
+        batch_fail = CommandResult(stdout="", stderr="E: resolver error", returncode=100)
+        single_ok = CommandResult(stdout="", stderr="", returncode=0)
+        single_fail = CommandResult(stdout="", stderr="E: broken dependency", returncode=100)
+
+        with patch("popctl.operators.apt.run_command") as mock_run:
+            mock_run.side_effect = [batch_fail, single_ok, single_fail]
+
+            results = operator.remove(["good-pkg", "bad-pkg"])
+
+        assert len(results) == 2
+        assert results[0].success is True
+        assert results[1].success is False
+        assert "broken dependency" in results[1].detail
+
+    def test_single_package_failure_no_fallback(self, operator: AptOperator) -> None:
+        """Single-package failure does not trigger fallback."""
+        with patch("popctl.operators.apt.run_command") as mock_run:
+            mock_run.return_value = CommandResult(
+                stdout="", stderr="E: not installed", returncode=100
+            )
+
+            results = operator.remove(["only-pkg"])
+
+        assert len(results) == 1
+        assert results[0].success is False
+        assert mock_run.call_count == 1  # No fallback attempt
