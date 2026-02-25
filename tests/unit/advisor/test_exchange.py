@@ -656,6 +656,30 @@ ask = []
 
         assert getattr(result, domain) is None
 
+    def test_import_domain_only_decisions(self, tmp_path: Path, domain: str) -> None:
+        """import_decisions parses decisions.toml with only a domain section (no packages)."""
+        decisions_toml = f"""
+[{domain}]
+keep = [
+    {{ path = "~/.config/nvim", reason = "User config", confidence = 0.95, category = "config" }},
+]
+remove = [
+    {{ path = "~/.config/vlc", reason = "VLC removed", confidence = 0.90, category = "obsolete" }},
+]
+ask = []
+"""
+        decisions_path = tmp_path / "decisions.toml"
+        decisions_path.write_text(decisions_toml)
+
+        result = import_decisions(tmp_path / "decisions.toml")
+
+        assert result.packages == {}
+        section = getattr(result, domain)
+        assert section is not None
+        assert len(section.keep) == 1
+        assert len(section.remove) == 1
+        assert section.keep[0].path == "~/.config/nvim"
+
     def test_import_decisions_domain_empty_lists(self, tmp_path: Path, domain: str) -> None:
         """import_decisions handles empty domain lists."""
         decisions_toml = f"""

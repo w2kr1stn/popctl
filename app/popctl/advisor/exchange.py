@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import tomllib
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -139,7 +139,7 @@ class DecisionsResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    packages: dict[PackageSourceType, SourceDecisions]
+    packages: dict[PackageSourceType, SourceDecisions] = Field(default_factory=lambda: {})
     filesystem: DomainDecisions | None = None
     configs: DomainDecisions | None = None
 
@@ -186,16 +186,11 @@ def import_decisions(decisions_path: Path) -> DecisionsResult:
         msg = f"Failed to read decisions.toml: {e}"
         raise ValueError(msg) from e
 
-    # Validate packages section exists
-    if not isinstance(data.get("packages"), dict):
-        msg = "decisions.toml must have a 'packages' section"
-        raise ValueError(msg)
-
-    # Fill missing sources with empty defaults
-    packages: dict[str, Any] = data["packages"]
-    for source in ("apt", "flatpak", "snap"):
-        if source not in packages:
-            packages[source] = {"keep": [], "remove": [], "ask": []}
+    # Fill missing package sources with empty defaults (if section exists)
+    if "packages" in data and isinstance(data["packages"], dict):
+        for source in ("apt", "flatpak", "snap"):
+            if source not in data["packages"]:
+                data["packages"][source] = {"keep": [], "remove": [], "ask": []}
 
     # Let Pydantic validate the full structure
     try:
