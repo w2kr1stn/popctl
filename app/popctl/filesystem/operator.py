@@ -49,6 +49,7 @@ class FilesystemOperator:
         results: list[DomainActionResult] = []
 
         for path in paths:
+            path = str(Path(path).expanduser())
             if is_protected(path, "filesystem"):
                 results.append(
                     DomainActionResult(

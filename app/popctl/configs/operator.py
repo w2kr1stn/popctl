@@ -136,6 +136,8 @@ class ConfigOperator:
         Returns:
             ConfigActionResult indicating success or failure.
         """
+        path = str(Path(path).expanduser())
+
         # 1. Check protected
         if is_protected(path, "configs"):
             return ConfigActionResult(

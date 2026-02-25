@@ -187,6 +187,22 @@ class TestFilesystemOperator:
         assert results[2].success is True
         assert not good_dir.exists()
 
+    def test_delete_tilde_path_expanded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Tilde paths are expanded to absolute paths before deletion."""
+        target = tmp_path / "orphan_dir"
+        target.mkdir()
+        (target / "file.txt").write_text("content")
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        tilde_path = "~/orphan_dir"
+
+        op = FilesystemOperator()
+        results = op.delete([tilde_path])
+
+        assert len(results) == 1
+        assert results[0].success is True
+        assert not target.exists()
+
     def test_delete_empty_list(self) -> None:
         """Deleting an empty list returns empty results."""
         op = FilesystemOperator()
