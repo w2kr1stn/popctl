@@ -18,10 +18,10 @@ runner = CliRunner()
 @pytest.fixture
 def mock_apt_packages() -> str:
     """Sample APT packages for testing."""
-    return """firefox\t128.0\t204800\tMozilla Firefox
-neovim\t0.9.5\t51200\tText editor
-git\t2.43.0\t10240\tVersion control
-systemd\t255\t8000\tSystem daemon"""
+    return """installed\tfirefox\t128.0\t204800\tMozilla Firefox
+installed\tneovim\t0.9.5\t51200\tText editor
+installed\tgit\t2.43.0\t10240\tVersion control
+installed\tsystemd\t255\t8000\tSystem daemon"""
 
 
 @pytest.fixture
@@ -94,10 +94,10 @@ class TestInitCommand:
 
     def test_init_excludes_protected_packages(self, tmp_path: Path) -> None:
         """Init excludes protected system packages from manifest."""
-        mock_dpkg = """firefox\t128.0\t100\tBrowser
-systemd\t255\t8000\tSystem daemon
-linux-image-generic\t6.5\t500000\tKernel
-apt-utils\t2.7\t10000\tPackage manager utilities"""
+        mock_dpkg = """installed\tfirefox\t128.0\t100\tBrowser
+installed\tsystemd\t255\t8000\tSystem daemon
+installed\tlinux-image-generic\t6.5\t500000\tKernel
+installed\tapt-utils\t2.7\t10000\tPackage manager utilities"""
 
         manifest_path = tmp_path / "manifest.toml"
 
@@ -129,8 +129,8 @@ apt-utils\t2.7\t10000\tPackage manager utilities"""
 
     def test_init_excludes_auto_installed_packages(self, tmp_path: Path) -> None:
         """Init excludes auto-installed packages from manifest."""
-        mock_dpkg = """firefox\t128.0\t100\tBrowser
-libfoo\t1.0\t50\tLibrary"""
+        mock_dpkg = """installed\tfirefox\t128.0\t100\tBrowser
+installed\tlibfoo\t1.0\t50\tLibrary"""
         mock_auto = "libfoo"
 
         manifest_path = tmp_path / "manifest.toml"

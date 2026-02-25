@@ -169,7 +169,7 @@ class TestAptScanner:
 
     def test_scan_handles_missing_description(self, scanner: AptScanner) -> None:
         """Scan handles packages without description."""
-        minimal_output = "minimal-pkg\t1.0\t100\t"
+        minimal_output = "installed\tminimal-pkg\t1.0\t100\t"
 
         with (
             patch("popctl.scanners.apt.command_exists", return_value=True),
@@ -187,7 +187,7 @@ class TestAptScanner:
 
     def test_scan_handles_non_numeric_size(self, scanner: AptScanner) -> None:
         """Scan handles packages with non-numeric size."""
-        bad_size_output = "pkg\t1.0\tNaN\tSome package"
+        bad_size_output = "installed\tpkg\t1.0\tNaN\tSome package"
 
         with (
             patch("popctl.scanners.apt.command_exists", return_value=True),
@@ -202,6 +202,30 @@ class TestAptScanner:
 
         assert len(packages) == 1
         assert packages[0].size_bytes is None
+
+    def test_scan_filters_non_installed_packages(self, scanner: AptScanner) -> None:
+        """Scan skips packages in config-files or not-installed state."""
+        mixed_output = (
+            "installed\tfirefox\t128.0\t204800\tMozilla Firefox\n"
+            "config-files\tlibreoffice-impress\t7.6\t51200\tLibreOffice Impress\n"
+            "not-installed\told-pkg\t1.0\t100\tOld package\n"
+            "installed\tcurl\t8.5.0\t512\tTransfer tool"
+        )
+
+        with (
+            patch("popctl.scanners.apt.command_exists", return_value=True),
+            patch("popctl.scanners.apt.run_command") as mock_run,
+        ):
+            mock_run.side_effect = [
+                CommandResult(stdout="", stderr="", returncode=0),
+                CommandResult(stdout=mixed_output, stderr="", returncode=0),
+            ]
+
+            packages = list(scanner.scan())
+
+        assert len(packages) == 2
+        names = {p.name for p in packages}
+        assert names == {"firefox", "curl"}
 
 
 class TestAptScannerIntegration:

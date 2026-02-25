@@ -90,7 +90,7 @@ class AptOperator(Operator):
 
         result = run_command(args, timeout=self._TIMEOUT)
 
-        # Parse result (all packages succeed or fail atomically with apt-get)
+        # Map command exit code to per-package results
         results: list[ActionResult] = []
 
         if result.success:
