@@ -117,6 +117,7 @@ def _invoke_advisor(
     domain: str,
     filesystem_orphans: list[dict[str, Any]] | None = None,
     config_orphans: list[dict[str, Any]] | None = None,
+    review: bool = False,
 ) -> DecisionsResult | None:
     """Shared advisor workflow: config -> scan -> workspace -> run -> import.
 
@@ -129,6 +130,7 @@ def _invoke_advisor(
         domain: Human-readable domain label for log messages.
         filesystem_orphans: Optional FS orphan entries for workspace.
         config_orphans: Optional config orphan entries for workspace.
+        review: If True, advisor reviews existing classifications.
 
     Returns:
         Parsed DecisionsResult or None on any failure (non-fatal).
@@ -157,6 +159,7 @@ def _invoke_advisor(
             filesystem_orphans=filesystem_orphans,
             config_orphans=config_orphans,
             domain=domain,
+            review=review,
         )
     except (OSError, RuntimeError) as e:
         print_warning(f"Could not create advisor workspace: {e}")
@@ -199,7 +202,7 @@ def _invoke_advisor(
     return decisions
 
 
-def _run_advisor(diff_result: DiffResult, auto: bool) -> None:
+def _run_advisor(diff_result: DiffResult, auto: bool, *, review: bool = False) -> None:
     """Run AI advisor to classify NEW packages.
 
     If the advisor produces decisions, they are applied to the manifest.
@@ -208,10 +211,14 @@ def _run_advisor(diff_result: DiffResult, auto: bool) -> None:
     Args:
         diff_result: Current diff result containing NEW packages.
         auto: If True, run headless advisor; otherwise interactive.
+        review: If True, advisor reviews existing classifications.
     """
-    print_info(f"{len(diff_result.new)} NEW package(s) found. Running advisor...")
+    if review:
+        print_info("Review mode: running advisor to review existing classifications...")
+    else:
+        print_info(f"{len(diff_result.new)} NEW package(s) found. Running advisor...")
 
-    decisions = _invoke_advisor(auto=auto, domain="packages")
+    decisions = _invoke_advisor(auto=auto, domain="packages", review=review)
     if decisions:
         print_success("Advisor classification completed.")
         _apply_advisor_decisions(decisions)
@@ -276,6 +283,7 @@ def _sync_packages(
     purge: bool,
     no_advisor: bool,
     auto: bool,
+    review: bool,
 ) -> bool:
     """Run the package synchronization pipeline.
 
@@ -301,7 +309,7 @@ def _sync_packages(
     diff_result = compute_system_diff(source)
 
     # Check if system is already in sync
-    if diff_result.is_in_sync:
+    if diff_result.is_in_sync and not review:
         print_success("System is already in sync with manifest. Nothing to do.")
         return False
 
@@ -320,8 +328,8 @@ def _sync_packages(
         return False
 
     # Phase 3-5: Advisor (unless --no-advisor or no NEW packages)
-    if not no_advisor and diff_result.new:
-        _run_advisor(diff_result, auto)
+    if not no_advisor and (diff_result.new or review):
+        _run_advisor(diff_result, auto, review=review)
 
         # Phase 5: Re-diff after advisor changes
         diff_result = compute_system_diff(source)
@@ -436,6 +444,13 @@ def sync(
             help="Skip config scanning and cleanup phases.",
         ),
     ] = False,
+    review: Annotated[
+        bool,
+        typer.Option(
+            "--review",
+            help="Force advisor session to review existing manifest classifications.",
+        ),
+    ] = False,
 ) -> None:
     """Full system synchronization.
 
@@ -485,6 +500,7 @@ def sync(
         purge=purge,
         no_advisor=no_advisor,
         auto=auto,
+        review=review,
     )
 
     # Domain orphan phases (always run after package sync)

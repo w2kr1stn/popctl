@@ -132,6 +132,7 @@ def create_session_workspace(
     filesystem_orphans: list[dict[str, Any]] | None = None,
     config_orphans: list[dict[str, Any]] | None = None,
     domain: str = "packages",
+    review: bool = False,
 ) -> Path:
     """Create an ephemeral workspace directory for a classification session.
 
@@ -147,6 +148,7 @@ def create_session_workspace(
         filesystem_orphans: Optional filesystem orphan entries for FS advisor.
         config_orphans: Optional config orphan entries for config advisor.
         domain: Classification domain ("packages", "filesystem", or "configs").
+        review: If True, include review-specific instructions in CLAUDE.md.
 
     Returns:
         Path to the created session workspace directory.
@@ -185,6 +187,7 @@ def create_session_workspace(
         system_info=system_info,
         summary=summary,
         domain=domain,
+        review=review,
     )
     try:
         (session_dir / "CLAUDE.md").write_text(claude_md_content, encoding="utf-8")

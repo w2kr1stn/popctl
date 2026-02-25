@@ -55,11 +55,28 @@ _DOMAIN_TEMPLATES: dict[str, str] = {
     "configs": SESSION_CLAUDE_MD_CONFIGS,
 }
 
+REVIEW_ADDENDUM = """
+
+## Review-Modus (AKTIV)
+
+Dies ist eine **Review-Session**. Das System ist bereits in sync mit dem Manifest.
+Deine Aufgabe ist NICHT neue Pakete zu klassifizieren, sondern **bestehende
+Klassifikationen kritisch zu überprüfen**:
+
+1. Lies `manifest.toml` vollständig — dort stehen alle bisherigen KEEP/REMOVE-Entscheidungen
+2. Hinterfrage jede Entscheidung: Wird das Paket noch gebraucht? Hat sich der Kontext geändert?
+3. Achte besonders auf: Dev-Tools die auf den Host gerutscht sind, verwaiste Abhängigkeiten,
+   Pakete die inzwischen durch Alternativen ersetzt wurden
+4. Schreibe nur **geänderte** Entscheidungen in `output/decisions.toml` — Pakete die korrekt
+   klassifiziert sind, müssen NICHT erneut aufgelistet werden
+"""
+
 
 def build_session_claude_md(
     system_info: dict[str, str] | None = None,
     summary: dict[str, int] | None = None,
     domain: str = "packages",
+    review: bool = False,
 ) -> str:
     """Build CLAUDE.md content for an interactive session workspace.
 
@@ -72,6 +89,7 @@ def build_session_claude_md(
         system_info: Optional system context (hostname, os).
         summary: Optional package count summary (total, manual, auto).
         domain: Classification domain ("packages", "filesystem", or "configs").
+        review: If True, append review-specific instructions.
 
     Returns:
         CLAUDE.md content string.
@@ -99,7 +117,12 @@ def build_session_claude_md(
 
     template = _DOMAIN_TEMPLATES.get(domain, SESSION_CLAUDE_MD)
 
-    return template.format(
+    content = template.format(
         system_context=system_context,
         categories=categories_list,
     )
+
+    if review:
+        content += REVIEW_ADDENDUM
+
+    return content

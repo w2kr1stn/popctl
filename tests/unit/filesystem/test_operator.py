@@ -187,7 +187,9 @@ class TestFilesystemOperator:
         assert results[2].success is True
         assert not good_dir.exists()
 
-    def test_delete_tilde_path_expanded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_delete_tilde_path_expanded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Tilde paths are expanded to absolute paths before deletion."""
         target = tmp_path / "orphan_dir"
         target.mkdir()
