@@ -218,6 +218,9 @@ def create_session_workspace(
         json.dumps(WORKSPACE_SETTINGS, indent=2), encoding="utf-8"
     )
 
+    # Prune old sessions (keep most recent N)
+    _prune_old_sessions(sessions_dir, keep=_SESSION_RETENTION)
+
     return session_dir
 
 
@@ -296,6 +299,7 @@ def _build_summary(packages: tuple[ScannedPackage, ...]) -> dict[str, int]:
     return summary
 
 
+_SESSION_RETENTION = 5
 _MEMORY_SIZE_WARN_KB = 50
 
 
@@ -366,27 +370,80 @@ def _copy_memory_from_latest_session(
             return
 
 
-def find_latest_decisions(sessions_dir: Path) -> Path | None:
-    """Find output/decisions.toml from the most recent session.
+_APPLIED_MARKER = ".applied"
 
-    Scans the sessions directory for the latest session that contains
-    a decisions.toml file in its output subdirectory.
+
+def find_all_unapplied_decisions(sessions_dir: Path) -> list[Path]:
+    """Find all unapplied decisions.toml files across sessions.
+
+    Returns decisions from oldest to newest so they can be applied
+    in chronological order. A session is considered "applied" when
+    its output directory contains an ``.applied`` marker file.
 
     Args:
         sessions_dir: Base directory containing session workspaces.
 
     Returns:
-        Path to decisions.toml if found, None otherwise.
+        List of paths to unapplied decisions.toml files (oldest first).
     """
     if not sessions_dir.exists():
-        return None
+        return []
+
+    unapplied: list[Path] = []
+    for session_dir in list_sessions(sessions_dir):
+        output_dir = session_dir / "output"
+        decisions_path = output_dir / "decisions.toml"
+        applied_marker = output_dir / _APPLIED_MARKER
+        if decisions_path.exists() and not applied_marker.exists():
+            unapplied.append(decisions_path)
+
+    # list_sessions returns newest-first; reverse for chronological apply
+    unapplied.reverse()
+    return unapplied
+
+
+def mark_session_applied(decisions_path: Path) -> None:
+    """Mark a session as applied by creating a marker file.
+
+    Creates an ``.applied`` file in the same output directory as the
+    given decisions.toml. Idempotent — safe to call multiple times.
+
+    Args:
+        decisions_path: Path to the decisions.toml that was applied.
+    """
+    marker = decisions_path.parent / _APPLIED_MARKER
+    marker.touch(exist_ok=True)
+
+
+def cleanup_empty_sessions(sessions_dir: Path) -> int:
+    """Remove sessions that have no decisions.toml output.
+
+    Sessions without decisions are useless artifacts (e.g. from advisor
+    failures or interrupted runs) and should be cleaned up.
+
+    Args:
+        sessions_dir: Base directory containing session workspaces.
+
+    Returns:
+        Number of sessions removed.
+    """
+    if not sessions_dir.exists():
+        return 0
+
+    logger = logging.getLogger(__name__)
+    removed = 0
 
     for session_dir in list_sessions(sessions_dir):
         decisions_path = session_dir / "output" / "decisions.toml"
-        if decisions_path.exists():
-            return decisions_path
+        if not decisions_path.exists():
+            try:
+                shutil.rmtree(session_dir)
+                logger.debug("Cleaned up empty session %s", session_dir.name)
+                removed += 1
+            except OSError as e:
+                logger.warning("Could not clean up session %s: %s", session_dir.name, e)
 
-    return None
+    return removed
 
 
 def list_sessions(sessions_dir: Path) -> list[Path]:
@@ -403,3 +460,19 @@ def list_sessions(sessions_dir: Path) -> list[Path]:
 
     sessions = [d for d in sessions_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
     return sorted(sessions, key=lambda d: d.name, reverse=True)
+
+
+def _prune_old_sessions(sessions_dir: Path, *, keep: int) -> None:
+    """Remove old session directories beyond the retention limit.
+
+    Args:
+        sessions_dir: Base directory containing session workspaces.
+        keep: Number of most recent sessions to retain.
+    """
+    logger = logging.getLogger(__name__)
+    for old_session in list_sessions(sessions_dir)[keep:]:
+        try:
+            shutil.rmtree(old_session)
+            logger.debug("Pruned old session %s", old_session.name)
+        except OSError as e:
+            logger.warning("Could not prune session %s: %s", old_session.name, e)

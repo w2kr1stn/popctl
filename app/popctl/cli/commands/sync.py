@@ -12,7 +12,12 @@ from typing import Annotated, Any, Literal
 
 import typer
 
-from popctl.advisor import AgentRunner, import_decisions
+from popctl.advisor import (
+    AgentRunner,
+    cleanup_empty_sessions,
+    import_decisions,
+    mark_session_applied,
+)
 from popctl.advisor.config import AdvisorConfigError, load_or_create_config
 from popctl.advisor.exchange import (
     DecisionsResult,
@@ -165,11 +170,13 @@ def _invoke_advisor(
             result = runner.launch_interactive(workspace_dir)
     except (OSError, RuntimeError) as e:
         print_warning(f"Advisor execution failed: {e}")
+        cleanup_empty_sessions(sessions_dir)
         return None
 
     if result.error == MANUAL_MODE_SENTINEL:
         console.print()
         console.print(result.output)
+        cleanup_empty_sessions(sessions_dir)
         return None
 
     if not result.success or not result.decisions_path:
@@ -177,13 +184,18 @@ def _invoke_advisor(
             f"{domain.capitalize()} advisor did not produce decisions: "
             f"{result.error or 'unknown error'}"
         )
+        cleanup_empty_sessions(sessions_dir)
         return None
 
     try:
-        return import_decisions(result.decisions_path)
+        decisions = import_decisions(result.decisions_path)
     except (FileNotFoundError, ValueError) as e:
         print_warning(f"Could not load advisor decisions: {e}")
         return None
+
+    # Mark this session as applied (sync applies immediately)
+    mark_session_applied(result.decisions_path)
+    return decisions
 
 
 def _run_advisor(diff_result: DiffResult, auto: bool) -> None:

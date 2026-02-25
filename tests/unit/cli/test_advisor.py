@@ -492,9 +492,11 @@ class TestAdvisorApplyWithValidDecisions:
                 return_value=tmp_path / "sessions",
             ),
             patch(
-                "popctl.cli.commands.advisor.find_latest_decisions",
-                return_value=decisions_path,
+                "popctl.cli.commands.advisor.find_all_unapplied_decisions",
+                return_value=[decisions_path],
             ),
+            patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
+            patch("popctl.cli.commands.advisor.mark_session_applied"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
@@ -555,9 +557,11 @@ class TestAdvisorApplyDryRun:
                 return_value=tmp_path / "sessions",
             ),
             patch(
-                "popctl.cli.commands.advisor.find_latest_decisions",
-                return_value=decisions_path,
+                "popctl.cli.commands.advisor.find_all_unapplied_decisions",
+                return_value=[decisions_path],
             ),
+            patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
+            patch("popctl.cli.commands.advisor.mark_session_applied"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
@@ -592,15 +596,16 @@ class TestAdvisorApplyErrors:
                 return_value=tmp_path / "sessions",
             ),
             patch(
-                "popctl.cli.commands.advisor.find_latest_decisions",
-                return_value=None,
+                "popctl.cli.commands.advisor.find_all_unapplied_decisions",
+                return_value=[],
             ),
+            patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
         ):
             result = runner.invoke(app, ["advisor", "apply"])
 
         assert result.exit_code == 1
         combined = result.stdout + (result.stderr or "")
-        assert "no advisor decisions found" in combined.lower()
+        assert "no unapplied advisor decisions found" in combined.lower()
 
     def test_apply_without_manifest(self, tmp_path: Path) -> None:
         """Apply fails when manifest is not found."""
@@ -620,9 +625,11 @@ class TestAdvisorApplyErrors:
                 return_value=tmp_path / "sessions",
             ),
             patch(
-                "popctl.cli.commands.advisor.find_latest_decisions",
-                return_value=decisions_path,
+                "popctl.cli.commands.advisor.find_all_unapplied_decisions",
+                return_value=[decisions_path],
             ),
+            patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
+            patch("popctl.cli.commands.advisor.mark_session_applied"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
@@ -636,8 +643,10 @@ class TestAdvisorApplyErrors:
 
         assert result.exit_code == 1
 
-    def test_apply_with_invalid_decisions_toml(self, tmp_path: Path) -> None:
-        """Apply fails when decisions.toml is invalid."""
+    def test_apply_with_invalid_decisions_toml(
+        self, tmp_path: Path, empty_manifest: Manifest
+    ) -> None:
+        """Apply fails when all decisions.toml files are invalid."""
         decisions_path = tmp_path / "decisions.toml"
         decisions_path.touch()
 
@@ -647,19 +656,25 @@ class TestAdvisorApplyErrors:
                 return_value=tmp_path / "sessions",
             ),
             patch(
-                "popctl.cli.commands.advisor.find_latest_decisions",
-                return_value=decisions_path,
+                "popctl.cli.commands.advisor.find_all_unapplied_decisions",
+                return_value=[decisions_path],
             ),
+            patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
+            patch("popctl.cli.commands.advisor.mark_session_applied"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 side_effect=ValueError("Invalid TOML syntax"),
+            ),
+            patch(
+                "popctl.cli.commands.advisor.require_manifest",
+                return_value=empty_manifest,
             ),
         ):
             result = runner.invoke(app, ["advisor", "apply"])
 
         assert result.exit_code == 1
         combined = result.stdout + (result.stderr or "")
-        assert "invalid" in combined.lower()
+        assert "failed to load" in combined.lower()
 
 
 class TestAdvisorApplyWithInputFile:
@@ -684,6 +699,12 @@ class TestAdvisorApplyWithInputFile:
         )
 
         with (
+            patch(
+                "popctl.cli.commands.advisor.ensure_advisor_sessions_dir",
+                return_value=tmp_path / "sessions",
+            ),
+            patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
+            patch("popctl.cli.commands.advisor.mark_session_applied"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
@@ -748,9 +769,11 @@ class TestAdvisorApplyAskPackages:
                 return_value=tmp_path / "sessions",
             ),
             patch(
-                "popctl.cli.commands.advisor.find_latest_decisions",
-                return_value=decisions_path,
+                "popctl.cli.commands.advisor.find_all_unapplied_decisions",
+                return_value=[decisions_path],
             ),
+            patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
+            patch("popctl.cli.commands.advisor.mark_session_applied"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
@@ -817,9 +840,11 @@ class TestAdvisorApplyHistory:
                 return_value=tmp_path / "sessions",
             ),
             patch(
-                "popctl.cli.commands.advisor.find_latest_decisions",
-                return_value=decisions_path,
+                "popctl.cli.commands.advisor.find_all_unapplied_decisions",
+                return_value=[decisions_path],
             ),
+            patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
+            patch("popctl.cli.commands.advisor.mark_session_applied"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
@@ -877,9 +902,11 @@ class TestAdvisorApplyHistory:
                 return_value=tmp_path / "sessions",
             ),
             patch(
-                "popctl.cli.commands.advisor.find_latest_decisions",
-                return_value=decisions_path,
+                "popctl.cli.commands.advisor.find_all_unapplied_decisions",
+                return_value=[decisions_path],
             ),
+            patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
+            patch("popctl.cli.commands.advisor.mark_session_applied"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
@@ -1015,9 +1042,11 @@ class TestAdvisorIntegration:
                 return_value=tmp_path / "sessions",
             ),
             patch(
-                "popctl.cli.commands.advisor.find_latest_decisions",
-                return_value=decisions_toml,
+                "popctl.cli.commands.advisor.find_all_unapplied_decisions",
+                return_value=[decisions_toml],
             ),
+            patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
+            patch("popctl.cli.commands.advisor.mark_session_applied"),
             patch("popctl.cli.commands.advisor.import_decisions", return_value=decisions),
             patch("popctl.cli.commands.advisor.require_manifest", return_value=manifest),
             patch("popctl.cli.commands.advisor.save_manifest") as mock_save,
@@ -1107,9 +1136,11 @@ class TestAdvisorIntegration:
                 return_value=tmp_path / "sessions",
             ),
             patch(
-                "popctl.cli.commands.advisor.find_latest_decisions",
-                return_value=decisions_path,
+                "popctl.cli.commands.advisor.find_all_unapplied_decisions",
+                return_value=[decisions_path],
             ),
+            patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
+            patch("popctl.cli.commands.advisor.mark_session_applied"),
             patch("popctl.cli.commands.advisor.import_decisions", return_value=decisions),
             patch("popctl.cli.commands.advisor.require_manifest", return_value=manifest),
             patch(

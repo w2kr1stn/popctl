@@ -4,9 +4,13 @@ import json
 from pathlib import Path
 
 from popctl.advisor.workspace import (
+    _APPLIED_MARKER,
+    _SESSION_RETENTION,
+    cleanup_empty_sessions,
     create_session_workspace,
-    find_latest_decisions,
+    find_all_unapplied_decisions,
     list_sessions,
+    mark_session_applied,
 )
 from popctl.models.package import PackageSource, PackageStatus, ScannedPackage, ScanResult
 
@@ -193,58 +197,6 @@ class TestCreateSessionWorkspace:
             readonly_dir.chmod(0o755)
 
 
-class TestFindLatestDecisions:
-    """Tests for find_latest_decisions function."""
-
-    def test_returns_none_for_empty_dir(self, tmp_path: Path) -> None:
-        """Returns None when sessions dir is empty."""
-        assert find_latest_decisions(tmp_path) is None
-
-    def test_returns_none_for_nonexistent_dir(self, tmp_path: Path) -> None:
-        """Returns None when sessions dir doesn't exist."""
-        assert find_latest_decisions(tmp_path / "nonexistent") is None
-
-    def test_finds_latest_decisions(self, tmp_path: Path) -> None:
-        """Finds decisions.toml from most recent session."""
-        # Create older session
-        old_session = tmp_path / "20260101T100000"
-        (old_session / "output").mkdir(parents=True)
-        (old_session / "output" / "decisions.toml").write_text("[packages.apt]\n")
-
-        # Create newer session
-        new_session = tmp_path / "20260201T100000"
-        (new_session / "output").mkdir(parents=True)
-        (new_session / "output" / "decisions.toml").write_text("[packages.apt]\nnew = true\n")
-
-        result = find_latest_decisions(tmp_path)
-
-        assert result is not None
-        assert "20260201" in str(result)
-
-    def test_skips_sessions_without_decisions(self, tmp_path: Path) -> None:
-        """Skips sessions that don't have decisions.toml."""
-        # Session without decisions
-        no_decisions = tmp_path / "20260301T100000"
-        (no_decisions / "output").mkdir(parents=True)
-
-        # Older session WITH decisions
-        with_decisions = tmp_path / "20260201T100000"
-        (with_decisions / "output").mkdir(parents=True)
-        (with_decisions / "output" / "decisions.toml").write_text("[packages.apt]\n")
-
-        result = find_latest_decisions(tmp_path)
-
-        assert result is not None
-        assert "20260201" in str(result)
-
-    def test_returns_none_when_no_decisions_exist(self, tmp_path: Path) -> None:
-        """Returns None when no session has decisions.toml."""
-        session = tmp_path / "20260101T100000"
-        (session / "output").mkdir(parents=True)
-
-        assert find_latest_decisions(tmp_path) is None
-
-
 class TestListSessions:
     """Tests for list_sessions function."""
 
@@ -286,3 +238,195 @@ class TestListSessions:
         sessions = list_sessions(tmp_path)
 
         assert len(sessions) == 1
+
+
+class TestSessionRetention:
+    """Tests for automatic session pruning."""
+
+    def test_prunes_old_sessions_on_create(self, tmp_path: Path) -> None:
+        """Creating a workspace prunes sessions beyond retention limit."""
+        scan = _make_scan_result()
+
+        # Create more sessions than retention limit
+        for i in range(_SESSION_RETENTION + 3):
+            (tmp_path / f"2026010{i}T100000").mkdir()
+            (tmp_path / f"2026010{i}T100000" / "output").mkdir()
+
+        create_session_workspace(scan, tmp_path)
+
+        sessions = list_sessions(tmp_path)
+        assert len(sessions) == _SESSION_RETENTION
+
+    def test_keeps_newest_sessions(self, tmp_path: Path) -> None:
+        """Pruning keeps the most recent sessions."""
+        scan = _make_scan_result()
+
+        # Create old sessions
+        for i in range(8):
+            (tmp_path / f"2026010{i}T100000").mkdir()
+            (tmp_path / f"2026010{i}T100000" / "output").mkdir()
+
+        create_session_workspace(scan, tmp_path)
+
+        sessions = list_sessions(tmp_path)
+        # The newly created session + the newest old ones are kept
+        names = [s.name for s in sessions]
+        # Oldest sessions (20260100, 20260101, 20260102, 20260103) should be gone
+        assert "20260100T100000" not in names
+        assert "20260101T100000" not in names
+
+    def test_no_pruning_below_limit(self, tmp_path: Path) -> None:
+        """No pruning when session count is within limit."""
+        scan = _make_scan_result()
+
+        # Create fewer sessions than limit
+        (tmp_path / "20260101T100000").mkdir()
+        (tmp_path / "20260101T100000" / "output").mkdir()
+
+        create_session_workspace(scan, tmp_path)
+
+        sessions = list_sessions(tmp_path)
+        assert len(sessions) == 2  # old + new
+
+
+class TestFindAllUnappliedDecisions:
+    """Tests for find_all_unapplied_decisions function."""
+
+    def test_returns_empty_for_nonexistent_dir(self, tmp_path: Path) -> None:
+        """Returns empty list when sessions dir doesn't exist."""
+        assert find_all_unapplied_decisions(tmp_path / "nonexistent") == []
+
+    def test_returns_empty_for_empty_dir(self, tmp_path: Path) -> None:
+        """Returns empty list when no sessions have decisions."""
+        (tmp_path / "20260101T100000" / "output").mkdir(parents=True)
+        assert find_all_unapplied_decisions(tmp_path) == []
+
+    def test_finds_single_unapplied(self, tmp_path: Path) -> None:
+        """Finds a single unapplied decisions.toml."""
+        session = tmp_path / "20260101T100000"
+        (session / "output").mkdir(parents=True)
+        (session / "output" / "decisions.toml").write_text("[packages.apt]\n")
+
+        result = find_all_unapplied_decisions(tmp_path)
+
+        assert len(result) == 1
+        assert result[0] == session / "output" / "decisions.toml"
+
+    def test_finds_multiple_unapplied_oldest_first(self, tmp_path: Path) -> None:
+        """Returns unapplied decisions in chronological order (oldest first)."""
+        for ts in ["20260101T100000", "20260201T100000", "20260301T100000"]:
+            session = tmp_path / ts
+            (session / "output").mkdir(parents=True)
+            (session / "output" / "decisions.toml").write_text(f"# {ts}\n")
+
+        result = find_all_unapplied_decisions(tmp_path)
+
+        assert len(result) == 3
+        assert "20260101" in str(result[0])
+        assert "20260201" in str(result[1])
+        assert "20260301" in str(result[2])
+
+    def test_skips_applied_sessions(self, tmp_path: Path) -> None:
+        """Skips sessions that have .applied marker."""
+        # Applied session
+        applied = tmp_path / "20260101T100000"
+        (applied / "output").mkdir(parents=True)
+        (applied / "output" / "decisions.toml").write_text("[packages.apt]\n")
+        (applied / "output" / _APPLIED_MARKER).touch()
+
+        # Unapplied session
+        unapplied = tmp_path / "20260201T100000"
+        (unapplied / "output").mkdir(parents=True)
+        (unapplied / "output" / "decisions.toml").write_text("[packages.apt]\n")
+
+        result = find_all_unapplied_decisions(tmp_path)
+
+        assert len(result) == 1
+        assert "20260201" in str(result[0])
+
+    def test_returns_empty_when_all_applied(self, tmp_path: Path) -> None:
+        """Returns empty list when all sessions are applied."""
+        session = tmp_path / "20260101T100000"
+        (session / "output").mkdir(parents=True)
+        (session / "output" / "decisions.toml").write_text("[packages.apt]\n")
+        (session / "output" / _APPLIED_MARKER).touch()
+
+        assert find_all_unapplied_decisions(tmp_path) == []
+
+
+class TestMarkSessionApplied:
+    """Tests for mark_session_applied function."""
+
+    def test_creates_applied_marker(self, tmp_path: Path) -> None:
+        """Creates .applied marker file next to decisions.toml."""
+        output = tmp_path / "output"
+        output.mkdir()
+        decisions = output / "decisions.toml"
+        decisions.write_text("[packages.apt]\n")
+
+        mark_session_applied(decisions)
+
+        assert (output / _APPLIED_MARKER).exists()
+
+    def test_idempotent(self, tmp_path: Path) -> None:
+        """Calling mark_session_applied twice doesn't raise."""
+        output = tmp_path / "output"
+        output.mkdir()
+        decisions = output / "decisions.toml"
+        decisions.write_text("[packages.apt]\n")
+
+        mark_session_applied(decisions)
+        mark_session_applied(decisions)
+
+        assert (output / _APPLIED_MARKER).exists()
+
+
+class TestCleanupEmptySessions:
+    """Tests for cleanup_empty_sessions function."""
+
+    def test_returns_zero_for_nonexistent_dir(self, tmp_path: Path) -> None:
+        """Returns 0 for nonexistent directory."""
+        assert cleanup_empty_sessions(tmp_path / "nonexistent") == 0
+
+    def test_removes_sessions_without_decisions(self, tmp_path: Path) -> None:
+        """Removes sessions that have no decisions.toml."""
+        empty = tmp_path / "20260101T100000"
+        (empty / "output").mkdir(parents=True)
+
+        removed = cleanup_empty_sessions(tmp_path)
+
+        assert removed == 1
+        assert not empty.exists()
+
+    def test_keeps_sessions_with_decisions(self, tmp_path: Path) -> None:
+        """Does not remove sessions that have decisions.toml."""
+        session = tmp_path / "20260101T100000"
+        (session / "output").mkdir(parents=True)
+        (session / "output" / "decisions.toml").write_text("[packages.apt]\n")
+
+        removed = cleanup_empty_sessions(tmp_path)
+
+        assert removed == 0
+        assert session.exists()
+
+    def test_mixed_sessions(self, tmp_path: Path) -> None:
+        """Removes empty sessions while keeping ones with decisions."""
+        # Empty session
+        empty = tmp_path / "20260101T100000"
+        (empty / "output").mkdir(parents=True)
+
+        # Session with decisions
+        with_decisions = tmp_path / "20260201T100000"
+        (with_decisions / "output").mkdir(parents=True)
+        (with_decisions / "output" / "decisions.toml").write_text("[packages.apt]\n")
+
+        # Another empty session
+        empty2 = tmp_path / "20260301T100000"
+        (empty2 / "output").mkdir(parents=True)
+
+        removed = cleanup_empty_sessions(tmp_path)
+
+        assert removed == 2
+        assert not empty.exists()
+        assert with_decisions.exists()
+        assert not empty2.exists()

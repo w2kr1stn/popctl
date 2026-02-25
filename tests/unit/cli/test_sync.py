@@ -996,6 +996,7 @@ class TestInvokeAdvisor:
                 return_value=mock_agent_result,
             ),
             patch("popctl.cli.commands.sync.import_decisions", return_value=expected_decisions),
+            patch("popctl.cli.commands.sync.mark_session_applied"),
         ):
             result = _invoke_advisor(auto=True, domain="packages")
 
