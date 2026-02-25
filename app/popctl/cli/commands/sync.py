@@ -762,6 +762,21 @@ def _domain_clean(domain: Literal["filesystem", "configs"], *, yes: bool) -> lis
                 if r_ok.success and backup:
                     print_info(f"Backed up {r_ok.path} -> {backup}")
         print_success(f"Deleted {len(successful)} {label} path(s).")
+
+        # Remove successfully deleted paths from manifest.
+        # Use original paths_to_delete (tilde form) as manifest keys,
+        # not result.path (expanded by operator to absolute form).
+        section = manifest.filesystem if is_fs else manifest.configs
+        if section:
+            for result, original_path in zip(results, paths_to_delete, strict=True):
+                if result.success:
+                    section.remove.pop(original_path, None)
+            manifest.meta.updated = datetime.now(UTC)
+            try:
+                save_manifest(manifest)
+            except (OSError, ManifestError) as e:
+                print_warning(f"Could not update manifest after {label} cleanup: {e}")
+
     if failed:
         for r in failed:
             print_warning(f"Failed to delete {r.path}: {r.error}")

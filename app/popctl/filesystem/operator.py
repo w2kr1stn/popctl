@@ -111,12 +111,8 @@ class FilesystemOperator:
                 target.unlink()
                 return DomainActionResult(path=path, success=True)
 
-            # Path does not exist
-            return DomainActionResult(
-                path=path,
-                success=False,
-                error=f"Path does not exist: {path}",
-            )
+            # Path does not exist — idempotent success (like rm -f)
+            return DomainActionResult(path=path, success=True)
 
         except OSError as e:
             return DomainActionResult(

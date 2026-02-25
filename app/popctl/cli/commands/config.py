@@ -5,6 +5,7 @@ and clean up entries marked for removal in the manifest.
 """
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -18,6 +19,7 @@ from popctl.cli.display import (
 )
 from popctl.cli.types import OutputFormat, collect_domain_orphans, require_manifest
 from popctl.configs import ConfigOperator
+from popctl.core.manifest import save_manifest
 from popctl.core.state import record_domain_deletions
 from popctl.domain.protected import is_protected
 from popctl.utils.formatting import (
@@ -146,10 +148,21 @@ def clean(
     # Display results
     print_deletion_results(results, show_backup=True)
 
-    # Record to history (only actual deletions, not dry-run)
+    # Record to history and update manifest (only actual deletions, not dry-run)
     if not dry_run:
         successful_paths = [r.path for r in results if r.success]
         if successful_paths:
+            # Remove deleted paths from manifest using original tilde keys
+            if manifest.configs:
+                for result, original_path in zip(results, paths_to_delete, strict=True):
+                    if result.success:
+                        manifest.configs.remove.pop(original_path, None)
+                manifest.meta.updated = datetime.now(UTC)
+                try:
+                    save_manifest(manifest)
+                except OSError as e:
+                    print_warning(f"Could not update manifest after cleanup: {e}")
+
             try:
                 record_domain_deletions("configs", successful_paths, command="popctl config clean")
                 print_info("Deletions recorded to history.")

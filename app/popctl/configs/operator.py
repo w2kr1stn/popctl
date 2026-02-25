@@ -148,13 +148,9 @@ class ConfigOperator:
 
         target = Path(path)
 
-        # 2. Check existence
+        # 2. Check existence — idempotent success (like rm -f)
         if not target.exists() and not target.is_symlink():
-            return ConfigActionResult(
-                path=path,
-                success=False,
-                error=f"Path does not exist: {path}",
-            )
+            return ConfigActionResult(path=path, success=True)
 
         # Dry-run: skip actual backup+delete
         if self._dry_run:
