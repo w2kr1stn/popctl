@@ -15,8 +15,8 @@ import typer
 from popctl.advisor import (
     AgentRunner,
     cleanup_empty_sessions,
+    delete_session,
     import_decisions,
-    mark_session_applied,
 )
 from popctl.advisor.config import AdvisorConfigError, load_or_create_config
 from popctl.advisor.exchange import (
@@ -197,8 +197,8 @@ def _invoke_advisor(
         print_warning(f"Could not load advisor decisions: {e}")
         return None
 
-    # Mark this session as applied (sync applies immediately)
-    mark_session_applied(result.decisions_path)
+    # Delete ephemeral session (sync applies immediately)
+    delete_session(result.decisions_path)
     return decisions
 
 

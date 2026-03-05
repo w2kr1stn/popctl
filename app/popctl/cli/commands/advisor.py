@@ -20,9 +20,9 @@ from rich.table import Table
 from popctl.advisor import (
     AgentRunner,
     cleanup_empty_sessions,
+    delete_session,
     find_all_unapplied_decisions,
     import_decisions,
-    mark_session_applied,
 )
 from popctl.advisor.config import (
     load_or_create_config,
@@ -336,9 +336,9 @@ def apply(
             print_error(f"Failed to save manifest: {e}")
             raise typer.Exit(code=1) from e
 
-        # Mark each session as applied and record to history
+        # Delete ephemeral sessions and record to history
         for decisions_path, decisions in all_decisions_for_history:
-            mark_session_applied(decisions_path)
+            delete_session(decisions_path)
             record_advisor_apply_to_history(decisions)
 
         print_info(f"{len(all_decisions_for_history)} session(s) applied and recorded to history.")

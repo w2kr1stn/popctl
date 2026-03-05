@@ -29,8 +29,8 @@ from popctl.advisor.runner import AgentResult, AgentRunner
 from popctl.advisor.workspace import (
     cleanup_empty_sessions,
     create_session_workspace,
+    delete_session,
     find_all_unapplied_decisions,
-    mark_session_applied,
 )
 
 __all__ = [
@@ -44,7 +44,7 @@ __all__ = [
     "SourceDecisions",
     "cleanup_empty_sessions",
     "create_session_workspace",
+    "delete_session",
     "find_all_unapplied_decisions",
     "import_decisions",
-    "mark_session_applied",
 ]

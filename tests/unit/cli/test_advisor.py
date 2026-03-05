@@ -496,7 +496,7 @@ class TestAdvisorApplyWithValidDecisions:
                 return_value=[decisions_path],
             ),
             patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
-            patch("popctl.cli.commands.advisor.mark_session_applied"),
+            patch("popctl.cli.commands.advisor.delete_session"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
@@ -561,7 +561,7 @@ class TestAdvisorApplyDryRun:
                 return_value=[decisions_path],
             ),
             patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
-            patch("popctl.cli.commands.advisor.mark_session_applied"),
+            patch("popctl.cli.commands.advisor.delete_session"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
@@ -629,7 +629,7 @@ class TestAdvisorApplyErrors:
                 return_value=[decisions_path],
             ),
             patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
-            patch("popctl.cli.commands.advisor.mark_session_applied"),
+            patch("popctl.cli.commands.advisor.delete_session"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
@@ -660,7 +660,7 @@ class TestAdvisorApplyErrors:
                 return_value=[decisions_path],
             ),
             patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
-            patch("popctl.cli.commands.advisor.mark_session_applied"),
+            patch("popctl.cli.commands.advisor.delete_session"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 side_effect=ValueError("Invalid TOML syntax"),
@@ -704,7 +704,7 @@ class TestAdvisorApplyWithInputFile:
                 return_value=tmp_path / "sessions",
             ),
             patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
-            patch("popctl.cli.commands.advisor.mark_session_applied"),
+            patch("popctl.cli.commands.advisor.delete_session"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
@@ -773,7 +773,7 @@ class TestAdvisorApplyAskPackages:
                 return_value=[decisions_path],
             ),
             patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
-            patch("popctl.cli.commands.advisor.mark_session_applied"),
+            patch("popctl.cli.commands.advisor.delete_session"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
@@ -844,7 +844,7 @@ class TestAdvisorApplyHistory:
                 return_value=[decisions_path],
             ),
             patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
-            patch("popctl.cli.commands.advisor.mark_session_applied"),
+            patch("popctl.cli.commands.advisor.delete_session"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
@@ -906,7 +906,7 @@ class TestAdvisorApplyHistory:
                 return_value=[decisions_path],
             ),
             patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
-            patch("popctl.cli.commands.advisor.mark_session_applied"),
+            patch("popctl.cli.commands.advisor.delete_session"),
             patch(
                 "popctl.cli.commands.advisor.import_decisions",
                 return_value=mock_decisions,
@@ -1046,7 +1046,7 @@ class TestAdvisorIntegration:
                 return_value=[decisions_toml],
             ),
             patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
-            patch("popctl.cli.commands.advisor.mark_session_applied"),
+            patch("popctl.cli.commands.advisor.delete_session"),
             patch("popctl.cli.commands.advisor.import_decisions", return_value=decisions),
             patch("popctl.cli.commands.advisor.require_manifest", return_value=manifest),
             patch("popctl.cli.commands.advisor.save_manifest") as mock_save,
@@ -1140,7 +1140,7 @@ class TestAdvisorIntegration:
                 return_value=[decisions_path],
             ),
             patch("popctl.cli.commands.advisor.cleanup_empty_sessions", return_value=0),
-            patch("popctl.cli.commands.advisor.mark_session_applied"),
+            patch("popctl.cli.commands.advisor.delete_session"),
             patch("popctl.cli.commands.advisor.import_decisions", return_value=decisions),
             patch("popctl.cli.commands.advisor.require_manifest", return_value=manifest),
             patch(

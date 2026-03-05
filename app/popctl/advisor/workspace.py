@@ -215,7 +215,7 @@ def create_session_workspace(
             logging.getLogger(__name__).warning("Could not copy manifest to workspace: %s", e)
 
     # Copy memory.md for cross-session learning
-    _copy_memory_to_workspace(memory_path, sessions_dir, session_dir)
+    _copy_memory_to_workspace(memory_path, session_dir)
 
     # Write Claude Code permissions (auto-allow with deny blacklist)
     settings_dir = session_dir / ".claude"
@@ -223,9 +223,6 @@ def create_session_workspace(
     (settings_dir / "settings.json").write_text(
         json.dumps(WORKSPACE_SETTINGS, indent=2), encoding="utf-8"
     )
-
-    # Prune old sessions (keep most recent N)
-    _prune_old_sessions(sessions_dir, keep=_SESSION_RETENTION)
 
     return session_dir
 
@@ -305,86 +302,44 @@ def _build_summary(packages: tuple[ScannedPackage, ...]) -> dict[str, int]:
     return summary
 
 
-_SESSION_RETENTION = 5
 _MEMORY_SIZE_WARN_KB = 50
 
 
 def _copy_memory_to_workspace(
     memory_path: Path | None,
-    sessions_dir: Path,
     session_dir: Path,
 ) -> None:
-    """Copy memory.md into the session workspace.
-
-    Tries the persistent memory path first, then falls back to the most
-    recent previous session that contains a memory.md (for host-mode
-    where post-processing cannot persist memory back).
+    """Copy persistent memory.md into the session workspace.
 
     Args:
         memory_path: Persistent memory.md path (may be None or missing).
-        sessions_dir: Base directory containing all session workspaces.
         session_dir: Current session workspace to copy into.
     """
     logger = logging.getLogger(__name__)
 
-    # Try persistent memory path first
-    if memory_path is not None and memory_path.exists():
-        try:
-            shutil.copy2(memory_path, session_dir / "memory.md")
-        except OSError as e:
-            logger.warning("Could not copy memory.md to workspace: %s", e)
-            return
-    else:
-        # Fallback: chain from latest previous session
-        _copy_memory_from_latest_session(sessions_dir, session_dir)
+    if memory_path is None or not memory_path.exists():
+        return
+
+    try:
+        shutil.copy2(memory_path, session_dir / "memory.md")
+    except OSError as e:
+        logger.warning("Could not copy memory.md to workspace: %s", e)
+        return
 
     # Warn if memory.md is getting large
-    workspace_memory = session_dir / "memory.md"
-    if workspace_memory.exists():
-        size_kb = workspace_memory.stat().st_size / 1024
-        if size_kb > _MEMORY_SIZE_WARN_KB:
-            logger.warning(
-                "memory.md is %.1f KB (recommended max: %d KB)", size_kb, _MEMORY_SIZE_WARN_KB
-            )
-
-
-def _copy_memory_from_latest_session(
-    sessions_dir: Path,
-    target_session_dir: Path,
-) -> None:
-    """Copy memory.md from the most recent previous session if available.
-
-    Provides fallback chaining for host-mode where the interactive
-    session exits before post-processing can persist memory.md back.
-
-    Args:
-        sessions_dir: Base directory containing session workspaces.
-        target_session_dir: Current session directory to copy into.
-    """
-    logger = logging.getLogger(__name__)
-
-    for session_dir in list_sessions(sessions_dir):
-        if session_dir == target_session_dir:
-            continue
-        memory_file = session_dir / "memory.md"
-        if memory_file.exists():
-            try:
-                shutil.copy2(memory_file, target_session_dir / "memory.md")
-                logger.debug("Copied memory.md from previous session %s", session_dir.name)
-            except OSError as e:
-                logger.warning("Could not copy memory.md from previous session: %s", e)
-            return
-
-
-_APPLIED_MARKER = ".applied"
+    size_kb = memory_path.stat().st_size / 1024
+    if size_kb > _MEMORY_SIZE_WARN_KB:
+        logger.warning(
+            "memory.md is %.1f KB (recommended max: %d KB)", size_kb, _MEMORY_SIZE_WARN_KB
+        )
 
 
 def find_all_unapplied_decisions(sessions_dir: Path) -> list[Path]:
     """Find all unapplied decisions.toml files across sessions.
 
     Returns decisions from oldest to newest so they can be applied
-    in chronological order. A session is considered "applied" when
-    its output directory contains an ``.applied`` marker file.
+    in chronological order. Sessions are deleted after apply, so any
+    remaining session with a decisions.toml is unapplied.
 
     Args:
         sessions_dir: Base directory containing session workspaces.
@@ -397,10 +352,8 @@ def find_all_unapplied_decisions(sessions_dir: Path) -> list[Path]:
 
     unapplied: list[Path] = []
     for session_dir in list_sessions(sessions_dir):
-        output_dir = session_dir / "output"
-        decisions_path = output_dir / "decisions.toml"
-        applied_marker = output_dir / _APPLIED_MARKER
-        if decisions_path.exists() and not applied_marker.exists():
+        decisions_path = session_dir / "output" / "decisions.toml"
+        if decisions_path.exists():
             unapplied.append(decisions_path)
 
     # list_sessions returns newest-first; reverse for chronological apply
@@ -408,17 +361,23 @@ def find_all_unapplied_decisions(sessions_dir: Path) -> list[Path]:
     return unapplied
 
 
-def mark_session_applied(decisions_path: Path) -> None:
-    """Mark a session as applied by creating a marker file.
+def delete_session(decisions_path: Path) -> None:
+    """Delete an applied session directory.
 
-    Creates an ``.applied`` file in the same output directory as the
-    given decisions.toml. Idempotent — safe to call multiple times.
+    Removes the entire session directory after its decisions have been
+    applied. Idempotent — safe to call on already-deleted sessions.
 
     Args:
         decisions_path: Path to the decisions.toml that was applied.
     """
-    marker = decisions_path.parent / _APPLIED_MARKER
-    marker.touch(exist_ok=True)
+    logger = logging.getLogger(__name__)
+    # decisions_path is <session_dir>/output/decisions.toml
+    session_dir = decisions_path.parent.parent
+    try:
+        shutil.rmtree(session_dir)
+        logger.debug("Deleted applied session %s", session_dir.name)
+    except OSError as e:
+        logger.warning("Could not delete session %s: %s", session_dir.name, e)
 
 
 def cleanup_empty_sessions(sessions_dir: Path) -> int:
@@ -466,19 +425,3 @@ def list_sessions(sessions_dir: Path) -> list[Path]:
 
     sessions = [d for d in sessions_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
     return sorted(sessions, key=lambda d: d.name, reverse=True)
-
-
-def _prune_old_sessions(sessions_dir: Path, *, keep: int) -> None:
-    """Remove old session directories beyond the retention limit.
-
-    Args:
-        sessions_dir: Base directory containing session workspaces.
-        keep: Number of most recent sessions to retain.
-    """
-    logger = logging.getLogger(__name__)
-    for old_session in list_sessions(sessions_dir)[keep:]:
-        try:
-            shutil.rmtree(old_session)
-            logger.debug("Pruned old session %s", old_session.name)
-        except OSError as e:
-            logger.warning("Could not prune session %s: %s", old_session.name, e)
