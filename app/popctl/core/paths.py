@@ -53,6 +53,15 @@ def get_state_dir() -> Path:
     return _get_xdg_dir("XDG_STATE_HOME", ".local/state")
 
 
+def get_backups_dir() -> Path:
+    """Get the default backup storage directory path.
+
+    Returns:
+        Path to ~/.local/state/popctl/backups/ (or XDG_STATE_HOME/popctl/backups/).
+    """
+    return get_state_dir() / "backups"
+
+
 def get_manifest_path() -> Path:
     """Get the default manifest file path.
 
