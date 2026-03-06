@@ -21,6 +21,9 @@ packages on the host.
 ## Input Files
 
 - `scan.json` — Package scan data (read this first)
+  - APT packages include an `rdepends` field listing other **installed**
+    packages that depend on them. If `rdepends` is non-empty, the package
+    cannot be safely removed without breaking those dependents.
 - `manifest.toml` — Current manifest for reference (if present)
 - `memory.md` — Past session decisions and user preferences (if present)
 
@@ -45,6 +48,9 @@ Classify these packages automatically WITHOUT asking the user:
 
 - **KEEP** (confidence >= 0.9): System-critical, protected, libraries
   required by installed desktop apps, hardware drivers, desktop environment
+- **KEEP — Has reverse deps**: If a package has a non-empty `rdepends`
+  list in scan.json, other installed packages depend on it. Classify as
+  KEEP unless ALL of its rdepends are also being removed in the same session.
 - **KEEP — Home dependency**: Packages that are runtime dependencies of
   repositories or applications installed under `~/` (e.g. `~/popctl`,
   `~/todai`, `~/djinn_in_a_box`, `~/babel_tower`). Before classifying a
@@ -231,9 +237,12 @@ ask = [
 
 1. Read `scan.json` and `memory.md` (if present) completely before starting
 2. Lean towards removal — if not clearly needed on the host, recommend removal
-3. **Before recommending removal**, check whether any repository or application
-   under `~/` depends on the package (runtime, CLI tool, library). If yes,
-   classify as KEEP and note the dependent project
+3. **Before recommending removal**, check TWO things:
+   - **rdepends**: Does the package have a non-empty `rdepends` list? If yes,
+     other installed packages need it — classify as KEEP.
+   - **Home projects**: Does any repository or application under `~/` depend
+     on the package (runtime, CLI tool, library)? If yes, classify as KEEP
+     and note the dependent project.
 4. The `ask` list in decisions.toml should be EMPTY after an interactive session
    — all packages must be resolved to keep or remove through discussion
 5. Never remove protected packages
