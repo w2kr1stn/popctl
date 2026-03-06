@@ -45,6 +45,13 @@ Classify these packages automatically WITHOUT asking the user:
 
 - **KEEP** (confidence >= 0.9): System-critical, protected, libraries
   required by installed desktop apps, hardware drivers, desktop environment
+- **KEEP — Home dependency**: Packages that are runtime dependencies of
+  repositories or applications installed under `~/` (e.g. `~/popctl`,
+  `~/todai`, `~/djinn_in_a_box`, `~/babel_tower`). Before classifying a
+  package as REMOVE, check whether any project in the home directory
+  depends on it (look at language runtimes, libraries, CLI tools used by
+  those projects). If a package is only needed inside a dev-container,
+  it does NOT count as a home dependency.
 - **REMOVE** (confidence >= 0.9): Development tools and compilers
   (gcc, make, *-dev headers), known bloatware/telemetry (apport, whoopsie),
   orphaned dependencies, server software, printer drivers (no printer),
@@ -78,6 +85,7 @@ memory), use the **AskUserQuestion** tool to present them to the user.
 **Batching**: Present up to 4 packages per AskUserQuestion call.
 Each question should contain:
 - Package name and brief description of what it does
+- Whether any project in `~/` depends on it (if yes, name the project)
 - Your recommendation with reasoning
 - Question format: "[package]: [description]. Empfehlung: [action]. [reason]"
 
@@ -223,10 +231,13 @@ ask = [
 
 1. Read `scan.json` and `memory.md` (if present) completely before starting
 2. Lean towards removal — if not clearly needed on the host, recommend removal
-3. The `ask` list in decisions.toml should be EMPTY after an interactive session
+3. **Before recommending removal**, check whether any repository or application
+   under `~/` depends on the package (runtime, CLI tool, library). If yes,
+   classify as KEEP and note the dependent project
+4. The `ask` list in decisions.toml should be EMPTY after an interactive session
    — all packages must be resolved to keep or remove through discussion
-4. Never remove protected packages
-5. Confidence reflects your certainty (0.0 to 1.0)
-6. Output MUST be valid TOML syntax
-7. **NEVER write decisions.toml before finishing ALL discussions with the user**
-8. **ALWAYS update memory.md at the end of the session**
+5. Never remove protected packages
+6. Confidence reflects your certainty (0.0 to 1.0)
+7. Output MUST be valid TOML syntax
+8. **NEVER write decisions.toml before finishing ALL discussions with the user**
+9. **ALWAYS update memory.md at the end of the session**
