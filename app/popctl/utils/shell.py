@@ -34,6 +34,7 @@ def run_command(
     *,
     timeout: float | None = 60.0,
     cwd: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> CommandResult:
     """Execute a shell command and return the result.
 
@@ -41,6 +42,7 @@ def run_command(
         args: Command and arguments to execute.
         timeout: Maximum time in seconds to wait for command.
         cwd: Working directory for the command. If None, uses current directory.
+        env: Additional environment variables (merged with current env).
 
     Returns:
         CommandResult with stdout, stderr, and returncode.
@@ -49,6 +51,7 @@ def run_command(
         subprocess.TimeoutExpired: If command exceeds timeout.
         FileNotFoundError: If command executable is not found.
     """
+    full_env = {**os.environ, **(env or {})} if env else None
     result = subprocess.run(
         args,
         capture_output=True,
@@ -56,6 +59,7 @@ def run_command(
         check=False,
         timeout=timeout,
         cwd=cwd,
+        env=full_env,
     )
     return CommandResult(
         stdout=result.stdout,

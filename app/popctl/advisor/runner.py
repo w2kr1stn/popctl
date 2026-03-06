@@ -28,6 +28,12 @@ from popctl.utils.shell import run_command, run_interactive
 
 MANUAL_MODE_SENTINEL: str = "manual_mode"
 
+# Ensure rich color output in advisor sessions (Claude Code / Gemini CLI).
+_SESSION_ENV: dict[str, str] = {
+    "TERM": "xterm-256color",
+    "COLORTERM": "truecolor",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class AgentResult:
@@ -105,7 +111,7 @@ class AgentRunner:
     def _exec_host_interactive(self, workspace_dir: Path) -> AgentResult:
         """Run interactive session on host. Caller must verify CLI exists."""
         cmd = self._build_interactive_command()
-        run_interactive(cmd, cwd=str(workspace_dir))
+        run_interactive(cmd, cwd=str(workspace_dir), env=_SESSION_ENV)
         return self._post_session_result(workspace_dir)
 
     def _run_headless_host(self, workspace_dir: Path) -> AgentResult:
@@ -117,6 +123,7 @@ class AgentRunner:
                 command,
                 timeout=float(self.config.timeout_seconds),
                 cwd=str(workspace_dir),
+                env=_SESSION_ENV,
             )
         except subprocess.TimeoutExpired:
             return AgentResult(
@@ -191,7 +198,11 @@ class AgentRunner:
         shell_cmd = self._build_shell_command(interactive=True)
         try:
             run_interactive(
-                ["docker", "exec", "-it", "-w", remote, container_id, "bash", "-lc", shell_cmd]
+                [
+                    "docker", "exec", "-it", "-w", remote,
+                    "-e", "TERM=xterm-256color", "-e", "COLORTERM=truecolor",
+                    container_id, "bash", "-lc", shell_cmd,
+                ]
             )
         except (FileNotFoundError, OSError) as e:
             container_cleanup(container_id, remote)
@@ -220,7 +231,11 @@ class AgentRunner:
         shell_cmd = self._build_shell_command(interactive=False)
         try:
             result = run_command(
-                ["docker", "exec", "-w", remote, container_id, "bash", "-lc", shell_cmd],
+                [
+                    "docker", "exec", "-w", remote,
+                    "-e", "TERM=xterm-256color", "-e", "COLORTERM=truecolor",
+                    container_id, "bash", "-lc", shell_cmd,
+                ],
                 timeout=float(self.config.timeout_seconds),
             )
         except subprocess.TimeoutExpired:
