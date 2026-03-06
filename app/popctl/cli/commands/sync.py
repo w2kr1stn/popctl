@@ -451,6 +451,13 @@ def sync(
             help="Force advisor session to review existing manifest classifications.",
         ),
     ] = False,
+    backup: Annotated[
+        bool,
+        typer.Option(
+            "--backup",
+            help="Create encrypted backup after successful sync.",
+        ),
+    ] = False,
 ) -> None:
     """Full system synchronization.
 
@@ -477,6 +484,7 @@ def sync(
       - Config-Apply: Apply config decisions to manifest
       - Config-Clean: Delete orphaned configs (with backup)
       - Config-History: Record config deletions to history
+      - Backup: Create encrypted backup (if --backup)
 
     Examples:
         popctl sync                     # Interactive advisor + system apply
@@ -488,6 +496,7 @@ def sync(
         popctl sync --purge             # Purge instead of remove (APT)
         popctl sync --no-filesystem     # Skip filesystem phases
         popctl sync --no-configs        # Skip config phases
+        popctl sync --backup            # Create backup after sync
     """
     # Phase 1: Ensure manifest exists
     _ensure_manifest()
@@ -515,6 +524,17 @@ def sync(
 
     if any_failed:
         raise typer.Exit(code=1)
+
+    # Backup phase (optional, after successful sync)
+    if backup and not dry_run:
+        console.print("\n[bold]Backup[/bold]")
+        try:
+            from popctl.backup.backup import BackupError, create_backup
+
+            dest = create_backup()
+            print_success(f"Backup created: {dest}")
+        except BackupError as e:
+            print_warning(f"Backup failed: {e}")
 
 
 # =============================================================================
