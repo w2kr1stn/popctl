@@ -107,9 +107,12 @@ class AptOperator(Operator):
 
         # Batch failed with multiple packages — fall back to single-package ops
         if len(packages) > 1:
+            batch_err = result.stderr.strip()
             logger.warning(
-                "Batch APT %s failed, falling back to single-package operations",
+                "Batch APT %s failed (rc=%d), falling back to single-package operations: %s",
                 command,
+                result.returncode,
+                batch_err or "(no stderr)",
             )
             results: list[ActionResult] = []
             for pkg in packages:
