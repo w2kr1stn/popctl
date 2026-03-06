@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from popctl.advisor.prompts import build_session_claude_md
 from popctl.core.paths import ensure_dir, get_state_dir
+from popctl.scanners.apt import get_reverse_deps
 
 if TYPE_CHECKING:
     from typing import Any
@@ -197,7 +198,8 @@ def create_session_workspace(
 
     # Write scan.json
     scan_data = _build_scan_data(
-        scan_result, system_info, summary, filesystem_orphans, config_orphans
+        scan_result, system_info, summary, filesystem_orphans, config_orphans,
+        enrich_rdepends=(domain == "packages"),
     )
     try:
         with (session_dir / "scan.json").open("w", encoding="utf-8") as f:
@@ -233,6 +235,8 @@ def _build_scan_data(
     summary: dict[str, int],
     filesystem_orphans: list[dict[str, Any]] | None,
     config_orphans: list[dict[str, Any]] | None,
+    *,
+    enrich_rdepends: bool = False,
 ) -> dict[str, object]:
     """Build scan.json data as a plain dictionary.
 
@@ -242,11 +246,12 @@ def _build_scan_data(
         summary: Pre-computed package count summary.
         filesystem_orphans: Optional FS orphan entry dicts.
         config_orphans: Optional config orphan entry dicts.
+        enrich_rdepends: If True, query apt-cache for reverse dependencies.
 
     Returns:
         Dictionary ready for JSON serialization.
     """
-    pkg_entries = [
+    pkg_entries: list[dict[str, object]] = [
         {
             k: v
             for k, v in {
@@ -261,6 +266,16 @@ def _build_scan_data(
         }
         for p in scan_result
     ]
+
+    # Enrich APT packages with reverse-dependency data (packages domain only)
+    if enrich_rdepends:
+        apt_names = [p.name for p in scan_result if p.source.value == "apt"]
+        rdeps = get_reverse_deps(apt_names) if apt_names else {}
+        if rdeps:
+            for entry in pkg_entries:
+                name = entry.get("name")
+                if entry.get("source") == "apt" and isinstance(name, str) and name in rdeps:
+                    entry["rdepends"] = rdeps[name]
 
     data: dict[str, object] = {
         "scan_date": datetime.now(UTC).isoformat(),
