@@ -8,7 +8,19 @@ from typing import Annotated
 import typer
 
 from popctl import __version__
-from popctl.cli.commands import advisor, apply, backup, config, diff, fs, history, init, scan, sync, undo
+from popctl.cli.commands import (
+    advisor,
+    apply,
+    backup,
+    config,
+    diff,
+    fs,
+    history,
+    init,
+    scan,
+    sync,
+    undo,
+)
 
 # Create main Typer app
 app = typer.Typer(

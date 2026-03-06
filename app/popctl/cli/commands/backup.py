@@ -139,7 +139,7 @@ def restore(
 
     Examples:
         popctl backup restore /mnt/usb/popctl-backup-host-20260306-120000.tar.zst.age
-        popctl backup restore gdrive:backups/popctl-backup-host-20260306-120000.tar.zst.age -i ~/.age/key.txt
+        popctl backup restore gdrive:backups/backup.tar.zst.age -i ~/.age/key.txt
         popctl backup restore backup.tar.zst.age --files-only
         popctl backup restore backup.tar.zst.age --packages-only -y
     """
@@ -157,7 +157,7 @@ def restore(
         print_error(str(e))
         raise typer.Exit(code=1) from e
 
-    console.print(f"\n[bold]Backup info:[/bold]")
+    console.print("\n[bold]Backup info:[/bold]")
     console.print(f"  Created:  {metadata.created}")
     console.print(f"  Hostname: {metadata.hostname}")
     console.print(f"  Version:  {metadata.popctl_version}")
@@ -277,7 +277,7 @@ def info(
         print_error(str(e))
         raise typer.Exit(code=1) from e
 
-    console.print(f"\n[bold]Backup metadata:[/bold]")
+    console.print("\n[bold]Backup metadata:[/bold]")
     console.print(f"  Created:        {metadata.created}")
     console.print(f"  Hostname:       {metadata.hostname}")
     console.print(f"  popctl version: {metadata.popctl_version}")

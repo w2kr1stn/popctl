@@ -36,7 +36,7 @@ class BackupMetadata:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "BackupMetadata":
+    def from_dict(cls, data: dict[str, Any]) -> BackupMetadata:
         """Deserialize from dictionary.
 
         Raises:
@@ -53,7 +53,7 @@ class BackupMetadata:
         return json.dumps(self.to_dict(), indent=2)
 
     @classmethod
-    def from_json(cls, text: str) -> "BackupMetadata":
+    def from_json(cls, text: str) -> BackupMetadata:
         """Deserialize from JSON string.
 
         Raises:
