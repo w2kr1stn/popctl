@@ -527,10 +527,10 @@ def sync(
 
     # Backup phase (optional, after successful sync)
     if backup and not dry_run:
+        from popctl.backup.backup import BackupError, create_backup
+
         console.print("\n[bold]Backup[/bold]")
         try:
-            from popctl.backup.backup import BackupError, create_backup
-
             dest = create_backup()
             print_success(f"Backup created: {dest}")
         except BackupError as e:

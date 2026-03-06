@@ -4,11 +4,14 @@ Scans installed packages using dpkg-query and determines
 installation status using apt-mark.
 """
 
+import logging
 from collections.abc import Iterator
 
 from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
 from popctl.scanners.base import Scanner, parse_tab_fields
 from popctl.utils.shell import command_exists, run_command
+
+logger = logging.getLogger(__name__)
 
 
 class AptScanner(Scanner):
@@ -130,3 +133,38 @@ class AptScanner(Scanner):
             description=description,
             size_bytes=size_bytes,
         )
+
+
+def get_reverse_deps(packages: list[str]) -> dict[str, list[str]]:
+    """Get installed reverse dependencies for a list of APT packages.
+
+    Calls ``apt-cache rdepends --installed`` for each package and parses
+    the output. Skips virtual-package markers and self-references.
+
+    Args:
+        packages: Package names to query.
+
+    Returns:
+        Mapping of package name → list of installed packages that depend on it.
+        Packages with no reverse deps or query failures are omitted.
+    """
+    if not command_exists("apt-cache"):
+        return {}
+
+    rdeps: dict[str, list[str]] = {}
+
+    for pkg in packages:
+        result = run_command(["apt-cache", "rdepends", "--installed", pkg], timeout=10.0)
+        if not result.success:
+            continue
+
+        dependents: list[str] = []
+        for line in result.stdout.strip().splitlines()[2:]:  # skip header lines
+            dep = line.strip().lstrip("|").strip()
+            if dep and dep != pkg:
+                dependents.append(dep)
+
+        if dependents:
+            rdeps[pkg] = dependents
+
+    return rdeps
