@@ -292,6 +292,28 @@ def _store_rclone(archive_path: Path, remote: str) -> str:
     return remote_path
 
 
+def _prune_old_backups(
+    target_dir: Path, max_backups: int, *, progress: bool = True
+) -> None:
+    """Delete oldest backups exceeding max_backups in a local directory."""
+    from popctl.utils.formatting import print_info
+
+    pattern = "popctl-backup-*.tar.zst.age"
+    backups = sorted(target_dir.glob(pattern))
+
+    if len(backups) <= max_backups:
+        return
+
+    to_delete = backups[: len(backups) - max_backups]
+    for old in to_delete:
+        try:
+            old.unlink()
+            if progress:
+                print_info(f"Pruned old backup: {old.name}")
+        except OSError as e:
+            logger.warning("Could not delete old backup %s: %s", old, e)
+
+
 def create_backup(
     target: str = "",
     recipient: str | None = None,
@@ -388,6 +410,8 @@ def create_backup(
         if not target or not is_rclone_remote(target):
             target_dir = Path(target) if target else get_backups_dir()
             dest = _store_local(encrypted_path, target_dir)
+            if config.max_backups > 0:
+                _prune_old_backups(target_dir, config.max_backups, progress=progress)
             return str(dest)
         else:
             return _store_rclone(encrypted_path, target)

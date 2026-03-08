@@ -6,6 +6,7 @@ following optional fields:
     target = "/mnt/external/backups"     # or "gdrive:popctl-backups/"
     recipients = "~/.config/popctl/backup.age-recipients"
     identity = "~/.config/popctl/backup.age-key"
+    max_backups = 1                      # 0 = keep all
 """
 
 from __future__ import annotations
@@ -30,11 +31,13 @@ class BackupConfig:
         target: Destination path or rclone remote. Empty = default local dir.
         recipients: age recipients file or public key for encryption.
         identity: age identity (private key) file for decryption.
+        max_backups: Maximum number of backups to retain. 0 = keep all.
     """
 
     target: str = ""
     recipients: str = ""
     identity: str = ""
+    max_backups: int = 1
 
 
 def load_backup_config(path: Path | None = None) -> BackupConfig:
@@ -64,4 +67,5 @@ def load_backup_config(path: Path | None = None) -> BackupConfig:
         target=str(data.get("target", "")),
         recipients=str(data.get("recipients", "")),
         identity=str(data.get("identity", "")),
+        max_backups=int(data.get("max_backups", 1)),
     )
