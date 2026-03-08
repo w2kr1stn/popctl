@@ -562,10 +562,7 @@ def sync(
         no_configs=no_configs,
     )
 
-    if any_failed:
-        raise typer.Exit(code=1)
-
-    # Backup phase (optional, after successful sync)
+    # Backup phase (runs even with partial failures — state should be captured)
     if backup and not dry_run:
         from popctl.backup.backup import BackupError, create_backup
 
@@ -575,6 +572,9 @@ def sync(
             print_success(f"Backup created: {dest}")
         except BackupError as e:
             print_warning(f"Backup failed: {e}")
+
+    if any_failed:
+        raise typer.Exit(code=1)
 
 
 # =============================================================================
