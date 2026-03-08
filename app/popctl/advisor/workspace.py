@@ -23,6 +23,7 @@ import logging
 import platform
 import shutil
 import socket
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -30,6 +31,7 @@ from typing import TYPE_CHECKING
 from popctl.advisor.prompts import build_session_claude_md
 from popctl.core.paths import ensure_dir, get_state_dir
 from popctl.scanners.apt import get_reverse_deps
+from popctl.utils.formatting import print_info
 
 if TYPE_CHECKING:
     from typing import Any
@@ -196,10 +198,36 @@ def create_session_workspace(
         msg = f"Failed to write CLAUDE.md: {e}"
         raise RuntimeError(msg) from e
 
-    # Write scan.json
+    # Write scan.json — enrich rdepends for packages domain only.
+    # In review mode, query ALL packages; otherwise only NEW ones (not in manifest).
+    enrich_rdepends = domain == "packages"
+    rdepends_filter: set[str] | None = None
+    if (
+        enrich_rdepends
+        and not review
+        and manifest_path is not None
+        and manifest_path.exists()
+    ):
+        try:
+            raw = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+            pkgs = raw.get("packages", {})
+            rdepends_filter = set(pkgs.get("keep", {})) | set(pkgs.get("remove", {}))
+        except (OSError, tomllib.TOMLDecodeError):
+            pass  # fall back to enriching all — better slow than wrong
+
+    if enrich_rdepends:
+        skip = rdepends_filter or set()
+        apt_count = sum(
+            1 for p in scan_result
+            if p.source.value == "apt" and p.name not in skip
+        )
+        if apt_count:
+            print_info(f"Querying reverse dependencies for {apt_count} APT package(s)...")
+
     scan_data = _build_scan_data(
         scan_result, system_info, summary, filesystem_orphans, config_orphans,
-        enrich_rdepends=(domain == "packages"),
+        enrich_rdepends=enrich_rdepends,
+        rdepends_filter=rdepends_filter or None,
     )
     try:
         with (session_dir / "scan.json").open("w", encoding="utf-8") as f:
@@ -237,6 +265,7 @@ def _build_scan_data(
     config_orphans: list[dict[str, Any]] | None,
     *,
     enrich_rdepends: bool = False,
+    rdepends_filter: set[str] | None = None,
 ) -> dict[str, object]:
     """Build scan.json data as a plain dictionary.
 
@@ -247,6 +276,7 @@ def _build_scan_data(
         filesystem_orphans: Optional FS orphan entry dicts.
         config_orphans: Optional config orphan entry dicts.
         enrich_rdepends: If True, query apt-cache for reverse dependencies.
+        rdepends_filter: If set, only query rdepends for packages NOT in this set.
 
     Returns:
         Dictionary ready for JSON serialization.
@@ -267,9 +297,15 @@ def _build_scan_data(
         for p in scan_result
     ]
 
-    # Enrich APT packages with reverse-dependency data (packages domain only)
+    # Enrich APT packages with reverse-dependency data (packages domain only).
+    # When rdepends_filter is set, only query packages NOT in the manifest
+    # to avoid slow apt-cache calls for hundreds of already-classified packages.
     if enrich_rdepends:
-        apt_names = [p.name for p in scan_result if p.source.value == "apt"]
+        skip = rdepends_filter or set()
+        apt_names = [
+            p.name for p in scan_result
+            if p.source.value == "apt" and p.name not in skip
+        ]
         rdeps = get_reverse_deps(apt_names) if apt_names else {}
         if rdeps:
             for entry in pkg_entries:
