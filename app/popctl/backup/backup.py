@@ -7,7 +7,6 @@ encrypted with age.
 
 import io
 import logging
-import shutil
 import socket
 import subprocess
 import tarfile
@@ -184,36 +183,20 @@ def _build_metadata() -> BackupMetadata:
     )
 
 
-def _create_tar(
+
+def _stream_backup(
     files: list[tuple[Path, str]],
     metadata: BackupMetadata,
     output_path: Path,
-) -> None:
-    """Create an uncompressed tar archive with metadata and collected files."""
-    with tarfile.open(output_path, "w") as tar:
-        # metadata.json as first entry
-        metadata_bytes = metadata.to_json().encode()
-        info = tarfile.TarInfo(name="metadata.json")
-        info.size = len(metadata_bytes)
-        tar.addfile(info, io.BytesIO(metadata_bytes))
-
-        # All collected files
-        for source_path, archive_path in files:
-            try:
-                tar.add(str(source_path), arcname=archive_path)
-            except (OSError, PermissionError) as e:
-                logger.warning("Could not add %s to archive: %s", source_path, e)
-
-
-def _compress_and_encrypt(
-    tar_path: Path,
-    output_path: Path,
     recipient: str,
 ) -> None:
-    """Compress with zstd and encrypt with age via subprocess pipeline.
+    """Stream tar | zstd | age directly to output without intermediate files.
+
+    Writes tar data into a zstd | age subprocess pipeline, avoiding
+    the need to store the full uncompressed tar on disk.
 
     Raises:
-        BackupError: If compression or encryption fails.
+        BackupError: If any stage of the pipeline fails.
     """
     recipient_expanded = str(Path(recipient).expanduser())
     if Path(recipient_expanded).is_file():
@@ -225,7 +208,8 @@ def _compress_and_encrypt(
     age_proc: subprocess.Popen[bytes] | None = None
     try:
         zstd_proc = subprocess.Popen(
-            ["zstd", "-3", "-c", str(tar_path)],
+            ["zstd", "-3", "-c"],
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -240,11 +224,30 @@ def _compress_and_encrypt(
         if zstd_proc.stdout:
             zstd_proc.stdout.close()
 
-        _, age_stderr = age_proc.communicate(timeout=600)
-        zstd_proc.wait(timeout=600)
+        # Stream tar data into zstd's stdin
+        assert zstd_proc.stdin is not None  # noqa: S101
+        with tarfile.open(fileobj=zstd_proc.stdin, mode="w|") as tar:
+            # metadata.json as first entry
+            metadata_bytes = metadata.to_json().encode()
+            info = tarfile.TarInfo(name="metadata.json")
+            info.size = len(metadata_bytes)
+            tar.addfile(info, io.BytesIO(metadata_bytes))
+
+            for source_path, archive_path in files:
+                try:
+                    tar.add(str(source_path), arcname=archive_path)
+                except (OSError, PermissionError) as e:
+                    logger.warning("Could not add %s: %s", source_path, e)
+
+        # Close zstd stdin to signal EOF
+        zstd_proc.stdin.close()
+
+        _, age_stderr = age_proc.communicate(timeout=3600)
+        zstd_proc.wait(timeout=3600)
 
         if zstd_proc.returncode != 0:
-            raise BackupError("zstd compression failed")
+            zstd_err = zstd_proc.stderr.read().decode().strip() if zstd_proc.stderr else ""
+            raise BackupError(f"zstd compression failed: {zstd_err or '(no details)'}")
         if age_proc.returncode != 0:
             raise BackupError(f"age encryption failed: {age_stderr.decode().strip()}")
 
@@ -253,7 +256,7 @@ def _compress_and_encrypt(
             zstd_proc.kill()
         if age_proc:
             age_proc.kill()
-        raise BackupError("Backup pipeline timed out") from e
+        raise BackupError("Backup pipeline timed out (1h limit)") from e
     except FileNotFoundError as e:
         raise BackupError(f"Required binary not found: {e}") from e
 
@@ -262,13 +265,6 @@ def is_rclone_remote(target: str) -> bool:
     """Check if target looks like an rclone remote (contains ':' not at start)."""
     return ":" in target and not target.startswith("/")
 
-
-def _store_local(archive_path: Path, target_dir: Path) -> Path:
-    """Move archive to local target directory."""
-    target_dir.mkdir(parents=True, exist_ok=True)
-    dest = target_dir / archive_path.name
-    shutil.move(str(archive_path), str(dest))
-    return dest
 
 
 def _store_rclone(archive_path: Path, remote: str) -> str:
@@ -382,36 +378,38 @@ def create_backup(
 
     metadata = _build_metadata()
 
-    # Build archive in temp directory
     hostname = socket.gethostname()
     timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     archive_name = f"popctl-backup-{hostname}-{timestamp}.tar.zst.age"
 
-    with tempfile.TemporaryDirectory(prefix="popctl-backup-") as tmpdir:
-        tar_path = Path(tmpdir) / "backup.tar"
-        encrypted_path = Path(tmpdir) / archive_name
+    # For local targets, write directly to destination (no temp copy).
+    # For rclone, write to a temp dir first, then upload.
+    use_rclone = bool(target) and is_rclone_remote(target)
+    target_dir = Path(target) if target and not use_rclone else get_backups_dir()
 
+    if use_rclone:
+        tmpdir_ctx = tempfile.TemporaryDirectory(prefix="popctl-backup-")
+        tmpdir = tmpdir_ctx.__enter__()
+        output_path = Path(tmpdir) / archive_name
+    else:
+        tmpdir_ctx = None
+        target_dir.mkdir(parents=True, exist_ok=True)
+        output_path = target_dir / archive_name
+
+    try:
         if progress:
-            print_info("Creating archive...")
-        _create_tar(files, metadata, tar_path)
+            dest_label = target if use_rclone else str(target_dir)
+            print_info(f"Archiving, compressing, and encrypting to {dest_label}...")
+        _stream_backup(files, metadata, output_path, recipient)
 
-        if progress:
-            print_info("Compressing and encrypting...")
-        _compress_and_encrypt(tar_path, encrypted_path, recipient)
+        if use_rclone:
+            if progress:
+                print_info(f"Uploading to {target}...")
+            return _store_rclone(output_path, target)
 
-        # Clean up intermediate tar
-        tar_path.unlink()
-
-        # Store
-        if progress:
-            dest_label = target if is_rclone_remote(target) else target or "default"
-            print_info(f"Storing backup to {dest_label}...")
-
-        if not target or not is_rclone_remote(target):
-            target_dir = Path(target) if target else get_backups_dir()
-            dest = _store_local(encrypted_path, target_dir)
-            if config.max_backups > 0:
-                _prune_old_backups(target_dir, config.max_backups, progress=progress)
-            return str(dest)
-        else:
-            return _store_rclone(encrypted_path, target)
+        if config.max_backups > 0:
+            _prune_old_backups(target_dir, config.max_backups, progress=progress)
+        return str(output_path)
+    finally:
+        if tmpdir_ctx is not None:
+            tmpdir_ctx.__exit__(None, None, None)
