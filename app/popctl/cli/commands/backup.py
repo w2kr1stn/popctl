@@ -218,10 +218,12 @@ def list_backups(
         popctl backup list -t gdrive:popctl-backups/
     """
     from popctl.backup.backup import BackupError
+    from popctl.backup.config import load_backup_config
     from popctl.backup.restore import list_backups as _list_backups
 
+    effective_target = target or load_backup_config().target
     try:
-        backups = _list_backups(target)
+        backups = _list_backups(effective_target)
     except BackupError as e:
         print_error(str(e))
         raise typer.Exit(code=1) from e
