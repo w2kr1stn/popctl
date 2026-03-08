@@ -295,13 +295,20 @@ def _store_rclone(archive_path: Path, remote: str) -> str:
 def create_backup(
     target: str = "",
     recipient: str | None = None,
+    *,
+    progress: bool = True,
 ) -> str:
     """Create an encrypted backup archive.
 
+    Resolves defaults from ``~/.config/popctl/backup.toml`` when CLI
+    arguments are not provided.
+
     Args:
-        target: Destination path or rclone remote. Empty string uses default.
+        target: Destination path or rclone remote. Empty string uses config/default.
         recipient: age public key or recipients file path.
-            Falls back to ~/.config/popctl/backup.age-recipients.
+            Falls back to backup.toml ``recipients``, then
+            ``~/.config/popctl/backup.age-recipients``.
+        progress: If True, print status messages during each phase.
 
     Returns:
         Final storage path (local path or rclone remote path).
@@ -309,6 +316,9 @@ def create_backup(
     Raises:
         BackupError: If prerequisites are missing or backup creation fails.
     """
+    from popctl.backup.config import load_backup_config
+    from popctl.utils.formatting import print_info
+
     if not command_exists("age"):
         raise BackupError(
             "age is not installed. Install it via 'sudo apt install age' "
@@ -317,19 +327,37 @@ def create_backup(
     if not command_exists("zstd"):
         raise BackupError("zstd is not installed. Install it via 'sudo apt install zstd'")
 
-    # Resolve recipient
+    # Load config defaults
+    config = load_backup_config()
+
+    # Resolve target: CLI flag → config → built-in default
+    if not target:
+        target = config.target
+
+    # Resolve recipient: CLI flag → config → well-known path
     if recipient is None:
-        default_recipients = get_config_dir() / "backup.age-recipients"
-        if default_recipients.exists():
-            recipient = str(default_recipients)
+        if config.recipients:
+            recipient = config.recipients
         else:
-            raise BackupError(
-                "No age recipient specified. Use --recipient or create "
-                f"{default_recipients}"
-            )
+            default_recipients = get_config_dir() / "backup.age-recipients"
+            if default_recipients.exists():
+                recipient = str(default_recipients)
+            else:
+                raise BackupError(
+                    "No age recipient specified. Use --recipient, configure "
+                    "backup.toml, or create " + str(default_recipients)
+                )
 
     # Collect files
+    if progress:
+        print_info("Collecting files...")
     files = collect_backup_files()
+    total_size = sum(p.stat().st_size for p, _ in files if p.exists())
+    if progress:
+        print_info(
+            f"Collected {len(files)} files ({total_size / 1024 / 1024:.1f} MB)"
+        )
+
     metadata = _build_metadata()
 
     # Build archive in temp directory
@@ -341,13 +369,22 @@ def create_backup(
         tar_path = Path(tmpdir) / "backup.tar"
         encrypted_path = Path(tmpdir) / archive_name
 
+        if progress:
+            print_info("Creating archive...")
         _create_tar(files, metadata, tar_path)
+
+        if progress:
+            print_info("Compressing and encrypting...")
         _compress_and_encrypt(tar_path, encrypted_path, recipient)
 
         # Clean up intermediate tar
         tar_path.unlink()
 
         # Store
+        if progress:
+            dest_label = target if is_rclone_remote(target) else target or "default"
+            print_info(f"Storing backup to {dest_label}...")
+
         if not target or not is_rclone_remote(target):
             target_dir = Path(target) if target else get_backups_dir()
             dest = _store_local(encrypted_path, target_dir)
