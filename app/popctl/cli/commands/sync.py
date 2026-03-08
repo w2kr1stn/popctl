@@ -56,6 +56,7 @@ from popctl.core.state import record_domain_deletions
 from popctl.domain.models import ScannedEntry
 from popctl.domain.protected import is_protected
 from popctl.filesystem import FilesystemOperator
+from popctl.models.action import ActionType
 from popctl.operators import get_available_operators
 from popctl.scanners import get_available_scanners
 from popctl.utils.formatting import (
@@ -275,6 +276,37 @@ def _run_both_orphan_phases(
         _run_orphan_phases("configs", dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto)
 
 
+def _move_failed_removes_to_keep(packages: list[str]) -> None:
+    """Move packages that failed removal from remove → keep in the manifest.
+
+    Prevents repeated failures on subsequent sync runs by accepting that
+    these packages cannot be removed (usually due to reverse dependencies).
+    """
+    try:
+        manifest = load_manifest()
+    except ManifestError:
+        return
+
+    moved: list[str] = []
+    for name in packages:
+        entry = manifest.packages.remove.pop(name, None)
+        if entry is not None:
+            manifest.packages.keep[name] = entry
+            moved.append(name)
+
+    if not moved:
+        return
+
+    manifest.meta.updated = datetime.now(UTC)
+    try:
+        save_manifest(manifest)
+        print_warning(
+            f"Moved {len(moved)} failed remove(s) to keep: {', '.join(sorted(moved))}"
+        )
+    except (OSError, ManifestError) as e:
+        print_warning(f"Could not update manifest for failed removes: {e}")
+
+
 def _sync_packages(
     *,
     source: SourceChoice,
@@ -376,6 +408,14 @@ def _sync_packages(
     results_table = create_results_table(results)
     console.print(results_table)
     print_results_summary(results)
+
+    # Auto-fix: move failed removes/purges from remove → keep in manifest
+    failed_removes = [
+        r.action.package for r in results
+        if r.failed and r.action.action_type in {ActionType.REMOVE, ActionType.PURGE}
+    ]
+    if failed_removes:
+        _move_failed_removes_to_keep(failed_removes)
 
     return any(r.failed for r in results)
 
