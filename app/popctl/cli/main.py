@@ -17,6 +17,7 @@ from popctl.cli.commands import (
     fs,
     history,
     init,
+    manifest,
     scan,
     sync,
     undo,
@@ -72,6 +73,7 @@ app.add_typer(undo.app, name="undo")
 app.add_typer(fs.app, name="fs")
 app.add_typer(config.app, name="config")
 app.add_typer(backup.app, name="backup")
+app.add_typer(manifest.app, name="manifest")
 
 
 if __name__ == "__main__":
