@@ -83,6 +83,34 @@ wheels = [
 ]
 
 [[package]]
+name = "djinn-in-a-box"
+version = "1.0.0"
+source = { editable = "../djinn_in_a_box" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "rich" },
+    { name = "tomli-w" },
+    { name = "typer" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.10.0" },
+    { name = "rich", specifier = ">=13.9.0" },
+    { name = "tomli-w", specifier = ">=1.0.0" },
+    { name = "typer", specifier = ">=0.15.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "bandit", specifier = ">=1.8.3" },
+    { name = "pyright", specifier = ">=1.1.408" },
+    { name = "pytest", specifier = ">=9.0.2" },
+    { name = "pytest-cov", specifier = ">=6.0.0" },
+    { name = "ruff", specifier = ">=0.14.13" },
+]
+
+[[package]]
 name = "iniconfig"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -219,6 +247,11 @@ dependencies = [
     { name = "typer" },
 ]
 
+[package.optional-dependencies]
+agent = [
+    { name = "djinn-in-a-box" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "bandit" },
@@ -232,11 +265,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "djinn-in-a-box", marker = "extra == 'agent'", editable = "../djinn_in_a_box" },
     { name = "pydantic", specifier = ">=2.11.0" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "tomli-w", specifier = ">=1.0.0" },
     { name = "typer", specifier = ">=0.15.0" },
 ]
+provides-extras = ["agent"]
 
 [package.metadata.requires-dev]
 dev = [

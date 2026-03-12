@@ -203,9 +203,15 @@ model = "sonnet"
 # Timeout for headless mode in seconds (default: 600)
 timeout_seconds = 600
 
-# Path to dev.sh script for container execution (optional)
-# dev_script = "~/projects/ai-dev-base/scripts/dev.sh"
 ```
+
+For container-based execution, install with the `agent` extra:
+
+```bash
+uv pip install popctl[agent]
+```
+
+This enables `djinn-in-a-box` integration, running AI sessions inside the Djinn container.
 
 ### File Locations
 
@@ -215,7 +221,7 @@ timeout_seconds = 600
 | Advisor Config | `~/.config/popctl/advisor.toml` | AI provider settings |
 | History | `~/.local/state/popctl/history.jsonl` | Action log for undo |
 | Config Backups | `~/.local/state/popctl/config-backups/` | Backed up configs before deletion |
-| Advisor Sessions | `~/.local/state/popctl/advisor-sessions/` | Workspace dirs for AI sessions |
+| Advisor Sessions | `~/.djinn/sessions/popctl/` | Workspace dirs for AI sessions |
 | Advisor Memory | `~/.local/state/popctl/advisor/memory.md` | Persistent cross-session memory |
 
 ## Development

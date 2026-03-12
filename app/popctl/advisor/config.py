@@ -58,15 +58,6 @@ class AdvisorConfig(BaseModel):
         int,
         Field(ge=60, le=3600, description="Timeout in seconds (60-3600)"),
     ] = 600
-    dev_container_path: Annotated[
-        Path | None,
-        Field(description="Path to docker compose project for container execution"),
-    ] = None
-
-    @property
-    def container_mode(self) -> bool:
-        """Whether the advisor should execute inside a dev container."""
-        return self.dev_container_path is not None
 
     @property
     def effective_model(self) -> str:

@@ -498,8 +498,8 @@ The advisor uses a **workspace-based session protocol**:
 ```
 ┌──────────────┐     ┌─────────────────────────────┐     ┌──────────────┐
 │   popctl     │────▶│  Session Workspace           │────▶│  AI Agent    │
-│              │     │  ~/.local/state/popctl/       │     │ (Claude/     │
-│  (sync or   │     │  advisor-sessions/<timestamp>/ │     │  Gemini)     │
+│              │     │  ~/.djinn/sessions/popctl/    │     │ (Claude/     │
+│  (sync or   │     │  <timestamp>/                 │     │  Gemini)     │
 │   advisor)  │◀────│    CLAUDE.md                  │◀────│              │
 │              │     │    scan.json                  │     │              │
 │              │     │    manifest.toml              │     │              │
@@ -508,12 +508,18 @@ The advisor uses a **workspace-based session protocol**:
 └──────────────┘     └─────────────────────────────┘     └──────────────┘
 ```
 
+When `djinn-in-a-box` is installed (optional dependency), `AgentRunner` delegates to
+`SessionManager("popctl")` which can run the AI agent inside the Djinn container via
+`docker exec`. The shared host directory `~/.djinn/sessions/` is bind-mounted into the
+container, so workspaces are accessible from both host and container. Without djinn,
+the agent runs directly on the host.
+
 ### Workspace Structure
 
 Each advisor invocation creates an ephemeral session directory:
 
 ```
-~/.local/state/popctl/advisor-sessions/20260223T143000/
+~/.djinn/sessions/popctl/20260223T143000/
 ├── CLAUDE.md           # Agent instructions (auto-picked up by Claude Code)
 ├── scan.json           # Package scan data + optional orphan entries
 ├── manifest.toml       # Current manifest copy
@@ -558,6 +564,9 @@ record_advisor_apply_to_history(decisions) -> None
 |------|----------|-------|
 | Headless | `AgentRunner.run_headless()` | `popctl sync --auto`, `popctl advisor classify` |
 | Interactive | `AgentRunner.launch_interactive()` | `popctl sync` (default), `popctl advisor session` |
+
+Both modes delegate to `SessionManager` when available (container execution), falling back to
+direct host CLI execution otherwise.
 
 ### Cross-Session Memory
 
@@ -861,6 +870,6 @@ This prevents accidental deletion even if CLI-level filtering is bypassed or ref
 | Advisor config | `~/.config/popctl/advisor.toml` |
 | Action history | `~/.local/state/popctl/history.jsonl` |
 | Config backups | `~/.local/state/popctl/config-backups/<timestamp>/` |
-| Advisor sessions | `~/.local/state/popctl/advisor-sessions/<timestamp>/` |
+| Advisor sessions | `~/.djinn/sessions/popctl/<timestamp>/` |
 | Advisor memory | `~/.local/state/popctl/advisor/memory.md` |
 | Default theme | `app/popctl/data/theme.toml` |

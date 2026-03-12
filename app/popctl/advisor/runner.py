@@ -2,29 +2,27 @@
 
 This module provides the AgentRunner class for executing AI agents
 (Claude Code or Gemini CLI) in headless or interactive session mode,
-on the host or inside a Docker dev container.
+on the host or via Djinn SessionManager.
 """
 
+from __future__ import annotations
+
 import logging
-import shlex
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from popctl.advisor.config import AdvisorConfig
-from popctl.advisor.container import (
-    CONTAINER_WORKSPACE,
-    container_cleanup,
-    container_has_command,
-    docker_cp,
-    ensure_container,
-)
 from popctl.advisor.prompts import INITIAL_PROMPT
 from popctl.core.paths import ensure_dir, get_state_dir
 from popctl.utils.formatting import print_warning
 from popctl.utils.shell import run_command, run_interactive
+
+if TYPE_CHECKING:
+    from djinn_in_a_box.sessions import SessionManager
 
 MANUAL_MODE_SENTINEL: str = "manual_mode"
 
@@ -59,18 +57,22 @@ class AgentRunner:
     """Runs AI agents for package classification.
 
     Executes AI agents (Claude Code or Gemini CLI) for package
-    classification on the host system or inside a dev container.
+    classification on the host system or via Djinn SessionManager.
 
     Attributes:
-        config: AdvisorConfig with provider, model, timeout, and container settings.
+        config: AdvisorConfig with provider, model, and timeout settings.
+        session: Optional SessionManager for container-based execution.
     """
 
     config: AdvisorConfig
+    session: SessionManager | None = field(default=None)
 
     # ── Public API ──────────────────────────────────────────────
 
     def run_headless(self, workspace_dir: Path) -> AgentResult:
         """Run agent in headless mode (autonomous classification).
+
+        Delegates to SessionManager if available, otherwise runs on host.
 
         Args:
             workspace_dir: Session workspace directory with scan.json and CLAUDE.md.
@@ -78,15 +80,14 @@ class AgentRunner:
         Returns:
             AgentResult with path to decisions.toml if successful.
         """
-        if self.config.container_mode:
-            return self._run_headless_container(workspace_dir)
+        if self.session is not None:
+            return self._run_headless_session(workspace_dir)
         return self._run_headless_host(workspace_dir)
 
     def launch_interactive(self, workspace_dir: Path) -> AgentResult:
         """Launch interactive AI session with fallback to manual instructions.
 
-        Host mode: CLI check → TTY check → interactive or headless.
-        Container mode: ensure container → CLI check → TTY check → exec.
+        Delegates to SessionManager if available, otherwise uses host CLI.
 
         Args:
             workspace_dir: Session workspace directory.
@@ -94,9 +95,68 @@ class AgentRunner:
         Returns:
             AgentResult from the session.
         """
-        if self.config.container_mode:
-            return self._launch_container(workspace_dir)
+        if self.session is not None:
+            return self._launch_interactive_session(workspace_dir)
         return self._launch_host(workspace_dir)
+
+    # ── SessionManager mode ──────────────────────────────────────
+
+    def _run_headless_session(self, workspace_dir: Path) -> AgentResult:
+        """Run headless agent via SessionManager."""
+        assert self.session is not None
+        try:
+            headless_kwargs: dict[str, object] = {
+                "workspace_dir": workspace_dir,
+                "prompt": INITIAL_PROMPT,
+                "timeout": self.config.timeout_seconds,
+            }
+            if self.config.model:
+                headless_kwargs["model"] = self.config.effective_model
+            result = self.session.run_headless(**headless_kwargs)  # type: ignore[arg-type]
+        except ValueError as e:
+            return AgentResult(
+                success=False, output="", error=str(e), workspace_path=workspace_dir,
+            )
+
+        self._post_session_persist_memory(workspace_dir)
+        decisions_path = workspace_dir / "output" / "decisions.toml"
+        if result.success and decisions_path.exists():
+            return AgentResult(
+                success=True,
+                output=result.stdout,
+                decisions_path=decisions_path,
+                workspace_path=workspace_dir,
+            )
+        return AgentResult(
+            success=False,
+            output=result.stdout,
+            error=result.stderr or f"Agent exited with code {result.returncode}",
+            workspace_path=workspace_dir,
+        )
+
+    def _launch_interactive_session(self, workspace_dir: Path) -> AgentResult:
+        """Launch interactive session via SessionManager."""
+        assert self.session is not None
+        try:
+            interactive_kwargs: dict[str, object] = {
+                "workspace_dir": workspace_dir,
+            }
+            if self.config.model:
+                interactive_kwargs["model"] = self.config.effective_model
+            result = self.session.run_interactive(**interactive_kwargs)  # type: ignore[arg-type]
+        except ValueError as e:
+            return AgentResult(
+                success=False, output="", error=str(e), workspace_path=workspace_dir,
+            )
+
+        if result.returncode != 0:
+            return AgentResult(
+                success=False,
+                output=result.stdout,
+                error=result.stderr or f"Session exited with code {result.returncode}",
+                workspace_path=workspace_dir,
+            )
+        return self._post_session_result(workspace_dir)
 
     # ── Host mode ───────────────────────────────────────────────
 
@@ -155,150 +215,6 @@ class AgentRunner:
             workspace_path=workspace_dir,
         )
 
-    # ── Container mode ──────────────────────────────────────────
-
-    def _launch_container(self, workspace_dir: Path) -> AgentResult:
-        """Container-mode launch: ensure container → CLI check → exec."""
-        compose_dir = str(self.config.dev_container_path)
-        container = ensure_container(compose_dir)
-        if not container:
-            print_warning(f"Could not start dev container from {compose_dir}")
-            return self._manual_instructions(workspace_dir)
-        if not container_has_command(container, self.config.provider):
-            print_warning(f"'{self.config.provider}' not found in container {container[:12]}")
-            return self._manual_instructions(workspace_dir)
-        if not sys.stdin.isatty():
-            return self._exec_container_headless(workspace_dir, container)
-        return self._exec_container_interactive(workspace_dir, container)
-
-    def _run_headless_container(self, workspace_dir: Path) -> AgentResult:
-        """Run headless agent inside a dev container."""
-        compose_dir = str(self.config.dev_container_path)
-        container = ensure_container(compose_dir)
-        if not container:
-            return AgentResult(
-                success=False,
-                output="",
-                error="Could not find or start dev container",
-                workspace_path=workspace_dir,
-            )
-        return self._exec_container_headless(workspace_dir, container)
-
-    def _exec_container_interactive(self, workspace_dir: Path, container_id: str) -> AgentResult:
-        """Run interactive session inside a dev container."""
-        remote = CONTAINER_WORKSPACE
-        if not self._copy_workspace_to_container(container_id, workspace_dir, remote):
-            return AgentResult(
-                success=False,
-                output="",
-                error="Failed to copy workspace into container",
-                workspace_path=workspace_dir,
-            )
-
-        shell_cmd = self._build_shell_command(interactive=True)
-        try:
-            run_interactive(
-                [
-                    "docker", "exec", "-it", "-w", remote,
-                    "-e", "TERM=xterm-256color", "-e", "COLORTERM=truecolor",
-                    container_id, "bash", "-lc", shell_cmd,
-                ]
-            )
-        except (FileNotFoundError, OSError) as e:
-            container_cleanup(container_id, remote)
-            return AgentResult(
-                success=False,
-                output="",
-                error=f"Container exec failed: {e}",
-                workspace_path=workspace_dir,
-            )
-
-        self._copy_results_from_container(container_id, workspace_dir, remote)
-        container_cleanup(container_id, remote)
-        return self._decisions_result(workspace_dir)
-
-    def _exec_container_headless(self, workspace_dir: Path, container_id: str) -> AgentResult:
-        """Run headless agent inside a dev container."""
-        remote = CONTAINER_WORKSPACE
-        if not self._copy_workspace_to_container(container_id, workspace_dir, remote):
-            return AgentResult(
-                success=False,
-                output="",
-                error="Failed to copy workspace into container",
-                workspace_path=workspace_dir,
-            )
-
-        shell_cmd = self._build_shell_command(interactive=False)
-        try:
-            result = run_command(
-                [
-                    "docker", "exec", "-w", remote,
-                    "-e", "TERM=xterm-256color", "-e", "COLORTERM=truecolor",
-                    container_id, "bash", "-lc", shell_cmd,
-                ],
-                timeout=float(self.config.timeout_seconds),
-            )
-        except subprocess.TimeoutExpired:
-            container_cleanup(container_id, remote)
-            return AgentResult(
-                success=False,
-                output="",
-                error=f"Container agent timed out after {self.config.timeout_seconds}s",
-                workspace_path=workspace_dir,
-            )
-        except (FileNotFoundError, OSError) as e:
-            container_cleanup(container_id, remote)
-            return AgentResult(
-                success=False,
-                output="",
-                error=f"Container exec failed: {e}",
-                workspace_path=workspace_dir,
-            )
-
-        self._copy_results_from_container(container_id, workspace_dir, remote)
-        container_cleanup(container_id, remote)
-
-        decisions_path = workspace_dir / "output" / "decisions.toml"
-        if result.success and decisions_path.exists():
-            return AgentResult(
-                success=True,
-                output=result.stdout,
-                decisions_path=decisions_path,
-                workspace_path=workspace_dir,
-            )
-        return AgentResult(
-            success=False,
-            output=result.stdout,
-            error=result.stderr or f"Container agent exited with code {result.returncode}",
-            workspace_path=workspace_dir,
-        )
-
-    # ── Container workspace helpers ─────────────────────────────
-
-    @staticmethod
-    def _copy_workspace_to_container(container_id: str, workspace_dir: Path, remote: str) -> bool:
-        """Copy host workspace into container. Returns True on success."""
-        container_cleanup(container_id, remote)
-        return docker_cp(f"{workspace_dir}/.", f"{container_id}:{remote}")
-
-    def _copy_results_from_container(
-        self, container_id: str, workspace_dir: Path, remote: str
-    ) -> None:
-        """Copy decisions and memory from container back to host (best-effort)."""
-        logger = logging.getLogger(__name__)
-        output_dir = workspace_dir / "output"
-        output_dir.mkdir(exist_ok=True)
-
-        if not docker_cp(f"{container_id}:{remote}/output/decisions.toml", f"{output_dir}/"):
-            logger.debug("No decisions.toml found in container")
-
-        if docker_cp(f"{container_id}:{remote}/memory.md", f"{workspace_dir}/"):
-            memory_src = workspace_dir / "memory.md"
-            if memory_src.exists():
-                self._persist_memory(memory_src)
-        else:
-            logger.debug("No memory.md found in container")
-
     # ── Shared helpers ──────────────────────────────────────────
 
     def _build_interactive_command(self) -> list[str]:
@@ -314,11 +230,6 @@ class AgentRunner:
         if provider == "claude":
             return ["claude", "-p", INITIAL_PROMPT, "--output-format", "json", *self._model_flags()]
         return ["gemini", "--prompt", INITIAL_PROMPT, *self._model_flags()]
-
-    def _build_shell_command(self, *, interactive: bool) -> str:
-        """Build a shell command string for docker exec bash -lc."""
-        cmd = self._build_interactive_command() if interactive else self._build_headless_command()
-        return shlex.join(cmd)
 
     def _model_flags(self) -> list[str]:
         """Return --model flags if a model is explicitly configured."""
@@ -347,10 +258,14 @@ class AgentRunner:
 
     def _post_session_result(self, workspace_dir: Path) -> AgentResult:
         """Build AgentResult after an interactive session, persisting memory."""
+        self._post_session_persist_memory(workspace_dir)
+        return self._decisions_result(workspace_dir)
+
+    def _post_session_persist_memory(self, workspace_dir: Path) -> None:
+        """Persist memory.md from workspace if it exists."""
         memory_src = workspace_dir / "memory.md"
         if memory_src.exists():
             self._persist_memory(memory_src)
-        return self._decisions_result(workspace_dir)
 
     @staticmethod
     def _decisions_result(workspace_dir: Path) -> AgentResult:
