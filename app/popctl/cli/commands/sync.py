@@ -8,7 +8,10 @@ followed by optional filesystem scanning and cleanup phases.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
+
+if TYPE_CHECKING:
+    from djinn_in_a_box.sessions import SessionManager
 
 import typer
 
@@ -71,6 +74,16 @@ app = typer.Typer(
     help="Full system synchronization.",
     invoke_without_command=True,
 )
+
+
+def _get_session_manager() -> SessionManager | None:
+    """Create a SessionManager for popctl, or None if djinn is not installed."""
+    try:
+        from djinn_in_a_box.sessions import SessionManager
+
+        return SessionManager("popctl")
+    except ImportError:
+        return None
 
 
 def _ensure_manifest() -> None:
@@ -166,7 +179,8 @@ def _invoke_advisor(
         print_warning(f"Could not create advisor workspace: {e}")
         return None
 
-    runner = AgentRunner(config)
+    session = _get_session_manager()
+    runner = AgentRunner(config, session=session)
 
     try:
         if auto:

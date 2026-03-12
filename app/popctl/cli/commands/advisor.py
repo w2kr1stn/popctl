@@ -10,9 +10,14 @@ Commands:
 - apply: Apply classification decisions to manifest
 """
 
+from __future__ import annotations
+
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
+
+if TYPE_CHECKING:
+    from djinn_in_a_box.sessions import SessionManager
 
 import typer
 from rich.table import Table
@@ -56,6 +61,16 @@ app = typer.Typer(
 )
 
 
+def _get_session_manager() -> SessionManager | None:
+    """Create a SessionManager for popctl, or None if djinn is not installed."""
+    try:
+        from djinn_in_a_box.sessions import SessionManager
+
+        return SessionManager("popctl")
+    except ImportError:
+        return None
+
+
 def _prepare_session(
     provider: ProviderChoice | None,
     model: str | None,
@@ -92,7 +107,8 @@ def _prepare_session(
         manifest_path=manifest_path if manifest_path.exists() else None,
         memory_path=memory_path if memory_path.exists() else None,
     )
-    return AgentRunner(config), workspace_dir
+    session = _get_session_manager()
+    return AgentRunner(config, session=session), workspace_dir
 
 
 @app.command()
