@@ -27,6 +27,12 @@ dependencies = [
     "tomli-w>=1.0.0",
 ]
 
+[project.optional-dependencies]
+agent = ["djinn-in-a-box"]
+
+[tool.uv.sources]
+djinn-in-a-box = { path = "../djinn_in_a_box", editable = true }
+
 [dependency-groups]
 dev = [
     "bandit>=1.8.3",

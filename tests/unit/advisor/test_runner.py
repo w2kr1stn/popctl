@@ -1,6 +1,9 @@
 """Unit tests for AgentRunner and AgentResult."""
 
+from __future__ import annotations
+
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -39,7 +42,7 @@ class TestAgentResult:
 
 
 class TestRunHeadlessHost:
-    """Tests for AgentRunner.run_headless in host mode."""
+    """Tests for AgentRunner.run_headless in host mode (no session)."""
 
     def _make_workspace(self, tmp_path: Path) -> Path:
         ws = tmp_path / "workspace"
@@ -100,7 +103,7 @@ class TestRunHeadlessHost:
 
 
 class TestLaunchInteractiveHost:
-    """Tests for launch_interactive in host mode (no container)."""
+    """Tests for launch_interactive in host mode (no session)."""
 
     def test_no_cli_returns_manual(self, tmp_path: Path) -> None:
         with patch("shutil.which", return_value=None):
@@ -108,7 +111,6 @@ class TestLaunchInteractiveHost:
         assert result.error == "manual_mode"
 
     def test_cli_no_tty_runs_headless(self, tmp_path: Path) -> None:
-        """Non-TTY with CLI available should run headless, not manual."""
         ws = tmp_path / "workspace"
         ws.mkdir()
         (ws / "output").mkdir()
@@ -200,156 +202,151 @@ class TestLaunchInteractiveHost:
         assert str(tmp_path) in result.output
 
 
-# ── Container mode ─────────────────────────────────────────────
+# ── SessionManager mode ───────────────────────────────────────
 
 
-class TestLaunchInteractiveContainer:
-    """Tests for launch_interactive in container mode."""
+@dataclass(frozen=True)
+class _FakeSessionResult:
+    returncode: int
+    stdout: str
+    stderr: str
+    workspace_dir: Path
 
-    def _container_config(self, tmp_path: Path) -> AdvisorConfig:
-        return AdvisorConfig(dev_container_path=tmp_path / "compose")
+    @property
+    def success(self) -> bool:
+        return self.returncode == 0
 
-    def test_container_not_started(self, tmp_path: Path) -> None:
-        config = self._container_config(tmp_path)
-        with patch("popctl.advisor.runner.ensure_container", return_value=None):
-            result = AgentRunner(config).launch_interactive(tmp_path)
-        assert result.error == "manual_mode"
 
-    def test_container_cli_missing(self, tmp_path: Path) -> None:
-        config = self._container_config(tmp_path)
-        with (
-            patch("popctl.advisor.runner.ensure_container", return_value="abc123"),
-            patch("popctl.advisor.runner.container_has_command", return_value=False),
-        ):
-            result = AgentRunner(config).launch_interactive(tmp_path)
-        assert result.error == "manual_mode"
+class TestRunHeadlessSession:
+    """Tests for run_headless via SessionManager."""
 
-    def test_container_interactive_success(self, tmp_path: Path) -> None:
-        ws = tmp_path / "workspace"
-        ws.mkdir()
-        output_dir = ws / "output"
-        output_dir.mkdir()
-        config = self._container_config(tmp_path)
-
-        def mock_run_interactive(cmd: list[str], **kwargs: object) -> int:
-            (output_dir / "decisions.toml").write_text("[packages.apt]")
-            return 0
-
-        with (
-            patch("popctl.advisor.runner.ensure_container", return_value="abc123"),
-            patch("popctl.advisor.runner.container_has_command", return_value=True),
-            patch("sys.stdin") as mock_stdin,
-            patch("popctl.advisor.runner.docker_cp", return_value=True),
-            patch("popctl.advisor.runner.container_cleanup"),
-            patch("popctl.advisor.runner.run_interactive", side_effect=mock_run_interactive),
-        ):
-            mock_stdin.isatty.return_value = True
-            result = AgentRunner(config).launch_interactive(ws)
-        assert result.success is True
-
-    def test_container_headless_no_tty(self, tmp_path: Path) -> None:
-        ws = tmp_path / "workspace"
-        ws.mkdir()
-        output_dir = ws / "output"
-        output_dir.mkdir()
-        (output_dir / "decisions.toml").write_text("[packages.apt]")
-        config = self._container_config(tmp_path)
-        mock_result = MagicMock(success=True, stdout="ok", stderr="", returncode=0)
-
-        with (
-            patch("popctl.advisor.runner.ensure_container", return_value="abc123"),
-            patch("popctl.advisor.runner.container_has_command", return_value=True),
-            patch("sys.stdin") as mock_stdin,
-            patch("popctl.advisor.runner.docker_cp", return_value=True),
-            patch("popctl.advisor.runner.container_cleanup"),
-            patch("popctl.advisor.runner.run_command", return_value=mock_result),
-        ):
-            mock_stdin.isatty.return_value = False
-            result = AgentRunner(config).launch_interactive(ws)
-        assert result.success is True
-
-    def test_container_cp_in_fails(self, tmp_path: Path) -> None:
-        config = self._container_config(tmp_path)
-        with (
-            patch("popctl.advisor.runner.ensure_container", return_value="abc123"),
-            patch("popctl.advisor.runner.container_has_command", return_value=True),
-            patch("sys.stdin") as mock_stdin,
-            patch("popctl.advisor.runner.docker_cp", return_value=False),
-            patch("popctl.advisor.runner.container_cleanup"),
-        ):
-            mock_stdin.isatty.return_value = True
-            result = AgentRunner(config).launch_interactive(tmp_path)
-        assert result.success is False
-        assert "copy workspace" in (result.error or "").lower()
-
-    def test_container_exec_failure_cleans_up(self, tmp_path: Path) -> None:
-        config = self._container_config(tmp_path)
-        with (
-            patch("popctl.advisor.runner.ensure_container", return_value="abc123"),
-            patch("popctl.advisor.runner.container_has_command", return_value=True),
-            patch("sys.stdin") as mock_stdin,
-            patch("popctl.advisor.runner.docker_cp", return_value=True),
-            patch("popctl.advisor.runner.container_cleanup") as mock_cleanup,
-            patch("popctl.advisor.runner.run_interactive", side_effect=OSError("fail")),
-        ):
-            mock_stdin.isatty.return_value = True
-            result = AgentRunner(config).launch_interactive(tmp_path)
-        assert result.success is False
-        mock_cleanup.assert_called()
-
-    def test_container_persists_memory(self, tmp_path: Path) -> None:
+    def _make_workspace(self, tmp_path: Path) -> Path:
         ws = tmp_path / "workspace"
         ws.mkdir()
         (ws / "output").mkdir()
-        config = self._container_config(tmp_path)
-        runner = AgentRunner(config)
+        return ws
 
-        def mock_docker_cp(src: str, dest: str) -> bool:
-            if "memory.md" in src:
-                (ws / "memory.md").write_text("# Memory\n")
-            return True
+    def test_success_with_decisions(self, tmp_path: Path) -> None:
+        ws = self._make_workspace(tmp_path)
+        (ws / "output" / "decisions.toml").write_text("[packages.apt]")
+        session = MagicMock()
+        session.run_headless.return_value = _FakeSessionResult(
+            returncode=0, stdout="done", stderr="", workspace_dir=ws,
+        )
+        result = AgentRunner(AdvisorConfig(), session=session).run_headless(ws)
+        assert result.success is True
+        assert result.decisions_path == ws / "output" / "decisions.toml"
 
-        with (
-            patch("popctl.advisor.runner.ensure_container", return_value="abc123"),
-            patch("popctl.advisor.runner.container_has_command", return_value=True),
-            patch("sys.stdin") as mock_stdin,
-            patch("popctl.advisor.runner.docker_cp", side_effect=mock_docker_cp),
-            patch("popctl.advisor.runner.container_cleanup"),
-            patch("popctl.advisor.runner.run_interactive", return_value=0),
-            patch.object(runner, "_persist_memory") as mock_persist,
-        ):
-            mock_stdin.isatty.return_value = True
-            runner.launch_interactive(ws)
-        mock_persist.assert_called_once()
-
-
-class TestRunHeadlessContainer:
-    """Tests for run_headless in container mode."""
-
-    def test_container_not_available(self, tmp_path: Path) -> None:
-        config = AdvisorConfig(dev_container_path=tmp_path / "compose")
-        with patch("popctl.advisor.runner.ensure_container", return_value=None):
-            result = AgentRunner(config).run_headless(tmp_path)
+    def test_no_decisions_file(self, tmp_path: Path) -> None:
+        ws = self._make_workspace(tmp_path)
+        session = MagicMock()
+        session.run_headless.return_value = _FakeSessionResult(
+            returncode=0, stdout="", stderr="", workspace_dir=ws,
+        )
+        result = AgentRunner(AdvisorConfig(), session=session).run_headless(ws)
         assert result.success is False
-        assert "container" in (result.error or "").lower()
 
-    def test_headless_success(self, tmp_path: Path) -> None:
+    def test_nonzero_exit(self, tmp_path: Path) -> None:
+        ws = self._make_workspace(tmp_path)
+        session = MagicMock()
+        session.run_headless.return_value = _FakeSessionResult(
+            returncode=1, stdout="", stderr="API error", workspace_dir=ws,
+        )
+        result = AgentRunner(AdvisorConfig(), session=session).run_headless(ws)
+        assert result.success is False
+        assert result.error == "API error"
+
+    def test_value_error_returns_failure(self, tmp_path: Path) -> None:
+        ws = self._make_workspace(tmp_path)
+        session = MagicMock()
+        session.run_headless.side_effect = ValueError("no container")
+        result = AgentRunner(AdvisorConfig(), session=session).run_headless(ws)
+        assert result.success is False
+        assert "no container" in (result.error or "")
+
+    def test_passes_model_when_configured(self, tmp_path: Path) -> None:
+        ws = self._make_workspace(tmp_path)
+        (ws / "output" / "decisions.toml").write_text("[packages.apt]")
+        session = MagicMock()
+        session.run_headless.return_value = _FakeSessionResult(
+            returncode=0, stdout="", stderr="", workspace_dir=ws,
+        )
+        AgentRunner(AdvisorConfig(model="opus"), session=session).run_headless(ws)
+        call_kwargs = session.run_headless.call_args.kwargs
+        assert call_kwargs["model"] == "opus"
+
+    def test_no_model_omits_key(self, tmp_path: Path) -> None:
+        ws = self._make_workspace(tmp_path)
+        (ws / "output" / "decisions.toml").write_text("[packages.apt]")
+        session = MagicMock()
+        session.run_headless.return_value = _FakeSessionResult(
+            returncode=0, stdout="", stderr="", workspace_dir=ws,
+        )
+        AgentRunner(AdvisorConfig(), session=session).run_headless(ws)
+        call_kwargs = session.run_headless.call_args.kwargs
+        assert "model" not in call_kwargs
+
+    def test_persists_memory(self, tmp_path: Path) -> None:
+        ws = self._make_workspace(tmp_path)
+        (ws / "output" / "decisions.toml").write_text("[packages.apt]")
+        (ws / "memory.md").write_text("# Memory\n")
+        session = MagicMock()
+        session.run_headless.return_value = _FakeSessionResult(
+            returncode=0, stdout="", stderr="", workspace_dir=ws,
+        )
+        runner = AgentRunner(AdvisorConfig(), session=session)
+        with patch.object(runner, "_persist_memory") as mock_persist:
+            runner.run_headless(ws)
+        mock_persist.assert_called_once_with(ws / "memory.md")
+
+
+class TestLaunchInteractiveSession:
+    """Tests for launch_interactive via SessionManager."""
+
+    def test_success_with_decisions(self, tmp_path: Path) -> None:
         ws = tmp_path / "workspace"
         ws.mkdir()
-        output_dir = ws / "output"
-        output_dir.mkdir()
-        (output_dir / "decisions.toml").write_text("[packages.apt]")
-        config = AdvisorConfig(dev_container_path=tmp_path / "compose")
-        mock_result = MagicMock(success=True, stdout="ok", stderr="", returncode=0)
-
-        with (
-            patch("popctl.advisor.runner.ensure_container", return_value="abc123"),
-            patch("popctl.advisor.runner.docker_cp", return_value=True),
-            patch("popctl.advisor.runner.container_cleanup"),
-            patch("popctl.advisor.runner.run_command", return_value=mock_result),
-        ):
-            result = AgentRunner(config).run_headless(ws)
+        (ws / "output").mkdir()
+        (ws / "output" / "decisions.toml").write_text("[packages.apt]")
+        session = MagicMock()
+        session.run_interactive.return_value = _FakeSessionResult(
+            returncode=0, stdout="", stderr="", workspace_dir=ws,
+        )
+        result = AgentRunner(AdvisorConfig(), session=session).launch_interactive(ws)
         assert result.success is True
+        assert result.decisions_path == ws / "output" / "decisions.toml"
+
+    def test_nonzero_exit(self, tmp_path: Path) -> None:
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        session = MagicMock()
+        session.run_interactive.return_value = _FakeSessionResult(
+            returncode=1, stdout="", stderr="session error", workspace_dir=ws,
+        )
+        result = AgentRunner(AdvisorConfig(), session=session).launch_interactive(ws)
+        assert result.success is False
+        assert "session error" in (result.error or "")
+
+    def test_value_error_returns_failure(self, tmp_path: Path) -> None:
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        session = MagicMock()
+        session.run_interactive.side_effect = ValueError("no container")
+        result = AgentRunner(AdvisorConfig(), session=session).launch_interactive(ws)
+        assert result.success is False
+
+    def test_prefers_session_over_host(self, tmp_path: Path) -> None:
+        """When session is set, should NOT check shutil.which."""
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        (ws / "output").mkdir()
+        session = MagicMock()
+        session.run_interactive.return_value = _FakeSessionResult(
+            returncode=0, stdout="", stderr="", workspace_dir=ws,
+        )
+        with patch("shutil.which") as mock_which:
+            AgentRunner(AdvisorConfig(), session=session).launch_interactive(ws)
+        mock_which.assert_not_called()
 
 
 # ── Build commands ─────────────────────────────────────────────
@@ -378,10 +375,6 @@ class TestBuildCommands:
         cmd = AgentRunner(AdvisorConfig(model="opus"))._build_interactive_command()
         assert "--model" in cmd
         assert "opus" in cmd
-
-    def test_build_shell_command(self) -> None:
-        shell_cmd = AgentRunner(AdvisorConfig())._build_shell_command(interactive=True)
-        assert "claude" in shell_cmd
 
 
 # ── Persist memory ─────────────────────────────────────────────

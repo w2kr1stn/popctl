@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from popctl.advisor.prompts import build_session_claude_md
-from popctl.core.paths import ensure_dir, get_state_dir
+from popctl.core.paths import ensure_dir
 from popctl.scanners.apt import get_reverse_deps
 from popctl.utils.formatting import print_info
 
@@ -123,7 +123,7 @@ def ensure_advisor_sessions_dir() -> Path:
     Raises:
         RuntimeError: If the directory cannot be created.
     """
-    return ensure_dir(get_state_dir() / "advisor-sessions", "advisor sessions")
+    return ensure_dir(Path.home() / ".djinn" / "sessions" / "popctl", "advisor sessions")
 
 
 def create_session_workspace(
