@@ -140,6 +140,7 @@ class AgentRunner:
         try:
             interactive_kwargs: dict[str, object] = {
                 "workspace_dir": workspace_dir,
+                "initial_prompt": INITIAL_PROMPT,
             }
             if self.config.model:
                 interactive_kwargs["model"] = self.config.effective_model
