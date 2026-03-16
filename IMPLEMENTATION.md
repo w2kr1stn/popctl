@@ -30,9 +30,9 @@ popctl follows a **Modular Monolith** architecture with strict layer separation 
 │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐   │
 │  │ init │ │ scan │ │ diff │ │apply │ │ sync │ │  fs  │ │config│   │
 │  └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘   │
-│  ┌──────┐ ┌──────┐ ┌──────┐                                        │
-│  │undo  │ │hist. │ │advis.│                                        │
-│  └──────┘ └──────┘ └──────┘                                        │
+│  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐                      │
+│  │undo  │ │hist. │ │advis.│ │backup│ │manif.│                      │
+│  └──────┘ └──────┘ └──────┘ └──────┘ └──────┘                      │
 ├─────────────────────────────────────────────────────────────────────┤
 │                   CLI Support (types.py, display.py)                 │
 │  SourceChoice, compute_system_diff, collect_domain_orphans,         │
@@ -67,7 +67,7 @@ popctl follows a **Modular Monolith** architecture with strict layer separation 
 │  │.py      │ │ .py       │ │ .py      │ │ .py       │              │
 │  └─────────┘ └───────────┘ └──────────┘ └───────────┘              │
 ├─────────────────────────────────────────────────────────────────────┤
-│          Scanners/Operators/Advisor/Filesystem/Configs               │
+│          Scanners/Operators/Advisor/Filesystem/Configs/Backup        │
 │  ┌─────────────┐ ┌──────────────┐ ┌──────────────┐                 │
 │  │  scanners/   │ │  operators/  │ │   advisor/   │                 │
 │  │ APT,Flatpak, │ │ APT,Flatpak, │ │ config,      │                 │
@@ -75,9 +75,12 @@ popctl follows a **Modular Monolith** architecture with strict layer separation 
 │  └─────────────┘ └──────────────┘ │ workspace,   │                 │
 │  ┌─────────────┐ ┌──────────────┐ │ exchange     │                 │
 │  │ filesystem/  │ │   configs/   │ └──────────────┘                 │
-│  │ scanner,     │ │ scanner,     │                                   │
-│  │ operator     │ │ operator     │                                   │
-│  └─────────────┘ └──────────────┘                                   │
+│  │ scanner,     │ │ scanner,     │ ┌──────────────┐                 │
+│  │ operator     │ │ operator     │ │   backup/    │                 │
+│  └─────────────┘ └──────────────┘ │ backup,      │                 │
+│                                    │ config,      │                 │
+│                                    │ restore      │                 │
+│                                    └──────────────┘                 │
 ├─────────────────────────────────────────────────────────────────────┤
 │                   Utils (shell.py, formatting.py)                    │
 └─────────────────────────────────────────────────────────────────────┘
@@ -104,8 +107,10 @@ popctl follows a **Modular Monolith** architecture with strict layer separation 
 | `apply.py` | `popctl apply` |
 | `sync.py` | `popctl sync` (main orchestrator) |
 | `advisor.py` | `popctl advisor {classify,session,apply}` |
-| `fs.py` | `popctl fs {scan}` |
-| `config.py` | `popctl config {scan}` |
+| `fs.py` | `popctl fs {scan,clean}` |
+| `config.py` | `popctl config {scan,clean}` |
+| `backup.py` | `popctl backup {create,restore,list,info}` |
+| `manifest.py` | `popctl manifest {keep,remove}` |
 | `history.py` | `popctl history` |
 | `undo.py` | `popctl undo` |
 
@@ -142,6 +147,14 @@ popctl follows a **Modular Monolith** architecture with strict layer separation 
 | `models.py` | `ScannedEntry`, `DomainActionResult`, `OrphanStatus`, `PathType`, `OrphanReason` |
 | `ownership.py` | `classify_path_type()` — shared by FilesystemScanner and ConfigScanner |
 | `protected.py` | `is_protected(path, domain)` — protected path patterns for filesystem and configs |
+
+### Backup (`backup/`)
+
+| File | Responsibility |
+|------|----------------|
+| `backup.py` | `create_backup()` — streams tar|zstd|age pipeline, `collect_backup_files()`, auto-prune with `max_backups` retention |
+| `config.py` | `load_backup_config()` — reads `~/.config/popctl/backup.toml` (target, recipients, identity, max_backups) |
+| `restore.py` | `restore_backup()` — decrypt, decompress, restore files + packages; `read_backup_metadata()`, `list_backups()` |
 
 ### Infrastructure (`utils/`)
 
@@ -207,7 +220,7 @@ class ActionResult:
 ### History Models (`models/history.py`)
 
 ```python
-class HistoryActionType(str, Enum):
+class HistoryActionType(Enum):
     INSTALL = "install"
     REMOVE = "remove"
     PURGE = "purge"
@@ -270,12 +283,12 @@ class Manifest(BaseModel):
 ### Domain Models (`domain/models.py`)
 
 ```python
-class OrphanStatus(str, Enum):
+class OrphanStatus(Enum):
     ORPHAN = "orphan"
     OWNED = "owned"
     PROTECTED = "protected"
 
-class PathType(str, Enum):
+class PathType(Enum):
     DIRECTORY = "directory"
     FILE = "file"
     SYMLINK = "symlink"
@@ -298,6 +311,7 @@ class DomainActionResult:
     success: bool
     error: str | None = None
     dry_run: bool = False
+    backup_path: str | None = None
 ```
 
 ---
@@ -332,7 +346,7 @@ class DiffType(Enum):
 @dataclass(frozen=True, slots=True)
 class DiffEntry:
     name: str
-    source: str
+    source: PackageSource
     diff_type: DiffType
     version: str | None = None
     description: str | None = None
@@ -386,7 +400,7 @@ INVERSE_ACTION_TYPES: dict[HistoryActionType, HistoryActionType] = {
 }
 
 def record_action(entry, state_dir=None) -> None      # Append to JSONL
-def get_history(limit=None, since=None) -> list[HistoryEntry]  # Newest first
+def get_history(limit=None, since=None) -> tuple[list[HistoryEntry], int]  # Newest first; second element is corrupt line count
 def get_last_reversible() -> HistoryEntry | None       # For undo
 def mark_entry_reversed(entry) -> None                 # Append reversal marker
 def record_domain_deletions(domain, paths, command) -> None  # FS/config history
@@ -443,9 +457,9 @@ class Operator(ABC):
 
 | Operator | Install | Remove | Purge |
 |----------|---------|--------|-------|
-| `AptOperator` | `sudo apt-get install -y` | `sudo apt-get remove -y` | `sudo apt-get purge -y` |
-| `FlatpakOperator` | `flatpak install -y --user` | `flatpak uninstall -y` | N/A |
-| `SnapOperator` | `snap install` | `snap remove` | `snap remove --purge` |
+| `AptOperator` | `sudo apt-get install -y -- <pkgs>` | `sudo apt-get remove -y -- <pkgs>` | `sudo apt-get purge -y -- <pkgs>` |
+| `FlatpakOperator` | `flatpak install -y --user -- <pkg>` | `flatpak uninstall -y -- <pkg>` | N/A |
+| `SnapOperator` | `sudo snap install -- <pkg>` | `sudo snap remove -- <pkg>` | `sudo snap remove --purge -- <pkg>` |
 
 ---
 
@@ -616,7 +630,8 @@ sync()
 | Confirm (6) | **User abort** | `Exit(0)`, propagates past orphan phases |
 | Execute (7) | **Per-action** | Failed actions collected, successful ones recorded |
 | History (8) | **Non-fatal** | Warning on write failure |
-| Orphans (9-18) | **Non-fatal** | Each sub-phase catches own errors |
+| Scan (9,14) | **Non-fatal** | Scan failure returns `None` (skip remaining phases with warning); clean system returns `[]` (no orphans, skip silently) |
+| Orphans (10-18) | **Non-fatal** | Each sub-phase catches own errors |
 
 ### CLI Flags
 
@@ -691,7 +706,27 @@ Note: Domain orphan advising (filesystem/configs) is only available through `pop
 
 **`popctl fs scan`** — Scan filesystem for orphaned directories.
 
+**`popctl fs clean`** — Delete orphaned filesystem paths (with confirmation).
+
 **`popctl config scan`** — Scan for orphaned configuration files.
+
+**`popctl config clean`** — Delete orphaned config files (with backup + confirmation).
+
+### backup (`cli/commands/backup.py`)
+
+**`popctl backup create`** — Create an encrypted backup (tar|zstd|age pipeline). Supports local paths and rclone remotes. Auto-prunes old backups based on `max_backups` config.
+
+**`popctl backup restore <source>`** — Restore from an encrypted backup. Decrypts, decompresses, restores files and/or installs packages. Supports `--files-only` and `--packages-only` modes.
+
+**`popctl backup list`** — List available backups at a target location.
+
+**`popctl backup info <source>`** — Show backup metadata without restoring.
+
+### manifest (`cli/commands/manifest.py`)
+
+**`popctl manifest keep <name>`** — Add a package to the manifest keep list.
+
+**`popctl manifest remove <name>`** — Add a package to the manifest remove list.
 
 ### history (`cli/commands/history.py`)
 
@@ -870,6 +905,9 @@ This prevents accidental deletion even if CLI-level filtering is bypassed or ref
 | Advisor config | `~/.config/popctl/advisor.toml` |
 | Action history | `~/.local/state/popctl/history.jsonl` |
 | Config backups | `~/.local/state/popctl/config-backups/<timestamp>/` |
+| System backups | `~/.local/state/popctl/backups/` (default local target) |
+| Backup config | `~/.config/popctl/backup.toml` |
+| Backup recipients | `~/.config/popctl/backup.age-recipients` (fallback) |
 | Advisor sessions | `~/.djinn/sessions/popctl/<timestamp>/` |
 | Advisor memory | `~/.local/state/popctl/advisor/memory.md` |
 | Default theme | `app/popctl/data/theme.toml` |

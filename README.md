@@ -81,7 +81,15 @@ Each phase can also be run independently:
 | `popctl advisor session` | AI classification (interactive, packages only) |
 | `popctl advisor apply` | Apply AI decisions to manifest |
 | `popctl fs scan` | Scan filesystem for orphaned directories |
+| `popctl fs clean` | Delete orphaned filesystem entries |
 | `popctl config scan` | Scan for orphaned configuration files |
+| `popctl config clean` | Delete orphaned config files (with backup) |
+| `popctl backup create` | Create encrypted system backup |
+| `popctl backup restore` | Restore from encrypted backup |
+| `popctl backup list` | List available backups |
+| `popctl backup info` | Show backup metadata |
+| `popctl manifest keep` | Move package to keep list |
+| `popctl manifest remove` | Move package to remove list |
 | `popctl history` | View action history |
 | `popctl undo` | Revert last reversible action |
 
@@ -153,7 +161,9 @@ popctl sync --no-configs                 # Skip config orphan phases
 
 ```bash
 popctl fs scan                           # Scan for orphaned directories
+popctl fs clean                          # Delete orphaned directories
 popctl config scan                       # Scan for orphaned configs
+popctl config clean                      # Delete orphaned configs (with backup)
 ```
 
 ### History and Undo
@@ -166,6 +176,23 @@ popctl history --json                    # JSON output
 popctl undo                              # Revert last reversible action
 popctl undo --dry-run                    # Preview what would be undone
 popctl undo --yes                        # Skip confirmation
+```
+
+### Backup & Restore
+
+```bash
+popctl backup create                     # Create encrypted backup
+popctl backup create --target remote:    # Upload to rclone remote
+popctl backup restore backup.tar.zst.age # Restore from backup
+popctl backup list                       # List local backups
+popctl backup info backup.tar.zst.age    # Show backup metadata
+```
+
+### Manifest Management
+
+```bash
+popctl manifest keep vim                 # Move package to keep list
+popctl manifest remove bloatware         # Move package to remove list
 ```
 
 ### AI-Assisted Classification
@@ -205,6 +232,24 @@ timeout_seconds = 600
 
 ```
 
+### Backup Configuration
+
+`~/.config/popctl/backup.toml`:
+
+```toml
+# Backup target (local directory or rclone remote)
+target = "remote:backups/popctl"
+
+# age encryption recipient (public key or key file path)
+recipients = "age1..."
+
+# age identity file for decryption
+identity = "~/.config/age/key.txt"
+
+# Maximum number of backups to keep (older ones are pruned)
+max_backups = 3
+```
+
 For container-based execution, install with the `agent` extra:
 
 ```bash
@@ -219,8 +264,11 @@ This enables `djinn-in-a-box` integration, running AI sessions inside the Djinn 
 |------|------|---------|
 | Manifest | `~/.config/popctl/manifest.toml` | Desired system state |
 | Advisor Config | `~/.config/popctl/advisor.toml` | AI provider settings |
+| Theme | `~/.config/popctl/theme.toml` | Color theme overrides |
+| Backup Config | `~/.config/popctl/backup.toml` | Backup encryption and target settings |
 | History | `~/.local/state/popctl/history.jsonl` | Action log for undo |
 | Config Backups | `~/.local/state/popctl/config-backups/` | Backed up configs before deletion |
+| Backups | `~/.local/state/popctl/backups/` | Local backup archive storage |
 | Advisor Sessions | `~/.djinn/sessions/popctl/` | Workspace dirs for AI sessions |
 | Advisor Memory | `~/.local/state/popctl/advisor/memory.md` | Persistent cross-session memory |
 
@@ -254,8 +302,10 @@ app/popctl/
 │       ├── apply.py         # popctl apply
 │       ├── sync.py          # popctl sync (main orchestrator)
 │       ├── advisor.py       # popctl advisor {classify,session,apply}
-│       ├── fs.py            # popctl fs {scan}
-│       ├── config.py        # popctl config {scan}
+│       ├── fs.py            # popctl fs {scan,clean}
+│       ├── config.py        # popctl config {scan,clean}
+│       ├── backup.py        # popctl backup {create,restore,list,info}
+│       ├── manifest.py      # popctl manifest {keep,remove}
 │       ├── history.py       # popctl history
 │       └── undo.py          # popctl undo
 ├── advisor/
@@ -281,7 +331,12 @@ app/popctl/
 │   ├── package.py           # PackageSource, PackageStatus, ScannedPackage, ScanResult
 │   ├── manifest.py          # Manifest, PackageConfig, DomainConfig (Pydantic)
 │   ├── action.py            # Action, ActionResult, ActionType
-│   └── history.py           # HistoryEntry, HistoryItem, HistoryActionType
+│   ├── history.py           # HistoryEntry, HistoryItem, HistoryActionType
+│   └── backup.py            # BackupMetadata
+├── backup/
+│   ├── backup.py            # Encrypted backup creation (tar|zstd|age)
+│   ├── config.py            # BackupConfig
+│   └── restore.py           # Backup restoration
 ├── filesystem/
 │   ├── scanner.py           # FilesystemScanner (orphan detection)
 │   └── operator.py          # FilesystemOperator (deletion, sudo for /etc)
