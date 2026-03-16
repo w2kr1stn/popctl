@@ -1,15 +1,8 @@
-"""Exchange models and import logic for AI-assisted classification.
-
-This module defines the Pydantic models for the file-based communication
-protocol between popctl and AI advisors, and provides import/validation
-of advisor decisions.
-
-The primary workflow uses workspace-based sessions (see advisor/workspace.py).
-"""
-
 from __future__ import annotations
 
 import logging
+import os
+import re
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -35,22 +28,14 @@ from popctl.utils.formatting import print_warning
 
 logger = logging.getLogger(__name__)
 
+_PKG_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9.+\-_]+$")
+
 # =============================================================================
 # Import Models (decisions.toml)
 # =============================================================================
 
 
 class PackageDecision(BaseModel):
-    """Single package classification decision from AI agent.
-
-    Represents one package's classification in the decisions.toml file.
-
-    Attributes:
-        name: Package name.
-        reason: Explanation for the classification.
-        confidence: Classification confidence (0.0 - 1.0).
-        category: Package category from CATEGORIES.
-    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -62,24 +47,22 @@ class PackageDecision(BaseModel):
     @field_validator("category")
     @classmethod
     def validate_category(cls, v: str) -> str:
-        """Validate that category is in CATEGORIES."""
         if v not in CATEGORIES:
             valid = ", ".join(CATEGORIES)
             msg = f"Invalid category '{v}'. Must be one of: {valid}"
             raise ValueError(msg)
         return v
 
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        if not _PKG_NAME_RE.match(v):
+            msg = f"Invalid package name: {v!r}"
+            raise ValueError(msg)
+        return v
+
 
 class SourceDecisions(BaseModel):
-    """Decisions for one package source (apt or flatpak).
-
-    Groups package decisions by classification: keep, remove, or ask.
-
-    Attributes:
-        keep: Packages that should be kept.
-        remove: Packages that should be removed.
-        ask: Packages that need user decision.
-    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -89,16 +72,6 @@ class SourceDecisions(BaseModel):
 
 
 class PathDecision(BaseModel):
-    """Single path decision from AI agent (filesystem or config).
-
-    Represents one path's classification in the decisions.toml file.
-
-    Attributes:
-        path: Path (tilde-prefixed, e.g., "~/.config/vlc").
-        reason: Explanation for the classification.
-        confidence: Classification confidence (0.0 - 1.0).
-        category: Path category (e.g., "config", "obsolete", "other").
-    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -107,17 +80,29 @@ class PathDecision(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     category: str | None = None
 
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            msg = "Path cannot be empty"
+            raise ValueError(msg)
+        if not (stripped.startswith("~/") or stripped.startswith("/")):
+            msg = f"Path must be absolute or start with ~/: {stripped!r}"
+            raise ValueError(msg)
+        expanded = os.path.normpath(os.path.abspath(os.path.expanduser(stripped)))
+        home = str(Path.home())
+        if expanded in (home, "/"):
+            msg = f"Refusing root-level path: {stripped!r}"
+            raise ValueError(msg)
+        p = Path(expanded)
+        if not (p.is_relative_to(Path(home)) or p.is_relative_to(Path("/etc"))):
+            msg = f"Path outside allowed prefixes (home, /etc): {stripped!r}"
+            raise ValueError(msg)
+        return stripped
+
 
 class DomainDecisions(BaseModel):
-    """Path decisions grouped by classification (keep/remove/ask).
-
-    Used for both filesystem and config domain decisions from the AI agent.
-
-    Attributes:
-        keep: Paths that should be kept.
-        remove: Paths that should be removed.
-        ask: Paths that need user decision.
-    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -127,15 +112,6 @@ class DomainDecisions(BaseModel):
 
 
 class DecisionsResult(BaseModel):
-    """Complete decisions from AI agent.
-
-    Root model for parsing decisions.toml from the AI agent.
-
-    Attributes:
-        packages: Decisions organized by package source.
-        filesystem: Optional filesystem path decisions.
-        configs: Optional config path decisions.
-    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -150,26 +126,6 @@ class DecisionsResult(BaseModel):
 
 
 def import_decisions(decisions_path: Path) -> DecisionsResult:
-    """Import and validate a decisions.toml file.
-
-    Reads the decisions.toml file created by the AI agent and validates
-    it against the expected schema using Pydantic.
-
-    Args:
-        decisions_path: Path to the decisions.toml file.
-
-    Returns:
-        Validated DecisionsResult containing all package decisions.
-
-    Raises:
-        FileNotFoundError: If decisions.toml doesn't exist.
-        ValueError: If TOML is invalid or doesn't match schema.
-
-    Example:
-        >>> decisions = import_decisions(Path("/tmp/decisions.toml"))
-        >>> for pkg in decisions.packages["apt"].keep:
-        ...     print(f"Keep: {pkg.name} ({pkg.reason})")
-    """
     # Check if file exists
     if not decisions_path.exists():
         msg = f"decisions.toml not found at {decisions_path}"
@@ -302,14 +258,6 @@ def apply_domain_decisions_to_manifest(
 def record_advisor_apply_to_history(
     decisions: DecisionsResult,
 ) -> None:
-    """Record advisor apply decisions to history.
-
-    Creates a single history entry for all classifications applied.
-    Errors during recording are logged but do not interrupt the flow.
-
-    Args:
-        decisions: The decisions result that was applied.
-    """
     try:
         items: list[HistoryItem] = []
 
@@ -330,6 +278,7 @@ def record_advisor_apply_to_history(
             entry = create_history_entry(
                 action_type=HistoryActionType.ADVISOR_APPLY,
                 items=items,
+                reversible=False,
                 metadata={"command": "popctl advisor apply"},
             )
             record_action(entry)

@@ -1,65 +1,21 @@
-"""Config backup and deletion operator.
-
-Handles safe deletion of orphaned configuration paths with automatic
-backup before deletion, dry-run support, and protected path checking.
-Only operates on user home paths (no /etc, no sudo).
-"""
-
 import logging
 import shutil
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from popctl.core.paths import ensure_dir, get_state_dir
 from popctl.domain.models import DomainActionResult
 from popctl.domain.protected import is_protected
+from popctl.utils.shell import safe_resolve
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True, slots=True)
-class ConfigActionResult(DomainActionResult):
-    """Result of a single config deletion operation with backup path.
-
-    Extends DomainActionResult with an optional backup_path field.
-    """
-
-    backup_path: str | None = None
-
-
 class ConfigOperator:
-    """Backs up and deletes orphaned config paths.
-
-    Creates timestamped backups before deletion, preserving the relative
-    directory structure from the user's home directory. Only handles
-    user home paths -- no /etc paths, no sudo escalation.
-
-    Attributes:
-        _dry_run: If True, simulate operations without modifying the filesystem.
-    """
-
     def __init__(self, *, dry_run: bool = False) -> None:
-        """Initialize the ConfigOperator.
-
-        Args:
-            dry_run: If True, report what would be done without doing it.
-        """
         self._dry_run = dry_run
 
-    def delete(self, paths: list[str]) -> list[ConfigActionResult]:
-        """Delete multiple config paths with backup and return results.
-
-        Creates a single timestamped backup directory for all paths in
-        this batch. Each path is checked against protected patterns
-        before deletion. Protected paths are rejected with an error result.
-
-        Args:
-            paths: List of absolute config paths to delete.
-
-        Returns:
-            List of ConfigActionResult, one per input path.
-        """
+    def delete(self, paths: list[str]) -> list[DomainActionResult]:
         if not paths:
             return []
 
@@ -73,26 +29,20 @@ class ConfigOperator:
                 backup_dir.mkdir(parents=True, exist_ok=True)
             except OSError as e:
                 logger.warning("Could not create backup directory %s: %s", backup_dir, e)
+                return [
+                    DomainActionResult(
+                        path=p, success=False, error=f"Backup directory creation failed: {e}"
+                    )
+                    for p in paths
+                ]
 
-        results: list[ConfigActionResult] = []
+        results: list[DomainActionResult] = []
         for path in paths:
             results.append(self._delete_single(path, backup_dir))
 
         return results
 
     def _backup_path(self, path: str, backup_dir: Path) -> str | None:
-        """Backup a config path before deletion.
-
-        Calculates the relative path from the user's home directory and
-        copies the config to the backup directory preserving that structure.
-
-        Args:
-            path: Absolute config path to back up.
-            backup_dir: Timestamped backup directory for this batch.
-
-        Returns:
-            Backup path as string if successful, None on failure.
-        """
         try:
             source = Path(path)
             home = Path.home()
@@ -119,28 +69,13 @@ class ConfigOperator:
             logger.warning("Backup failed for %s: %s", path, e)
             return None
 
-    def _delete_single(self, path: str, backup_dir: Path) -> ConfigActionResult:
-        """Delete a single config path with backup.
-
-        Steps:
-        1. Check is_protected_config() -- reject if protected
-        2. Check path exists -- error if not
-        3. Backup first (failure is non-fatal)
-        4. Delete: shutil.rmtree() for dirs, Path.unlink() for files
-        5. Return ConfigActionResult
-
-        Args:
-            path: Absolute config path to delete.
-            backup_dir: Timestamped backup directory for this batch.
-
-        Returns:
-            ConfigActionResult indicating success or failure.
-        """
-        path = str(Path(path).expanduser())
+    def _delete_single(self, path: str, backup_dir: Path) -> DomainActionResult:
+        """Protected check -> existence check -> backup (non-fatal) -> delete."""
+        path = safe_resolve(path)
 
         # 1. Check protected
         if is_protected(path, "configs"):
-            return ConfigActionResult(
+            return DomainActionResult(
                 path=path,
                 success=False,
                 error=f"Protected config cannot be deleted: {path}",
@@ -150,19 +85,25 @@ class ConfigOperator:
 
         # 2. Check existence — idempotent success (like rm -f)
         if not target.exists() and not target.is_symlink():
-            return ConfigActionResult(path=path, success=True)
+            return DomainActionResult(path=path, success=True)
 
         # Dry-run: skip actual backup+delete
         if self._dry_run:
             logger.info("Dry-run: would back up and delete %s", path)
-            return ConfigActionResult(
+            return DomainActionResult(
                 path=path,
                 success=True,
                 dry_run=True,
             )
 
-        # 3. Backup (non-fatal)
+        # 3. Backup (fatal — abort deletion if backup fails)
         backup_result = self._backup_path(path, backup_dir)
+        if backup_result is None:
+            return DomainActionResult(
+                path=path,
+                success=False,
+                error="Backup failed — deletion aborted to preserve original",
+            )
 
         # 4. Delete
         try:
@@ -171,14 +112,14 @@ class ConfigOperator:
             else:
                 target.unlink()
 
-            return ConfigActionResult(
+            return DomainActionResult(
                 path=path,
                 success=True,
                 backup_path=backup_result,
             )
 
         except OSError as e:
-            return ConfigActionResult(
+            return DomainActionResult(
                 path=path,
                 success=False,
                 error=str(e),

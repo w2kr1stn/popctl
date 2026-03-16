@@ -443,7 +443,7 @@ def empty_manifest() -> Manifest:
     """Empty manifest for apply tests."""
     return Manifest(
         meta=ManifestMeta(created=datetime.now(UTC), updated=datetime.now(UTC)),
-        system=SystemConfig(name="test", base="pop-os-24.04"),
+        system=SystemConfig(name="test"),
         packages=PackageConfig(keep={}, remove={}),
     )
 
@@ -961,7 +961,7 @@ class TestAdvisorIntegration:
 
         manifest = Manifest(
             meta=ManifestMeta(created=datetime.now(UTC), updated=datetime.now(UTC)),
-            system=SystemConfig(name="test-machine", base="pop-os-24.04"),
+            system=SystemConfig(name="test-machine"),
             packages=PackageConfig(keep={}, remove={}),
         )
 
@@ -1071,7 +1071,7 @@ class TestAdvisorIntegration:
         """Apply populates manifest keep/remove with correct multi-source packages."""
         manifest = Manifest(
             meta=ManifestMeta(created=datetime.now(UTC), updated=datetime.now(UTC)),
-            system=SystemConfig(name="test-machine", base="pop-os-24.04"),
+            system=SystemConfig(name="test-machine"),
             packages=PackageConfig(keep={}, remove={}),
         )
         manifest_path = tmp_path / "manifest.toml"

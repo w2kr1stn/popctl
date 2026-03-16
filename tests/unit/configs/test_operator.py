@@ -9,7 +9,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from popctl.configs.operator import ConfigActionResult, ConfigOperator
+from popctl.configs.operator import ConfigOperator
+from popctl.domain.models import DomainActionResult
 
 
 class TestConfigOperator:
@@ -148,8 +149,8 @@ class TestConfigOperator:
         assert config_dir.exists()
         assert config_file.exists()
 
-    def test_delete_backup_failure_continues(self, tmp_path: Path) -> None:
-        """Backup failure does not prevent deletion."""
+    def test_delete_backup_failure_aborts_deletion(self, tmp_path: Path) -> None:
+        """Backup failure aborts deletion to preserve the original."""
         home = tmp_path / "home"
         home.mkdir()
         config_dir = home / ".config" / "old_app"
@@ -171,9 +172,9 @@ class TestConfigOperator:
             results = op.delete([str(config_dir)])
 
         assert len(results) == 1
-        assert results[0].success is True
-        assert results[0].backup_path is None  # Backup failed
-        assert not config_dir.exists()  # But deletion succeeded
+        assert results[0].success is False
+        assert results[0].backup_path is None
+        assert config_dir.exists()  # Original preserved
 
     def test_backup_creates_relative_structure(self, tmp_path: Path) -> None:
         """Backup preserves relative path from home directory."""
@@ -273,15 +274,15 @@ class TestConfigOperator:
         assert results == []
 
     def test_config_action_result_defaults(self) -> None:
-        """ConfigActionResult has correct defaults."""
-        result = ConfigActionResult(path="/test", success=True)
+        """DomainActionResult has correct defaults."""
+        result = DomainActionResult(path="/test", success=True)
         assert result.error is None
         assert result.dry_run is False
         assert result.backup_path is None
 
     def test_config_action_result_frozen(self) -> None:
-        """ConfigActionResult is immutable."""
-        result = ConfigActionResult(path="/test", success=True)
+        """DomainActionResult is immutable."""
+        result = DomainActionResult(path="/test", success=True)
         with pytest.raises(AttributeError):
             result.success = False  # type: ignore[misc]
 

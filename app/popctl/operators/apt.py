@@ -1,8 +1,3 @@
-"""APT package operator implementation.
-
-Executes package installation and removal using apt-get.
-"""
-
 import logging
 
 from popctl.models.action import Action, ActionResult, ActionType
@@ -14,47 +9,18 @@ logger = logging.getLogger(__name__)
 
 
 class AptOperator(Operator):
-    """Operator for APT/dpkg packages.
-
-    Uses apt-get to install, remove, and purge packages. Requires sudo
-    privileges for actual execution.
-
-    Attributes:
-        dry_run: If True, uses apt-get --dry-run to simulate actions.
-    """
-
     source = PackageSource.APT
 
     def is_available(self) -> bool:
-        """Check if apt-get is available."""
         return command_exists("apt-get")
 
     def install(self, packages: list[str]) -> list[ActionResult]:
-        """Install packages using apt-get install.
-
-        Args:
-            packages: List of package names to install.
-
-        Returns:
-            List of ActionResult for each package.
-
-        """
         if not packages:
             return []
 
         return self._execute_apt_command(ActionType.INSTALL, packages)
 
     def remove(self, packages: list[str], purge: bool = False) -> list[ActionResult]:
-        """Remove packages using apt-get remove or purge.
-
-        Args:
-            packages: List of package names to remove.
-            purge: If True, use purge to also remove configuration files.
-
-        Returns:
-            List of ActionResult for each package.
-
-        """
         if not packages:
             return []
 
@@ -65,24 +31,16 @@ class AptOperator(Operator):
         action_type: ActionType,
         packages: list[str],
     ) -> list[ActionResult]:
-        """Execute an apt-get command for a list of packages.
+        """Batch first, then fall back to single-package ops on failure.
 
-        Tries a batch command first for efficiency. If the batch fails and
-        there are multiple packages, falls back to single-package operations
-        so that one resolver conflict doesn't block all packages.
-
-        Args:
-            action_type: Type of action (INSTALL, REMOVE, PURGE).
-            packages: List of package names.
-
-        Returns:
-            List of ActionResult for each package.
+        This prevents one resolver conflict from blocking all packages.
         """
         command = action_type.value
 
         args = ["sudo", "apt-get", command, "-y"]
         if self.dry_run:
             args.append("--dry-run")
+        args.append("--")
         args.extend(packages)
 
         logger.info(
@@ -136,19 +94,11 @@ class AptOperator(Operator):
         action_type: ActionType,
         package: str,
     ) -> ActionResult:
-        """Execute an apt-get command for a single package.
-
-        Args:
-            action_type: Type of action (INSTALL, REMOVE, PURGE).
-            package: Package name.
-
-        Returns:
-            ActionResult for the package.
-        """
         command = action_type.value
         args = ["sudo", "apt-get", command, "-y"]
         if self.dry_run:
             args.append("--dry-run")
+        args.append("--")
         args.append(package)
 
         logger.info("APT %s (single): %s", command, package)

@@ -416,22 +416,24 @@ class TestPathDecision:
     def test_path_decision_validation(self) -> None:
         """PathDecision validates confidence bounds."""
         # Valid boundary values
-        PathDecision(path="test", reason="test", confidence=0.0, category="other")
-        PathDecision(path="test", reason="test", confidence=1.0, category="other")
+        PathDecision(path="~/.config/test", reason="test", confidence=0.0, category="other")
+        PathDecision(path="~/.config/test", reason="test", confidence=1.0, category="other")
 
         # Invalid: below 0
         with pytest.raises(ValueError):
-            PathDecision(path="test", reason="test", confidence=-0.1, category="other")
+            PathDecision(path="~/.config/test", reason="test", confidence=-0.1, category="other")
 
         # Invalid: above 1
         with pytest.raises(ValueError):
-            PathDecision(path="test", reason="test", confidence=1.1, category="other")
+            PathDecision(path="~/.config/test", reason="test", confidence=1.1, category="other")
 
     def test_path_decision_frozen(self) -> None:
         """PathDecision is immutable."""
         from pydantic import ValidationError
 
-        decision = PathDecision(path="test", reason="test", confidence=0.5, category="other")
+        decision = PathDecision(
+            path="~/.config/test", reason="test", confidence=0.5, category="other"
+        )
 
         with pytest.raises(ValidationError):
             decision.path = "changed"  # type: ignore[misc]
@@ -780,7 +782,7 @@ class TestApplyDecisionsToManifest:
                 created=datetime.now(UTC),
                 updated=datetime.now(UTC),
             ),
-            system=SystemConfig(name="test", base="pop-os-24.04"),
+            system=SystemConfig(name="test"),
             packages=PackageConfig(keep={}, remove={}),
         )
 
@@ -1042,7 +1044,7 @@ class TestApplyDomainDecisionsToManifest:
                 created=datetime.now(UTC),
                 updated=datetime.now(UTC),
             ),
-            system=SystemConfig(name="test", base="pop-os-24.04"),
+            system=SystemConfig(name="test"),
             packages=PackageConfig(keep={}, remove={}),
         )
 

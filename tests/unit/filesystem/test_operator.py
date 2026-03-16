@@ -127,7 +127,7 @@ class TestFilesystemOperator:
 
         assert len(results) == 1
         assert results[0].success is True
-        mock_run_typed.assert_called_once_with(["sudo", "rm", "-rf", "/etc/old_app/config.conf"])
+        mock_run_typed.assert_called_once_with(["sudo", "rm", "-rf", "--", "/etc/old_app/config.conf"])
 
     @patch("popctl.filesystem.operator.run_command")
     def test_delete_etc_sudo_failure(self, mock_run: object) -> None:
@@ -228,6 +228,7 @@ class TestFilesystemOperator:
         result = DomainActionResult(path="/test", success=True)
         assert result.error is None
         assert result.dry_run is False
+        assert result.backup_path is None
 
     def test_filesystem_action_result_frozen(self) -> None:
         """DomainActionResult is immutable."""

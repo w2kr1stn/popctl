@@ -1,12 +1,6 @@
-"""Backup creation: collect files via home walk, build archive, store.
-
-Walks the entire home directory (excluding symlink dirs, caches, and
-build artifacts), plus popctl state files. Creates a tar.zst archive
-encrypted with age.
-"""
-
 import io
 import logging
+import re
 import socket
 import subprocess
 import tarfile
@@ -20,6 +14,13 @@ from popctl.models.backup import BackupMetadata
 from popctl.utils.shell import command_exists, run_command
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_stat_size(p: Path) -> int:
+    try:
+        return p.stat().st_size
+    except OSError:
+        return 0
 
 # Directory names to exclude during home walk (case-sensitive)
 _EXCLUDED_DIRS: frozenset[str] = frozenset({
@@ -49,15 +50,10 @@ _EXCLUDED_TOPLEVEL: frozenset[str] = frozenset({
 
 
 class BackupError(Exception):
-    """Base exception for backup operations."""
+    pass
 
 
 def _should_exclude_dir(rel_path: Path) -> bool:
-    """Check if a directory should be excluded from the home walk.
-
-    Excludes symlink directories (external drive mounts), known cache/build
-    directories, and .git/objects (large, reproducible).
-    """
     rel_str = str(rel_path)
 
     # Exact matches against excluded set
@@ -74,15 +70,6 @@ def _should_exclude_dir(rel_path: Path) -> bool:
 
 
 def _walk_home() -> list[tuple[Path, str]]:
-    """Walk the home directory and collect files for backup.
-
-    Skips symlink directories (external drive mounts), cache/build dirs,
-    and other excludable content. Follows symlink files but not symlink
-    directories.
-
-    Returns:
-        List of (absolute_path, archive_path) tuples.
-    """
     home = Path.home()
     files: list[tuple[Path, str]] = []
 
@@ -112,7 +99,6 @@ def _walk_dir(
     home: Path,
     files: list[tuple[Path, str]],
 ) -> None:
-    """Recursively walk a directory, adding files to the collection."""
     try:
         entries = sorted(directory.iterdir())
     except PermissionError:
@@ -136,14 +122,6 @@ def _walk_dir(
 
 
 def collect_backup_files() -> list[tuple[Path, str]]:
-    """Collect all files to include in the backup.
-
-    Combines popctl state files with a full home directory walk.
-    Deduplicates by resolved path.
-
-    Returns:
-        Deduplicated list of (source_path, archive_path) tuples.
-    """
     seen: set[Path] = set()
     files: list[tuple[Path, str]] = []
 
@@ -175,7 +153,6 @@ def collect_backup_files() -> list[tuple[Path, str]]:
 
 
 def _build_metadata() -> BackupMetadata:
-    """Create backup metadata from current system state."""
     return BackupMetadata(
         created=datetime.now(UTC).isoformat(),
         hostname=socket.gethostname(),
@@ -189,15 +166,8 @@ def _stream_backup(
     metadata: BackupMetadata,
     output_path: Path,
     recipient: str,
-) -> None:
-    """Stream tar | zstd | age directly to output without intermediate files.
-
-    Writes tar data into a zstd | age subprocess pipeline, avoiding
-    the need to store the full uncompressed tar on disk.
-
-    Raises:
-        BackupError: If any stage of the pipeline fails.
-    """
+) -> int:
+    skipped = 0
     recipient_expanded = str(Path(recipient).expanduser())
     if Path(recipient_expanded).is_file():
         age_args = ["age", "-R", recipient_expanded]
@@ -237,17 +207,14 @@ def _stream_backup(
                 try:
                     tar.add(str(source_path), arcname=archive_path)
                 except (OSError, PermissionError) as e:
+                    skipped += 1
                     logger.warning("Could not add %s: %s", source_path, e)
 
-        # Close zstd stdin to signal EOF
-        zstd_proc.stdin.close()
-
+        _, zstd_stderr = zstd_proc.communicate(timeout=3600)
         _, age_stderr = age_proc.communicate(timeout=3600)
-        zstd_proc.wait(timeout=3600)
 
         if zstd_proc.returncode != 0:
-            zstd_err = zstd_proc.stderr.read().decode().strip() if zstd_proc.stderr else ""
-            raise BackupError(f"zstd compression failed: {zstd_err or '(no details)'}")
+            raise BackupError(f"zstd compression failed: {zstd_stderr.decode().strip() or '(no details)'}")
         if age_proc.returncode != 0:
             raise BackupError(f"age encryption failed: {age_stderr.decode().strip()}")
 
@@ -260,19 +227,15 @@ def _stream_backup(
     except FileNotFoundError as e:
         raise BackupError(f"Required binary not found: {e}") from e
 
+    return skipped
+
 
 def is_rclone_remote(target: str) -> bool:
-    """Check if target looks like an rclone remote (contains ':' not at start)."""
     return ":" in target and not target.startswith("/")
 
 
 
 def _store_rclone(archive_path: Path, remote: str) -> str:
-    """Upload archive to rclone remote.
-
-    Raises:
-        BackupError: If rclone is not available or upload fails.
-    """
     if not command_exists("rclone"):
         raise BackupError(
             "rclone is not installed. Install it via 'sudo apt install rclone' "
@@ -291,7 +254,6 @@ def _store_rclone(archive_path: Path, remote: str) -> str:
 def _prune_old_backups(
     target_dir: Path, max_backups: int, *, progress: bool = True
 ) -> None:
-    """Delete oldest backups exceeding max_backups in a local directory."""
     from popctl.utils.formatting import print_info
 
     pattern = "popctl-backup-*.tar.zst.age"
@@ -316,24 +278,6 @@ def create_backup(
     *,
     progress: bool = True,
 ) -> str:
-    """Create an encrypted backup archive.
-
-    Resolves defaults from ``~/.config/popctl/backup.toml`` when CLI
-    arguments are not provided.
-
-    Args:
-        target: Destination path or rclone remote. Empty string uses config/default.
-        recipient: age public key or recipients file path.
-            Falls back to backup.toml ``recipients``, then
-            ``~/.config/popctl/backup.age-recipients``.
-        progress: If True, print status messages during each phase.
-
-    Returns:
-        Final storage path (local path or rclone remote path).
-
-    Raises:
-        BackupError: If prerequisites are missing or backup creation fails.
-    """
     from popctl.backup.config import load_backup_config
     from popctl.utils.formatting import print_info
 
@@ -370,7 +314,7 @@ def create_backup(
     if progress:
         print_info("Collecting files...")
     files = collect_backup_files()
-    total_size = sum(p.stat().st_size for p, _ in files if p.exists())
+    total_size = sum(_safe_stat_size(p) for p, _ in files if p.exists())
     if progress:
         print_info(
             f"Collected {len(files)} files ({total_size / 1024 / 1024:.1f} MB)"
@@ -378,7 +322,7 @@ def create_backup(
 
     metadata = _build_metadata()
 
-    hostname = socket.gethostname()
+    hostname = re.sub(r"[^a-zA-Z0-9._-]", "_", socket.gethostname())
     timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     archive_name = f"popctl-backup-{hostname}-{timestamp}.tar.zst.age"
 
@@ -400,7 +344,13 @@ def create_backup(
         if progress:
             dest_label = target if use_rclone else str(target_dir)
             print_info(f"Archiving, compressing, and encrypting to {dest_label}...")
-        _stream_backup(files, metadata, output_path, recipient)
+        skipped = _stream_backup(files, metadata, output_path, recipient)
+        if skipped > 0:
+            from popctl.utils.formatting import print_warning
+
+            print_warning(
+                f"Backup completed with {skipped} file(s) skipped due to permission errors."
+            )
 
         if use_rclone:
             if progress:
