@@ -16,8 +16,8 @@ class TestDiffToActionsMissing:
         diff_result = DiffResult(
             new=(),
             missing=(
-                DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),
-                DiffEntry(name="git", source="apt", diff_type=DiffType.MISSING),
+                DiffEntry(name="vim", source=PackageSource.APT, diff_type=DiffType.MISSING),
+                DiffEntry(name="git", source=PackageSource.APT, diff_type=DiffType.MISSING),
             ),
             extra=(),
         )
@@ -38,7 +38,7 @@ class TestDiffToActionsMissing:
             missing=(
                 DiffEntry(
                     name="com.spotify.Client",
-                    source="flatpak",
+                    source=PackageSource.FLATPAK,
                     diff_type=DiffType.MISSING,
                 ),
             ),
@@ -64,7 +64,7 @@ class TestDiffToActionsExtra:
             extra=(
                 DiffEntry(
                     name="bloatware",
-                    source="apt",
+                    source=PackageSource.APT,
                     diff_type=DiffType.EXTRA,
                     version="1.0",
                 ),
@@ -86,7 +86,7 @@ class TestDiffToActionsExtra:
             extra=(
                 DiffEntry(
                     name="com.unwanted.App",
-                    source="flatpak",
+                    source=PackageSource.FLATPAK,
                     diff_type=DiffType.EXTRA,
                 ),
             ),
@@ -107,7 +107,9 @@ class TestDiffToActionsPurge:
         diff_result = DiffResult(
             new=(),
             missing=(),
-            extra=(DiffEntry(name="bloatware", source="apt", diff_type=DiffType.EXTRA),),
+            extra=(
+                DiffEntry(name="bloatware", source=PackageSource.APT, diff_type=DiffType.EXTRA),
+            ),
         )
 
         actions = diff_to_actions(diff_result, purge=True)
@@ -124,7 +126,7 @@ class TestDiffToActionsPurge:
             extra=(
                 DiffEntry(
                     name="com.unwanted.App",
-                    source="flatpak",
+                    source=PackageSource.FLATPAK,
                     diff_type=DiffType.EXTRA,
                 ),
             ),
@@ -141,7 +143,11 @@ class TestDiffToActionsPurge:
         diff_result = DiffResult(
             new=(),
             missing=(),
-            extra=(DiffEntry(name="telegram-desktop", source="snap", diff_type=DiffType.EXTRA),),
+            extra=(
+                DiffEntry(
+                    name="telegram-desktop", source=PackageSource.SNAP, diff_type=DiffType.EXTRA,
+                ),
+            ),
         )
 
         actions = diff_to_actions(diff_result, purge=True)
@@ -156,15 +162,15 @@ class TestDiffToActionsPurge:
             new=(),
             missing=(),
             extra=(
-                DiffEntry(name="bloatware", source="apt", diff_type=DiffType.EXTRA),
+                DiffEntry(name="bloatware", source=PackageSource.APT, diff_type=DiffType.EXTRA),
                 DiffEntry(
                     name="com.unwanted.App",
-                    source="flatpak",
+                    source=PackageSource.FLATPAK,
                     diff_type=DiffType.EXTRA,
                 ),
                 DiffEntry(
                     name="telegram-desktop",
-                    source="snap",
+                    source=PackageSource.SNAP,
                     diff_type=DiffType.EXTRA,
                 ),
             ),
@@ -190,13 +196,13 @@ class TestDiffToActionsEdgeCases:
             new=(
                 DiffEntry(
                     name="htop",
-                    source="apt",
+                    source=PackageSource.APT,
                     diff_type=DiffType.NEW,
                     version="3.2.2",
                 ),
                 DiffEntry(
                     name="neofetch",
-                    source="apt",
+                    source=PackageSource.APT,
                     diff_type=DiffType.NEW,
                     version="7.1.0",
                 ),
@@ -220,9 +226,11 @@ class TestDiffToActionsEdgeCases:
     def test_diff_to_actions_combined(self) -> None:
         """Combined NEW + MISSING + EXTRA: only MISSING and EXTRA produce actions."""
         diff_result = DiffResult(
-            new=(DiffEntry(name="htop", source="apt", diff_type=DiffType.NEW),),
-            missing=(DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),),
-            extra=(DiffEntry(name="bloatware", source="apt", diff_type=DiffType.EXTRA),),
+            new=(DiffEntry(name="htop", source=PackageSource.APT, diff_type=DiffType.NEW),),
+            missing=(DiffEntry(name="vim", source=PackageSource.APT, diff_type=DiffType.MISSING),),
+            extra=(
+                DiffEntry(name="bloatware", source=PackageSource.APT, diff_type=DiffType.EXTRA),
+            ),
         )
 
         actions = diff_to_actions(diff_result)

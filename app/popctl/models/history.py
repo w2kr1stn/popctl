@@ -1,9 +1,3 @@
-"""History entry model for tracking changes.
-
-This module defines data structures for recording package management
-operations in a history file, enabling undo functionality.
-"""
-
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -14,16 +8,7 @@ from typing import Any
 from popctl.models.package import PackageSource
 
 
-class HistoryActionType(str, Enum):
-    """Type of action recorded in history.
-
-    Attributes:
-        INSTALL: Package installation operation.
-        REMOVE: Package removal operation (keeps config).
-        PURGE: Package purge operation (removes config).
-        ADVISOR_APPLY: Classifications applied from AI advisor.
-    """
-
+class HistoryActionType(Enum):
     INSTALL = "install"
     REMOVE = "remove"
     PURGE = "purge"
@@ -34,30 +19,15 @@ class HistoryActionType(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class HistoryItem:
-    """Single item affected by an action.
-
-    Represents a package or path that was modified during an operation.
-
-    Attributes:
-        name: Package name or path (e.g., 'vim', '~/.config/old-app').
-        source: Package manager (None for domain deletions like fs/config clean).
-    """
-
     name: str
     source: PackageSource | None = None
 
     def __post_init__(self) -> None:
-        """Validate item data after initialization."""
         if not self.name:
             msg = "Package name cannot be empty"
             raise ValueError(msg)
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to dictionary for JSON storage.
-
-        Returns:
-            Dictionary representation of the history item.
-        """
         result: dict[str, Any] = {"name": self.name}
         if self.source is not None:
             result["source"] = self.source.value
@@ -65,18 +35,6 @@ class HistoryItem:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> HistoryItem:
-        """Deserialize from dictionary.
-
-        Args:
-            data: Dictionary containing item data.
-
-        Returns:
-            HistoryItem instance.
-
-        Raises:
-            KeyError: If required fields are missing.
-            ValueError: If source is invalid.
-        """
         raw_source = data.get("source")
         return cls(
             name=data["name"],
@@ -86,20 +44,6 @@ class HistoryItem:
 
 @dataclass(frozen=True, slots=True)
 class HistoryEntry:
-    """Record of a single action in history.
-
-    Immutable data structure representing a completed operation
-    that can potentially be undone.
-
-    Attributes:
-        id: Unique identifier (12-character hex string from UUID).
-        timestamp: When the action occurred (ISO 8601 format with timezone).
-        action_type: Type of action (install, remove, etc.).
-        items: Tuple of packages affected by this action.
-        reversible: Whether this action can be undone.
-        metadata: Additional context (command, user, etc.).
-    """
-
     id: str
     timestamp: str
     action_type: HistoryActionType
@@ -108,7 +52,6 @@ class HistoryEntry:
     metadata: dict[str, Any] = field(default_factory=lambda: {})
 
     def __post_init__(self) -> None:
-        """Validate entry data after initialization."""
         if not self.id:
             msg = "History entry ID cannot be empty"
             raise ValueError(msg)
@@ -120,11 +63,6 @@ class HistoryEntry:
             raise ValueError(msg)
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to dictionary for JSON storage.
-
-        Returns:
-            Dictionary representation of the history entry.
-        """
         return {
             "id": self.id,
             "timestamp": self.timestamp,
@@ -136,18 +74,6 @@ class HistoryEntry:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> HistoryEntry:
-        """Deserialize from dictionary.
-
-        Args:
-            data: Dictionary containing entry data.
-
-        Returns:
-            HistoryEntry instance.
-
-        Raises:
-            KeyError: If required fields are missing.
-            ValueError: If action_type or item data is invalid.
-        """
         items = tuple(HistoryItem.from_dict(item) for item in data["items"])
         return cls(
             id=data["id"],
@@ -155,32 +81,14 @@ class HistoryEntry:
             action_type=HistoryActionType(data["action_type"]),
             items=items,
             reversible=data.get("reversible", True),
-            metadata=data.get("metadata", {}),
+            metadata=dict(data.get("metadata", {})),
         )
 
     def to_json_line(self) -> str:
-        """Serialize to JSON line for JSONL storage.
-
-        Returns:
-            Single JSON line (no trailing newline).
-        """
         return json.dumps(self.to_dict(), separators=(",", ":"))
 
     @classmethod
     def from_json_line(cls, line: str) -> HistoryEntry:
-        """Deserialize from JSON line.
-
-        Args:
-            line: Single JSON line (with or without trailing whitespace).
-
-        Returns:
-            HistoryEntry instance.
-
-        Raises:
-            json.JSONDecodeError: If line is not valid JSON.
-            KeyError: If required fields are missing.
-            ValueError: If data is invalid.
-        """
         data = json.loads(line.strip())
         return cls.from_dict(data)
 
@@ -191,22 +99,6 @@ def create_history_entry(
     reversible: bool = True,
     metadata: dict[str, str] | None = None,
 ) -> HistoryEntry:
-    """Factory function to create a new HistoryEntry.
-
-    Automatically generates a unique ID and current timestamp.
-
-    Args:
-        action_type: Type of action being recorded.
-        items: List of packages affected by this action.
-        reversible: Whether this action can be undone (default True).
-        metadata: Optional additional context.
-
-    Returns:
-        New HistoryEntry with auto-generated ID and timestamp.
-
-    Raises:
-        ValueError: If items list is empty (via HistoryEntry validation).
-    """
     return HistoryEntry(
         id=uuid.uuid4().hex[:12],
         timestamp=datetime.now(UTC).isoformat(),

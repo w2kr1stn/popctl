@@ -1,9 +1,3 @@
-"""Diff engine for comparing manifest with system state.
-
-This module provides the compute_diff function that compares the declared
-manifest state with the actual installed packages on the system.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -39,27 +33,16 @@ class DiffType(Enum):
 
 @dataclass(frozen=True, slots=True)
 class DiffEntry:
-    """Represents a single difference between manifest and system.
-
-    Attributes:
-        name: Package name.
-        source: Package source ("apt" or "flatpak").
-        diff_type: Type of difference (new, missing, or extra).
-        version: Current installed version (if available).
-        description: Package description (if available).
-    """
-
     name: str
-    source: str
+    source: PackageSource
     diff_type: DiffType
     version: str | None = None
     description: str | None = None
 
     def to_dict(self) -> dict[str, str]:
-        """Convert to dictionary for JSON serialization."""
         result: dict[str, str] = {
             "name": self.name,
-            "source": self.source,
+            "source": self.source.value,
         }
         if self.version is not None:
             result["version"] = self.version
@@ -70,44 +53,19 @@ class DiffEntry:
 
 @dataclass(frozen=True, slots=True)
 class DiffResult:
-    """Result of comparing manifest with system state.
-
-    Contains lists of packages in each difference category.
-
-    Attributes:
-        new: Packages installed but not in manifest.
-        missing: Packages in manifest but not installed.
-        extra: Packages marked for removal but still installed.
-    """
-
     new: tuple[DiffEntry, ...]
     missing: tuple[DiffEntry, ...]
     extra: tuple[DiffEntry, ...]
 
     @property
     def is_in_sync(self) -> bool:
-        """Check if system is in sync with manifest.
-
-        Returns:
-            True if there are no differences, False otherwise.
-        """
         return not (self.new or self.missing or self.extra)
 
     @property
     def total_changes(self) -> int:
-        """Total number of differences found.
-
-        Returns:
-            Sum of new, missing, and extra packages.
-        """
         return len(self.new) + len(self.missing) + len(self.extra)
 
     def to_dict(self) -> dict[str, object]:
-        """Convert to dictionary for JSON serialization.
-
-        Returns:
-            Dictionary representation of the diff result.
-        """
         return {
             "in_sync": self.is_in_sync,
             "summary": {
@@ -139,19 +97,17 @@ def compute_diff(
     Args:
         manifest: The manifest describing desired system state.
         scanners: List of Scanner instances to use for scanning.
-        source_filter: Optional filter for package source ("apt" or "flatpak").
+        source_filter: Optional filter for package source ("apt", "flatpak", or "snap").
 
     Returns:
         DiffResult containing all differences found.
     """
     # Collect currently installed manual packages from system
-    installed: dict[str, tuple[str, str | None, str | None]] = {}
+    installed: dict[str, tuple[PackageSource, str | None, str | None]] = {}
 
     for scanner in scanners:
-        source_name = scanner.source.value
-
         # Skip if source filter is active and doesn't match
-        if source_filter and source_name != source_filter:
+        if source_filter and scanner.source.value != source_filter:
             continue
 
         for pkg in scanner.scan():
@@ -163,7 +119,7 @@ def compute_diff(
             if is_package_protected(pkg.name):
                 continue
 
-            installed[pkg.name] = (source_name, pkg.version, pkg.description)
+            installed[pkg.name] = (scanner.source, pkg.version, pkg.description)
 
     # Get packages from manifest
     keep_packages = manifest.get_keep_packages(source_filter)
@@ -193,7 +149,7 @@ def compute_diff(
             missing_entries.append(
                 DiffEntry(
                     name=name,
-                    source=entry.source,
+                    source=PackageSource(entry.source),
                     diff_type=DiffType.MISSING,
                 )
             )
@@ -214,9 +170,9 @@ def compute_diff(
             )
 
     # Sort all entries by source and name for consistent output
-    new_entries.sort(key=lambda e: (e.source, e.name))
-    missing_entries.sort(key=lambda e: (e.source, e.name))
-    extra_entries.sort(key=lambda e: (e.source, e.name))
+    new_entries.sort(key=lambda e: (e.source.value, e.name))
+    missing_entries.sort(key=lambda e: (e.source.value, e.name))
+    extra_entries.sort(key=lambda e: (e.source.value, e.name))
 
     return DiffResult(
         new=tuple(new_entries),
@@ -240,7 +196,7 @@ def diff_to_actions(diff_result: DiffResult, purge: bool = False) -> list[Action
 
     Args:
         diff_result: Result from compute_diff().
-        purge: If True, use PURGE instead of REMOVE for APT packages.
+        purge: If True, use PURGE instead of REMOVE for APT and Snap packages.
 
     Returns:
         List of Action objects to execute.
@@ -249,25 +205,22 @@ def diff_to_actions(diff_result: DiffResult, purge: bool = False) -> list[Action
 
     # MISSING -> INSTALL
     for entry in diff_result.missing:
-        pkg_source = PackageSource(entry.source)
         action = Action(
             action_type=ActionType.INSTALL,
             package=entry.name,
-            source=pkg_source,
+            source=entry.source,
         )
         actions.append(action)
 
     # EXTRA -> REMOVE/PURGE
     for entry in diff_result.extra:
-        pkg_source = PackageSource(entry.source)
-
         # Purge applies to APT and Snap packages
-        use_purge = purge and pkg_source in (PackageSource.APT, PackageSource.SNAP)
+        use_purge = purge and entry.source in (PackageSource.APT, PackageSource.SNAP)
 
         action = Action(
             action_type=ActionType.PURGE if use_purge else ActionType.REMOVE,
             package=entry.name,
-            source=pkg_source,
+            source=entry.source,
         )
         actions.append(action)
 

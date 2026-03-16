@@ -1,9 +1,3 @@
-"""State management for history tracking.
-
-This module provides functions for persisting and querying
-history entries in a JSONL file format.
-"""
-
 import json
 import logging
 from pathlib import Path
@@ -29,19 +23,6 @@ INVERSE_ACTION_TYPES: dict[HistoryActionType, HistoryActionType] = {
 
 
 def record_action(entry: HistoryEntry, state_dir: Path | None = None) -> None:
-    """Append action to history file.
-
-    Creates file and parent directories if they don't exist.
-    Uses atomic append for safety.
-
-    Args:
-        entry: The history entry to record.
-        state_dir: Optional override for state directory.
-
-    Raises:
-        RuntimeError: If the state directory cannot be created.
-        OSError: If the file cannot be written.
-    """
     resolved = state_dir if state_dir is not None else get_state_dir()
 
     ensure_dir(resolved, "state")
@@ -59,27 +40,12 @@ def get_history(
     limit: int | None = None,
     since: str | None = None,
     state_dir: Path | None = None,
-) -> list[HistoryEntry]:
-    """Read history entries, newest first.
-
-    Reads all entries from the history file and returns them in
-    reverse chronological order (newest first).
-
-    Args:
-        limit: Maximum number of entries to return.
-              If None, returns all entries.
-        since: Only include entries on or after this date (YYYY-MM-DD).
-               Compared against the date prefix of ISO 8601 timestamps.
-        state_dir: Optional override for state directory.
-
-    Returns:
-        List of HistoryEntry, newest first.
-        Returns empty list if file doesn't exist.
-    """
+) -> tuple[list[HistoryEntry], int]:
+    """Returns ``(entries_newest_first, corrupt_count)``."""
     path = (state_dir if state_dir is not None else get_state_dir()) / HISTORY_FILENAME
 
     if not path.exists():
-        return []
+        return [], 0
 
     entries: list[HistoryEntry] = []
     corrupt_count = 0
@@ -119,9 +85,9 @@ def get_history(
 
     # Apply limit if specified
     if limit is not None:
-        return entries[:limit]
+        return entries[:limit], corrupt_count
 
-    return entries
+    return entries, corrupt_count
 
 
 def get_last_reversible(state_dir: Path | None = None) -> HistoryEntry | None:
@@ -138,7 +104,7 @@ def get_last_reversible(state_dir: Path | None = None) -> HistoryEntry | None:
         actions exist.
     """
     # Get all history (newest first)
-    history = get_history(state_dir=state_dir)
+    history, _ = get_history(state_dir=state_dir)
 
     # Collect IDs of entries that have been reversed (from loaded history)
     reversed_ids = {
@@ -164,9 +130,14 @@ def mark_entry_reversed(entry: HistoryEntry, state_dir: Path | None = None) -> N
         entry: The history entry to mark as reversed.
         state_dir: Optional override for state directory.
     """
+    inverse = INVERSE_ACTION_TYPES.get(entry.action_type)
+    if inverse is None:
+        msg = f"Cannot reverse action type: {entry.action_type.value}"
+        raise ValueError(msg)
+
     # Create a reversal marker entry
     reversal_entry = create_history_entry(
-        action_type=INVERSE_ACTION_TYPES[entry.action_type],
+        action_type=inverse,
         items=list(entry.items),
         reversible=False,  # Reversal entries are not reversible
         metadata={

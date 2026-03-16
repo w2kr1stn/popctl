@@ -44,17 +44,15 @@ class TestSystemConfig:
         """SystemConfig accepts valid data."""
         config = SystemConfig(
             name="test-machine",
-            base="pop-os-24.04",
         )
 
         assert config.name == "test-machine"
-        assert config.base == "pop-os-24.04"
 
-    def test_default_base(self) -> None:
-        """SystemConfig has default base OS."""
-        config = SystemConfig(name="test")
+    def test_ignores_legacy_base_field(self) -> None:
+        """SystemConfig silently ignores legacy 'base' field."""
+        config = SystemConfig.model_validate({"name": "test", "base": "pop-os-24.04"})
 
-        assert config.base == "pop-os-24.04"
+        assert config.name == "test"
 
     def test_ignores_legacy_description_field(self) -> None:
         """SystemConfig silently ignores legacy 'description' field."""
@@ -156,12 +154,6 @@ class TestManifest:
         assert "bloatware" in packages
 
 
-_DOMAIN_GETTER = {
-    "filesystem": "get_fs_remove_paths",
-    "configs": "get_config_remove_paths",
-}
-
-
 @pytest.mark.parametrize("domain", ["filesystem", "configs"])
 class TestManifestDomain:
     """Tests for domain (filesystem/configs) integration in Manifest model."""
@@ -234,8 +226,7 @@ class TestManifestDomain:
 
     def test_get_domain_remove_paths(self, manifest_with_domain: Manifest, domain: str) -> None:
         """Domain getter returns remove dict when section is present."""
-        getter = getattr(manifest_with_domain, _DOMAIN_GETTER[domain])
-        paths = getter()
+        paths = manifest_with_domain.get_domain_remove(domain)
 
         assert len(paths) == 2
         assert "~/.config/old-app" in paths
@@ -247,6 +238,5 @@ class TestManifestDomain:
         self, manifest_without_domain: Manifest, domain: str
     ) -> None:
         """Domain getter returns empty dict when section is None."""
-        getter = getattr(manifest_without_domain, _DOMAIN_GETTER[domain])
-        paths = getter()
+        paths = manifest_without_domain.get_domain_remove(domain)
         assert paths == {}

@@ -113,8 +113,9 @@ class TestGetHistory:
 
     def test_get_history_empty_file(self, tmp_path: Path) -> None:
         """get_history returns empty list when file doesn't exist."""
-        result = get_history(state_dir=tmp_path)
+        result, corrupt_count = get_history(state_dir=tmp_path)
         assert result == []
+        assert corrupt_count == 0
 
     def test_get_history_returns_entries(self, tmp_path: Path) -> None:
         """get_history returns recorded entries."""
@@ -124,7 +125,7 @@ class TestGetHistory:
         )
         record_action(entry, state_dir=tmp_path)
 
-        result = get_history(state_dir=tmp_path)
+        result, _ = get_history(state_dir=tmp_path)
 
         assert len(result) == 1
         assert result[0].id == entry.id
@@ -148,7 +149,7 @@ class TestGetHistory:
         record_action(entry2, state_dir=tmp_path)
         record_action(entry3, state_dir=tmp_path)
 
-        result = get_history(state_dir=tmp_path)
+        result, _ = get_history(state_dir=tmp_path)
 
         # Should be newest first (reverse of insertion order)
         assert len(result) == 3
@@ -165,7 +166,7 @@ class TestGetHistory:
             )
             record_action(entry, state_dir=tmp_path)
 
-        result = get_history(limit=2, state_dir=tmp_path)
+        result, _ = get_history(limit=2, state_dir=tmp_path)
 
         assert len(result) == 2
 
@@ -177,7 +178,7 @@ class TestGetHistory:
         )
         record_action(entry, state_dir=tmp_path)
 
-        result = get_history(limit=100, state_dir=tmp_path)
+        result, _ = get_history(limit=100, state_dir=tmp_path)
 
         assert len(result) == 1
 
@@ -189,7 +190,7 @@ class TestGetHistory:
         )
         record_action(entry, state_dir=tmp_path)
 
-        result = get_history(limit=0, state_dir=tmp_path)
+        result, _ = get_history(limit=0, state_dir=tmp_path)
 
         assert result == []
 
@@ -215,11 +216,12 @@ class TestGetHistoryCorruptLines:
             f.write('{"incomplete": true}\n')  # Missing required fields
 
         with caplog.at_level(logging.WARNING):
-            result = get_history(state_dir=tmp_path)
+            result, corrupt_count = get_history(state_dir=tmp_path)
 
         # Should only return the valid entry
         assert len(result) == 1
         assert result[0].id == entry.id
+        assert corrupt_count == 2
 
         # Should have logged warnings
         assert "Skipping corrupt history line" in caplog.text
@@ -237,10 +239,11 @@ class TestGetHistoryCorruptLines:
             f.write(entry.to_json_line() + "\n")
             f.write("   \n")
 
-        result = get_history(state_dir=tmp_path)
+        result, corrupt_count = get_history(state_dir=tmp_path)
 
         assert len(result) == 1
         assert result[0].id == entry.id
+        assert corrupt_count == 0
 
     def test_get_history_invalid_action_type(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -257,9 +260,10 @@ class TestGetHistoryCorruptLines:
             f.write(json.dumps(invalid_data) + "\n")
 
         with caplog.at_level(logging.WARNING):
-            result = get_history(state_dir=tmp_path)
+            result, corrupt_count = get_history(state_dir=tmp_path)
 
         assert result == []
+        assert corrupt_count == 1
         assert "Skipping corrupt history line" in caplog.text
 
 
@@ -376,7 +380,7 @@ class TestMarkEntryReversed:
 
         mark_entry_reversed(entry, state_dir=tmp_path)
 
-        history = get_history(state_dir=tmp_path)
+        history, _ = get_history(state_dir=tmp_path)
         assert len(history) == 2
 
         # Most recent entry should be the reversal marker
@@ -394,7 +398,7 @@ class TestMarkEntryReversed:
 
         mark_entry_reversed(entry, state_dir=tmp_path)
 
-        history = get_history(state_dir=tmp_path)
+        history, _ = get_history(state_dir=tmp_path)
         reversal = history[0]
 
         # INSTALL reversed should be REMOVE
@@ -410,7 +414,7 @@ class TestMarkEntryReversed:
 
         mark_entry_reversed(entry, state_dir=tmp_path)
 
-        history = get_history(state_dir=tmp_path)
+        history, _ = get_history(state_dir=tmp_path)
         reversal = history[0]
 
         assert reversal.action_type == HistoryActionType.INSTALL
@@ -429,7 +433,7 @@ class TestMarkEntryReversed:
 
         mark_entry_reversed(entry, state_dir=tmp_path)
 
-        history = get_history(state_dir=tmp_path)
+        history, _ = get_history(state_dir=tmp_path)
         reversal = history[0]
 
         assert len(reversal.items) == 2

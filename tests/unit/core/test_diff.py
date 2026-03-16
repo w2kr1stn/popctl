@@ -81,14 +81,14 @@ class TestDiffEntry:
         """DiffEntry can be created with all fields."""
         entry = DiffEntry(
             name="firefox",
-            source="apt",
+            source=PackageSource.APT,
             diff_type=DiffType.NEW,
             version="128.0",
             description="Mozilla Firefox",
         )
 
         assert entry.name == "firefox"
-        assert entry.source == "apt"
+        assert entry.source == PackageSource.APT
         assert entry.diff_type == DiffType.NEW
         assert entry.version == "128.0"
         assert entry.description == "Mozilla Firefox"
@@ -97,7 +97,7 @@ class TestDiffEntry:
         """DiffEntry can be created with minimal fields."""
         entry = DiffEntry(
             name="neovim",
-            source="apt",
+            source=PackageSource.APT,
             diff_type=DiffType.MISSING,
         )
 
@@ -107,7 +107,7 @@ class TestDiffEntry:
 
     def test_entry_is_immutable(self) -> None:
         """DiffEntry is frozen (immutable)."""
-        entry = DiffEntry(name="test", source="apt", diff_type=DiffType.NEW)
+        entry = DiffEntry(name="test", source=PackageSource.APT, diff_type=DiffType.NEW)
 
         with pytest.raises(AttributeError):
             entry.name = "changed"  # type: ignore[misc]
@@ -125,7 +125,7 @@ class TestDiffResult:
 
     def test_is_in_sync_false_with_new(self) -> None:
         """is_in_sync returns False when there are new packages."""
-        entry = DiffEntry(name="htop", source="apt", diff_type=DiffType.NEW)
+        entry = DiffEntry(name="htop", source=PackageSource.APT, diff_type=DiffType.NEW)
         result = DiffResult(new=(entry,), missing=(), extra=())
 
         assert result.is_in_sync is False
@@ -133,7 +133,7 @@ class TestDiffResult:
 
     def test_is_in_sync_false_with_missing(self) -> None:
         """is_in_sync returns False when there are missing packages."""
-        entry = DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING)
+        entry = DiffEntry(name="vim", source=PackageSource.APT, diff_type=DiffType.MISSING)
         result = DiffResult(new=(), missing=(entry,), extra=())
 
         assert result.is_in_sync is False
@@ -141,7 +141,7 @@ class TestDiffResult:
 
     def test_is_in_sync_false_with_extra(self) -> None:
         """is_in_sync returns False when there are extra packages."""
-        entry = DiffEntry(name="bloat", source="apt", diff_type=DiffType.EXTRA)
+        entry = DiffEntry(name="bloat", source=PackageSource.APT, diff_type=DiffType.EXTRA)
         result = DiffResult(new=(), missing=(), extra=(entry,))
 
         assert result.is_in_sync is False
@@ -149,9 +149,9 @@ class TestDiffResult:
 
     def test_total_changes_counts_all(self) -> None:
         """total_changes sums all categories."""
-        new = DiffEntry(name="new", source="apt", diff_type=DiffType.NEW)
-        missing = DiffEntry(name="missing", source="apt", diff_type=DiffType.MISSING)
-        extra = DiffEntry(name="extra", source="apt", diff_type=DiffType.EXTRA)
+        new = DiffEntry(name="new", source=PackageSource.APT, diff_type=DiffType.NEW)
+        missing = DiffEntry(name="missing", source=PackageSource.APT, diff_type=DiffType.MISSING)
+        extra = DiffEntry(name="extra", source=PackageSource.APT, diff_type=DiffType.EXTRA)
 
         result = DiffResult(
             new=(new, new),
@@ -163,7 +163,9 @@ class TestDiffResult:
 
     def test_to_dict(self) -> None:
         """to_dict returns proper dictionary structure."""
-        entry = DiffEntry(name="htop", source="apt", diff_type=DiffType.NEW, version="3.2.2")
+        entry = DiffEntry(
+            name="htop", source=PackageSource.APT, diff_type=DiffType.NEW, version="3.2.2",
+        )
         result = DiffResult(new=(entry,), missing=(), extra=())
 
         data = result.to_dict()
@@ -180,7 +182,7 @@ class TestDiffResult:
 
     def test_to_dict_excludes_none_values(self) -> None:
         """to_dict excludes None fields from entries."""
-        entry = DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING)
+        entry = DiffEntry(name="vim", source=PackageSource.APT, diff_type=DiffType.MISSING)
         result = DiffResult(new=(), missing=(entry,), extra=())
 
         data = result.to_dict()
