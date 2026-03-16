@@ -1,8 +1,3 @@
-"""Flatpak package scanner implementation.
-
-Scans installed Flatpak applications using the flatpak CLI.
-"""
-
 import logging
 import re
 from collections.abc import Iterator
@@ -15,13 +10,6 @@ logger = logging.getLogger(__name__)
 
 
 class FlatpakScanner(Scanner):
-    """Scanner for Flatpak applications.
-
-    Uses `flatpak list` to enumerate installed applications.
-    Note: All Flatpak apps are considered "manual" since there is no
-    automatic dependency installation like APT has.
-    """
-
     # Regex pattern for parsing size strings like "1.2 GB", "500 MB", "100 KB"
     _SIZE_PATTERN = re.compile(r"^\s*([\d.]+)\s*(B|KB|MB|GB|TB)\s*$", re.IGNORECASE)
 
@@ -37,21 +25,9 @@ class FlatpakScanner(Scanner):
     source = PackageSource.FLATPAK
 
     def is_available(self) -> bool:
-        """Check if flatpak CLI is available."""
         return command_exists("flatpak")
 
     def scan(self) -> Iterator[ScannedPackage]:
-        """Scan all installed Flatpak applications.
-
-        Note: Only scans applications, not runtimes. Runtimes are considered
-        dependencies and are not relevant for user-facing package management.
-
-        Yields:
-            ScannedPackage for each installed Flatpak app.
-
-        Raises:
-            RuntimeError: If flatpak command fails.
-        """
         if not self.is_available():
             msg = "Flatpak is not available on this system"
             raise RuntimeError(msg)
@@ -80,14 +56,6 @@ class FlatpakScanner(Scanner):
                 yield package
 
     def _parse_flatpak_line(self, line: str) -> ScannedPackage | None:
-        """Parse a single line of flatpak list output.
-
-        Args:
-            line: Tab-separated line from flatpak list.
-
-        Returns:
-            ScannedPackage if parsing succeeds, None otherwise.
-        """
         parsed = parse_tab_fields(line, "flatpak")
         if parsed is None:
             return None
@@ -116,14 +84,6 @@ class FlatpakScanner(Scanner):
         )
 
     def _parse_size(self, size_str: str) -> int | None:
-        """Parse a human-readable size string to bytes.
-
-        Args:
-            size_str: Size string like "1.2 GB", "500 MB", "100 KB".
-
-        Returns:
-            Size in bytes, or None if parsing fails.
-        """
         if not size_str:
             return None
 

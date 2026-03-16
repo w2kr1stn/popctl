@@ -1,20 +1,9 @@
-"""Claude Advisor integration for AI-assisted package classification.
+from __future__ import annotations
 
-This module provides AI-assisted package classification using Claude Code
-or Gemini CLI. It supports workspace-based interactive sessions.
+from typing import TYPE_CHECKING
 
-Public API:
-- AdvisorConfig: Configuration model for advisor settings
-- AgentResult: Result from agent execution
-- AgentRunner: Runs AI agents for package classification
-- create_session_workspace: Create ephemeral workspace for session
-- find_all_unapplied_decisions: Find unapplied decisions across sessions
-- import_decisions: Import and validate decisions.toml
-
-Exchange models (DecisionsResult, SourceDecisions, etc.) are available
-via ``popctl.advisor.exchange``. Prompt-related symbols (CATEGORIES,
-build_session_claude_md) are in ``popctl.advisor.prompts``.
-"""
+if TYPE_CHECKING:
+    from djinn_in_a_box.sessions import SessionManager
 
 from popctl.advisor.config import AdvisorConfig
 from popctl.advisor.exchange import (
@@ -33,6 +22,16 @@ from popctl.advisor.workspace import (
     find_all_unapplied_decisions,
 )
 
+
+def get_session_manager() -> SessionManager | None:
+    try:
+        from djinn_in_a_box.sessions import SessionManager
+
+        return SessionManager("popctl")
+    except ImportError:
+        return None
+
+
 __all__ = [
     "AdvisorConfig",
     "AgentResult",
@@ -46,5 +45,6 @@ __all__ = [
     "create_session_workspace",
     "delete_session",
     "find_all_unapplied_decisions",
+    "get_session_manager",
     "import_decisions",
 ]

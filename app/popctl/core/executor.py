@@ -1,10 +1,3 @@
-"""Execution orchestration and history recording.
-
-Provides action execution dispatching and history recording for package
-management operations. These functions are shared between the `apply`
-and `sync` CLI commands.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -38,19 +31,6 @@ def execute_actions(
     actions: list[Action],
     operators: list[Operator],
 ) -> list[ActionResult]:
-    """Execute actions using the appropriate operators.
-
-    Groups actions by their :attr:`~Action.source` and dispatches each
-    group to the matching operator.
-
-    Args:
-        actions: List of actions to execute.
-        operators: List of available operators.
-
-    Returns:
-        List of :class:`ActionResult` for all executed actions.
-    """
-
     results: list[ActionResult] = []
 
     # Group actions by source
@@ -83,19 +63,6 @@ def record_actions_to_history(
     results: list[ActionResult],
     command: str = "popctl apply",
 ) -> None:
-    """Record successful actions to history.
-
-    Groups results by action type and records separate history entries
-    for each type.  Only successful actions are recorded.
-
-    Errors during history recording are logged but do **not** interrupt
-    the calling command's flow.
-
-    Args:
-        results: List of action results from execution.
-        command: Command string stored in the history entry metadata.
-            Defaults to ``"popctl apply"`` for backward compatibility.
-    """
     try:
         for action_type in (ActionType.INSTALL, ActionType.REMOVE, ActionType.PURGE):
             successful_items = [

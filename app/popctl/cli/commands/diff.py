@@ -1,8 +1,3 @@
-"""Diff command implementation.
-
-Compares the manifest with the current system state to show differences.
-"""
-
 import json
 from typing import Annotated
 
@@ -36,7 +31,7 @@ def diff_packages(
         typer.Option(
             "--source",
             "-s",
-            help="Package source to diff: apt, flatpak, or all.",
+            help="Package source to diff: apt, flatpak, snap, or all.",
             case_sensitive=False,
         ),
     ] = SourceChoice.ALL,
@@ -106,7 +101,7 @@ def diff_packages(
         icon, style, note = _DIFF_DISPLAY[entry.diff_type]
         table.add_row(
             f"[{style}]{icon}[/{style}]",
-            entry.source,
+            entry.source.value,
             f"[{style}]{entry.name}[/{style}]",
             f"[muted]{note}[/muted]",
         )
@@ -130,7 +125,6 @@ def diff_packages(
 
 
 def _print_brief(result: DiffResult) -> None:
-    """Print brief summary counts."""
     if result.is_in_sync:
         print_success("System is in sync with manifest.")
     else:

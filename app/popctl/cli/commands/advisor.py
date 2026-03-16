@@ -1,23 +1,8 @@
-"""Advisor commands for AI-assisted package classification.
-
-This module provides CLI commands for the Claude Advisor feature,
-which uses AI agents (Claude Code or Gemini CLI) to classify packages
-as keep, remove, or ask.
-
-Commands:
-- classify: Headless batch classification
-- session: Interactive AI session
-- apply: Apply classification decisions to manifest
-"""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
-
-if TYPE_CHECKING:
-    from djinn_in_a_box.sessions import SessionManager
+from typing import Annotated
 
 import typer
 from rich.table import Table
@@ -27,9 +12,11 @@ from popctl.advisor import (
     cleanup_empty_sessions,
     delete_session,
     find_all_unapplied_decisions,
+    get_session_manager,
     import_decisions,
 )
 from popctl.advisor.config import (
+    ProviderChoice,
     load_or_create_config,
 )
 from popctl.advisor.exchange import (
@@ -40,7 +27,7 @@ from popctl.advisor.exchange import (
 from popctl.advisor.runner import MANUAL_MODE_SENTINEL
 from popctl.advisor.scanning import scan_system
 from popctl.advisor.workspace import create_session_workspace, ensure_advisor_sessions_dir
-from popctl.cli.types import ProviderChoice, require_manifest
+from popctl.cli.types import require_manifest
 from popctl.core.manifest import (
     ManifestError,
     save_manifest,
@@ -61,34 +48,11 @@ app = typer.Typer(
 )
 
 
-def _get_session_manager() -> SessionManager | None:
-    """Create a SessionManager for popctl, or None if djinn is not installed."""
-    try:
-        from djinn_in_a_box.sessions import SessionManager
-
-        return SessionManager("popctl")
-    except ImportError:
-        return None
-
-
 def _prepare_session(
     provider: ProviderChoice | None,
     model: str | None,
     input_file: Path | None,
 ) -> tuple[AgentRunner, Path]:
-    """Load config, scan system, and create session workspace.
-
-    Args:
-        provider: AI provider choice (or None for default).
-        model: Model override (or None for default).
-        input_file: Existing scan.json to use instead of scanning.
-
-    Returns:
-        Tuple of (configured AgentRunner, workspace directory path).
-
-    Raises:
-        typer.Exit: If scanning fails.
-    """
     config = load_or_create_config(provider.value if provider else None, model)
     print_info(f"Using provider: {config.provider}, model: {config.effective_model}")
 
@@ -107,7 +71,7 @@ def _prepare_session(
         manifest_path=manifest_path if manifest_path.exists() else None,
         memory_path=memory_path if memory_path.exists() else None,
     )
-    session = _get_session_manager()
+    session = get_session_manager()
     return AgentRunner(config, session=session), workspace_dir
 
 

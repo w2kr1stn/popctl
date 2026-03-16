@@ -1,9 +1,3 @@
-"""Shared Rich display functions for actions and results.
-
-Provides reusable table builders and summary printers for displaying
-planned actions and execution results across CLI commands (apply, sync).
-"""
-
 import json
 from collections.abc import Sequence
 from pathlib import Path
@@ -37,19 +31,6 @@ SOURCE_ICONS: dict[PackageSource, str] = {
 
 
 def create_actions_table(actions: list[Action], dry_run: bool = False) -> Table:
-    """Create a Rich table displaying planned actions.
-
-    Builds a formatted table with Action, Source, and Package columns.
-    Each action type is styled distinctly: install (added), remove (warning),
-    and purge (removed).
-
-    Args:
-        actions: List of actions to display.
-        dry_run: Whether this is a dry-run (changes table title).
-
-    Returns:
-        Rich Table configured for action display.
-    """
     title = "Planned Actions (Dry Run)" if dry_run else "Planned Actions"
 
     table = Table(
@@ -84,18 +65,6 @@ def create_actions_table(actions: list[Action], dry_run: bool = False) -> Table:
 
 
 def create_results_table(results: list[ActionResult]) -> Table:
-    """Create a Rich table displaying action results.
-
-    Builds a formatted table with Status, Action, Package, and Message columns.
-    Successful results show "OK" status; failed results show "FAIL" with the
-    error message.
-
-    Args:
-        results: List of action results to display.
-
-    Returns:
-        Rich Table configured for results display.
-    """
     table = Table(
         title="Results",
         show_header=True,
@@ -128,14 +97,6 @@ def create_results_table(results: list[ActionResult]) -> Table:
 
 
 def print_actions_summary(actions: list[Action]) -> None:
-    """Print a summary of planned actions.
-
-    Displays counts of install, remove, and purge actions using Rich markup.
-    If no actions are provided, produces no output.
-
-    Args:
-        actions: List of planned actions.
-    """
     install_count = sum(1 for a in actions if a.action_type == ActionType.INSTALL)
     remove_count = sum(1 for a in actions if a.action_type == ActionType.REMOVE)
     purge_count = sum(1 for a in actions if a.action_type == ActionType.PURGE)
@@ -154,14 +115,6 @@ def print_actions_summary(actions: list[Action]) -> None:
 
 
 def print_results_summary(results: list[ActionResult]) -> None:
-    """Print a summary of action results.
-
-    Shows a success message when all actions succeed, or a count of
-    succeeded/failed actions when there are failures.
-
-    Args:
-        results: List of action results.
-    """
     success_count = sum(1 for r in results if r.success)
     fail_count = sum(1 for r in results if r.failed)
 
@@ -180,16 +133,6 @@ def print_orphan_table(
     limit: int | None = None,
     hint_cmd: str | None = None,
 ) -> None:
-    """Display orphaned entries as a Rich table.
-
-    Generic table builder for both filesystem and config orphan scans.
-
-    Args:
-        title: Table title (e.g. "Orphaned Filesystem Entries").
-        orphans: Sequence of scanned orphan entries.
-        limit: Maximum number of entries to display. None means all.
-        hint_cmd: CLI command to show when results are truncated.
-    """
     display = orphans[:limit] if limit else orphans
 
     table = Table(title=title, show_lines=False)
@@ -218,15 +161,6 @@ def print_deletion_plan(
     entries: dict[str, DomainEntry],
     dry_run: bool,
 ) -> None:
-    """Display planned deletions as a Rich table.
-
-    Used by both filesystem and config clean commands.
-
-    Args:
-        paths: List of paths to be deleted.
-        entries: Mapping of path strings to DomainEntry with reason metadata.
-        dry_run: Whether this is a dry-run (changes table title).
-    """
     label = "Planned Deletions (dry-run)" if dry_run else "Planned Deletions"
     table = Table(title=label, show_lines=False)
     table.add_column("Path", style="bold")
@@ -243,18 +177,6 @@ def print_deletion_plan(
 
 
 def export_orphan_results(data: list[dict[str, Any]], export_path: Path) -> None:
-    """Export pre-serialized orphan results to a JSON file.
-
-    Handles path resolution, directory creation, and error reporting.
-    Used by both filesystem and config scan commands.
-
-    Args:
-        data: Pre-serialized list of dicts to write as JSON.
-        export_path: Target file path for the JSON export.
-
-    Raises:
-        typer.Exit: If export path is a directory or write fails.
-    """
     export_path = export_path.resolve()
     if export_path.is_dir():
         print_error(f"Export path is a directory: {export_path}")
@@ -269,21 +191,41 @@ def export_orphan_results(data: list[dict[str, Any]], export_path: Path) -> None
         raise typer.Exit(code=1) from e
 
 
+def display_orphan_scan(
+    domain: str,
+    orphans: Sequence[ScannedEntry],
+    *,
+    output_format: str,
+    export_path: Path | None,
+    limit: int | None,
+    summary_noun: str = "entries",
+) -> None:
+    display_orphans = orphans[:limit] if limit else list(orphans)
+
+    if export_path is not None:
+        export_orphan_results([e.to_dict() for e in orphans], export_path)
+
+    if output_format == "json":
+        console.print_json(json.dumps([e.to_dict() for e in display_orphans]))
+        return
+
+    print_orphan_table(f"Orphaned {domain.capitalize()} Entries", display_orphans)
+
+    total_size = sum(e.size_bytes or 0 for e in orphans)
+    size_str = format_size(total_size)
+    console.print(
+        f"\n[dim]Found {len(orphans)} orphaned {summary_noun} ({size_str} total)[/dim]"
+    )
+    if limit and len(display_orphans) < len(orphans):
+        console.print(
+            f"[dim](showing {len(display_orphans)} of {len(orphans)}, limited to {limit})[/dim]"
+        )
+
+
 def print_deletion_results(
     results: Sequence[DomainActionResult],
     show_backup: bool = False,
 ) -> None:
-    """Display deletion results as a Rich table.
-
-    Used by both filesystem and config clean commands. The third column
-    shows backup paths when ``show_backup=True`` (configs), otherwise
-    shows error details (filesystem).
-
-    Args:
-        results: Sequence of DomainActionResult (or ConfigActionResult subclass).
-        show_backup: If True, show "Backup" column with ``backup_path``
-            attribute (ConfigActionResult only). Otherwise show "Details" column.
-    """
     third_col = "Backup" if show_backup else "Details"
     table = Table(title="Deletion Results", show_lines=False)
     table.add_column("Path", style="bold")
@@ -291,7 +233,7 @@ def print_deletion_results(
     table.add_column(third_col, style="dim")
 
     for r in results:
-        backup = getattr(r, "backup_path", None)
+        backup = r.backup_path
         if r.dry_run:
             status = "[info]dry-run[/]"
             detail = (backup or "-") if show_backup else "Would delete"
@@ -318,17 +260,6 @@ def print_deletion_results(
 
 
 def create_package_table(title: str = "Installed Packages") -> Table:
-    """Create a pre-configured table for displaying packages.
-
-    The table uses zebra striping for improved readability and a minimal
-    status icon column.
-
-    Args:
-        title: Table title.
-
-    Returns:
-        Rich Table configured for package display.
-    """
     table = Table(
         title=title,
         show_header=True,
@@ -348,17 +279,6 @@ def create_package_table(title: str = "Installed Packages") -> Table:
 
 
 def format_package_row(pkg: ScannedPackage) -> tuple[str, str, str, str, str, str]:
-    """Format a package as a table row with proper styling.
-
-    Manual packages are highlighted with a filled circle icon and mint color,
-    while auto-installed packages use an empty circle and muted styling.
-
-    Args:
-        pkg: The scanned package to format.
-
-    Returns:
-        Tuple of (status_icon, source_icon, name, version, size, description) with Rich markup.
-    """
     if pkg.is_manual:
         status_icon = "[package_manual]\u25cf[/]"  # Filled circle
         name = f"[package_manual]{pkg.name}[/]"  # bold is in the style

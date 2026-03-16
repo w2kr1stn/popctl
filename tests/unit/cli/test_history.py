@@ -76,7 +76,7 @@ class TestHistoryCommand:
     def test_history_empty(self) -> None:
         """History shows message when no entries exist."""
         with patch("popctl.cli.commands.history.get_history") as mock_get_history:
-            mock_get_history.return_value = []
+            mock_get_history.return_value = ([], 0)
 
             result = runner.invoke(app, ["history"])
 
@@ -86,7 +86,7 @@ class TestHistoryCommand:
     def test_history_with_entries(self, sample_history_entries: list[HistoryEntry]) -> None:
         """History shows entries in table format."""
         with patch("popctl.cli.commands.history.get_history") as mock_get_history:
-            mock_get_history.return_value = sample_history_entries
+            mock_get_history.return_value = (sample_history_entries, 0)
 
             result = runner.invoke(app, ["history"])
 
@@ -107,7 +107,7 @@ class TestHistoryCommand:
         """History --limit option limits entries."""
         with patch("popctl.cli.commands.history.get_history") as mock_get_history:
             # Simulate limit being applied by get_history
-            mock_get_history.return_value = sample_history_entries[:2]
+            mock_get_history.return_value = (sample_history_entries[:2], 0)
 
             result = runner.invoke(app, ["history", "--limit", "2"])
 
@@ -117,7 +117,7 @@ class TestHistoryCommand:
     def test_history_json_output(self, sample_history_entries: list[HistoryEntry]) -> None:
         """History --json outputs valid JSON."""
         with patch("popctl.cli.commands.history.get_history") as mock_get_history:
-            mock_get_history.return_value = sample_history_entries[:1]
+            mock_get_history.return_value = (sample_history_entries[:1], 0)
 
             result = runner.invoke(app, ["history", "--json"])
 
@@ -139,7 +139,7 @@ class TestHistoryCommand:
         # Only return entries matching the since filter (as core now handles filtering)
         filtered = [e for e in sample_history_entries if e.timestamp[:10] >= "2026-01-26"]
         with patch("popctl.cli.commands.history.get_history") as mock_get_history:
-            mock_get_history.return_value = filtered
+            mock_get_history.return_value = (filtered, 0)
 
             result = runner.invoke(app, ["history", "--since", "2026-01-26"])
 
@@ -163,7 +163,7 @@ class TestHistoryCommand:
     ) -> None:
         """History shows whether entries can be undone."""
         with patch("popctl.cli.commands.history.get_history") as mock_get_history:
-            mock_get_history.return_value = sample_history_entries
+            mock_get_history.return_value = (sample_history_entries, 0)
 
             result = runner.invoke(app, ["history"])
 
@@ -187,7 +187,7 @@ class TestHistoryTableFormatting:
         )
 
         with patch("popctl.cli.commands.history.get_history") as mock_get_history:
-            mock_get_history.return_value = [entry]
+            mock_get_history.return_value = ([entry], 0)
 
             result = runner.invoke(app, ["history"])
 
@@ -207,7 +207,7 @@ class TestHistoryTableFormatting:
         )
 
         with patch("popctl.cli.commands.history.get_history") as mock_get_history:
-            mock_get_history.return_value = [entry]
+            mock_get_history.return_value = ([entry], 0)
 
             result = runner.invoke(app, ["history"])
 
@@ -234,7 +234,7 @@ class TestHistoryJsonOutput:
         )
 
         with patch("popctl.cli.commands.history.get_history") as mock_get_history:
-            mock_get_history.return_value = [entry]
+            mock_get_history.return_value = ([entry], 0)
 
             result = runner.invoke(app, ["history", "--json"])
 
@@ -258,7 +258,7 @@ class TestHistoryJsonOutput:
         # Core now handles filtering; mock returns pre-filtered results
         filtered = [e for e in sample_history_entries if e.timestamp[:10] >= "2026-01-26"]
         with patch("popctl.cli.commands.history.get_history") as mock_get_history:
-            mock_get_history.return_value = filtered
+            mock_get_history.return_value = (filtered, 0)
 
             result = runner.invoke(app, ["history", "--json", "--since", "2026-01-26"])
 

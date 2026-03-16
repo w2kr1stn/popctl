@@ -9,8 +9,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from popctl.cli.main import app
-from popctl.configs.operator import ConfigActionResult
-from popctl.domain.models import OrphanReason, OrphanStatus, PathType, ScannedEntry
+from popctl.domain.models import (
+    DomainActionResult,
+    OrphanReason,
+    OrphanStatus,
+    PathType,
+    ScannedEntry,
+)
 from popctl.models.manifest import DomainConfig, DomainEntry
 from typer.testing import CliRunner
 
@@ -48,10 +53,10 @@ def _make_manifest(
             remove=remove_paths or {},
         )
         manifest.configs = configs_config
-        manifest.get_config_remove_paths.return_value = configs_config.remove
+        manifest.get_domain_remove.return_value = configs_config.remove
     else:
         manifest.configs = None
-        manifest.get_config_remove_paths.return_value = {}
+        manifest.get_domain_remove.return_value = {}
     return manifest
 
 
@@ -176,7 +181,7 @@ class TestConfigClean:
             }
         )
         dry_results = [
-            ConfigActionResult(path="/home/user/.config/vlc", success=True, dry_run=True),
+            DomainActionResult(path="/home/user/.config/vlc", success=True, dry_run=True),
         ]
 
         with (
@@ -226,7 +231,7 @@ class TestConfigClean:
             }
         )
         success_results = [
-            ConfigActionResult(
+            DomainActionResult(
                 path="/home/user/.config/vlc",
                 success=True,
                 backup_path="/home/user/.local/state/popctl/config-backups/20240115T100000Z/.config/vlc",
@@ -239,7 +244,7 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.record_domain_deletions") as mock_record,
+            patch("popctl.cli.types.record_domain_deletions") as mock_record,
             patch("popctl.cli.commands.config.is_protected", return_value=False),
         ):
             mock_op = MagicMock()
@@ -271,12 +276,12 @@ class TestConfigClean:
             }
         )
         success_results = [
-            ConfigActionResult(
+            DomainActionResult(
                 path="/home/user/.config/vlc",
                 success=True,
                 backup_path="/backup/vlc",
             ),
-            ConfigActionResult(
+            DomainActionResult(
                 path="/home/user/.config/obs-studio",
                 success=True,
                 backup_path="/backup/obs-studio",
@@ -289,7 +294,7 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.record_domain_deletions") as mock_record,
+            patch("popctl.cli.types.record_domain_deletions") as mock_record,
             patch("popctl.cli.commands.config.is_protected", return_value=False),
         ):
             mock_op = MagicMock()
@@ -314,7 +319,7 @@ class TestConfigClean:
         )
         backup_path = "/tmp/backups/vlc"
         success_results = [
-            ConfigActionResult(
+            DomainActionResult(
                 path="/tmp/vlc",
                 success=True,
                 backup_path=backup_path,
@@ -327,7 +332,7 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.record_domain_deletions"),
+            patch("popctl.cli.types.record_domain_deletions"),
             patch("popctl.cli.commands.config.is_protected", return_value=False),
         ):
             mock_op = MagicMock()
@@ -348,7 +353,7 @@ class TestConfigClean:
             }
         )
         success_results = [
-            ConfigActionResult(
+            DomainActionResult(
                 path="/home/user/.config/vlc",
                 success=True,
                 backup_path="/backup/vlc",
@@ -364,7 +369,7 @@ class TestConfigClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.config.ConfigOperator") as mock_op_class,
-            patch("popctl.cli.commands.config.record_domain_deletions"),
+            patch("popctl.cli.types.record_domain_deletions"),
             patch(
                 "popctl.cli.commands.config.is_protected",
                 side_effect=mock_is_protected,
@@ -389,7 +394,7 @@ class TestConfigClean:
             }
         )
         fail_results = [
-            ConfigActionResult(
+            DomainActionResult(
                 path="/home/user/.config/vlc",
                 success=False,
                 error="Permission denied",

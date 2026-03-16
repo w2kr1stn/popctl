@@ -1,9 +1,3 @@
-"""History command for viewing past actions.
-
-This module provides the `popctl history` command for viewing
-the history of package management operations.
-"""
-
 import json
 from datetime import datetime
 from typing import Annotated
@@ -13,7 +7,7 @@ from rich.table import Table
 
 from popctl.core.state import get_history
 from popctl.models.history import HistoryEntry
-from popctl.utils.formatting import console, print_error, print_info
+from popctl.utils.formatting import console, print_error, print_info, print_warning
 
 app = typer.Typer(
     name="history",
@@ -67,7 +61,10 @@ def history(
             print_error(f"Invalid date format: {since}. Use YYYY-MM-DD.")
             raise typer.Exit(code=1) from None
 
-    entries = get_history(limit=limit, since=since)
+    entries, corrupt_count = get_history(limit=limit, since=since)
+
+    if corrupt_count > 0:
+        print_warning(f"{corrupt_count} corrupt history line(s) were skipped.")
 
     if not entries:
         print_info("No history entries found.")
@@ -80,14 +77,6 @@ def history(
 
 
 def _print_table(entries: list[HistoryEntry]) -> None:
-    """Print history as Rich table.
-
-    Creates a formatted table showing history entries with columns for
-    ID, timestamp, action type, packages, and undo availability.
-
-    Args:
-        entries: List of history entries to display.
-    """
     table = Table(title="Package History")
     table.add_column("ID", style="dim")
     table.add_column("Timestamp", style="cyan")
@@ -115,13 +104,5 @@ def _print_table(entries: list[HistoryEntry]) -> None:
 
 
 def _print_json(entries: list[HistoryEntry]) -> None:
-    """Print history as JSON.
-
-    Outputs history entries as formatted JSON for scripting and
-    integration with other tools.
-
-    Args:
-        entries: List of history entries to output.
-    """
     output = [entry.to_dict() for entry in entries]
     console.print_json(json.dumps(output, indent=2))

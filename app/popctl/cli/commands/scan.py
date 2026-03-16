@@ -1,8 +1,3 @@
-"""Scan command implementation.
-
-Lists installed packages from various package managers.
-"""
-
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,7 +27,7 @@ def scan_packages(
         typer.Option(
             "--source",
             "-s",
-            help="Package source to scan: apt, flatpak, or all.",
+            help="Package source to scan: apt, flatpak, snap, or all.",
             case_sensitive=False,
         ),
     ] = SourceChoice.ALL,
@@ -210,7 +205,6 @@ def _packages_to_json(
     sources: list[str],
     manual_only: bool,
 ) -> dict[str, object]:
-    """Convert packages to JSON-serializable dict for export."""
     return {
         "metadata": {
             "timestamp": datetime.now(UTC).isoformat(),

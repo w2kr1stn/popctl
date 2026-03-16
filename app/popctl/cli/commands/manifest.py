@@ -1,9 +1,3 @@
-"""Manifest management commands.
-
-Provides commands to manually move packages between keep and remove
-sections of the manifest.
-"""
-
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -55,7 +49,6 @@ def remove(
 
 
 def _move_packages(packages: list[str], *, direction: str) -> None:
-    """Move packages between keep and remove sections."""
     try:
         manifest = load_manifest()
     except ManifestError as e:

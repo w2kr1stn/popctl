@@ -1,9 +1,3 @@
-"""Apply command implementation.
-
-Applies the manifest to the system by installing missing packages
-and removing extra packages.
-"""
-
 from typing import Annotated
 
 import typer
@@ -53,7 +47,7 @@ def apply_manifest(
         typer.Option(
             "--source",
             "-s",
-            help="Package source to apply: apt, flatpak, or all.",
+            help="Package source to apply: apt, flatpak, snap, or all.",
             case_sensitive=False,
         ),
     ] = SourceChoice.ALL,
@@ -62,7 +56,7 @@ def apply_manifest(
         typer.Option(
             "--purge",
             "-p",
-            help="Use purge instead of remove for APT packages (removes config files).",
+            help="Use purge instead of remove for APT/Snap packages (removes config files).",
         ),
     ] = False,
 ) -> None:

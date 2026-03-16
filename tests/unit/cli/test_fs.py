@@ -53,10 +53,10 @@ def _make_manifest(
             remove=remove_paths or {},
         )
         manifest.filesystem = fs_config
-        manifest.get_fs_remove_paths.return_value = fs_config.remove
+        manifest.get_domain_remove.return_value = fs_config.remove
     else:
         manifest.filesystem = None
-        manifest.get_fs_remove_paths.return_value = {}
+        manifest.get_domain_remove.return_value = {}
     return manifest
 
 
@@ -239,7 +239,7 @@ class TestFsClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.fs.FilesystemOperator") as mock_op_class,
-            patch("popctl.cli.commands.fs.record_domain_deletions") as mock_record,
+            patch("popctl.cli.types.record_domain_deletions") as mock_record,
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = success_results
@@ -280,7 +280,7 @@ class TestFsClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.fs.FilesystemOperator") as mock_op_class,
-            patch("popctl.cli.commands.fs.record_domain_deletions") as mock_record,
+            patch("popctl.cli.types.record_domain_deletions") as mock_record,
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = success_results
@@ -313,7 +313,7 @@ class TestFsClean:
                 return_value=manifest,
             ),
             patch("popctl.cli.commands.fs.FilesystemOperator") as mock_op_class,
-            patch("popctl.cli.commands.fs.record_domain_deletions"),
+            patch("popctl.cli.types.record_domain_deletions"),
         ):
             mock_op = MagicMock()
             mock_op.delete.return_value = success_results

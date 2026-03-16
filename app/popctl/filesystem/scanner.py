@@ -1,11 +1,3 @@
-"""Filesystem scanner for orphaned directories and files.
-
-Scans XDG user directories and optionally /etc for directories
-and files that are not owned by any installed package manager
-(dpkg, flatpak, snap). Uses dpkg -S cross-referencing and app
-name matching for orphan detection.
-"""
-
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -34,21 +26,6 @@ _ETC_TARGET: str = "/etc"
 
 
 class FilesystemScanner:
-    """Scans filesystem for orphaned directories and files.
-
-    Identifies top-level entries in XDG user directories that are not
-    owned by any installed package (dpkg, flatpak, snap) and are not
-    in the protected paths list.
-
-    Args:
-        include_files: If True, also scan individual files (not just directories).
-        include_etc: If True, include /etc in scan targets.
-        targets: Optional explicit list of target directories to scan.
-            Defaults to ~/.local/share, ~/.cache (and /etc if
-            include_etc is True). Note: ~/.config is handled exclusively
-            by ConfigScanner.
-    """
-
     def __init__(
         self,
         *,
@@ -71,15 +48,6 @@ class FilesystemScanner:
         self._dpkg_cache: dict[str, bool] = {}
 
     def scan(self) -> Iterator[ScannedEntry]:
-        """Scan all target directories and yield orphaned paths.
-
-        Iterates over each configured target directory. Skips
-        non-existent targets silently. Yields ScannedEntry for each
-        top-level entry that is classified as an orphan.
-
-        Yields:
-            ScannedEntry instances for orphaned filesystem entries.
-        """
         # Reset caches for each scan session
         self._installed_apps = None
         self._dpkg_cache = {}
@@ -90,18 +58,6 @@ class FilesystemScanner:
             yield from self._scan_directory(target)
 
     def _scan_directory(self, target: Path) -> Iterator[ScannedEntry]:
-        """Scan a single target directory for orphaned entries.
-
-        Iterates over top-level entries in the target directory,
-        checks ownership, and yields orphaned entries with confidence
-        scores.
-
-        Args:
-            target: Directory to scan.
-
-        Yields:
-            ScannedEntry for each orphaned entry.
-        """
         try:
             entries = sorted(target.iterdir())
         except PermissionError:
@@ -146,20 +102,7 @@ class FilesystemScanner:
             )
 
     def _check_ownership(self, name: str, path: Path) -> OrphanStatus:
-        """Determine if a path is owned by an installed package or app.
-
-        Checks in order:
-        1. Protected paths list
-        2. dpkg ownership (dpkg -S)
-        3. App name matching (flatpak/snap)
-
-        Args:
-            name: Directory or file name (basename).
-            path: Full path to the entry.
-
-        Returns:
-            OrphanStatus indicating ownership classification.
-        """
+        """Checks: 1) protected list, 2) dpkg -S, 3) flatpak/snap app name."""
         if is_protected(str(path), "filesystem"):
             return OrphanStatus.PROTECTED
 
@@ -173,23 +116,12 @@ class FilesystemScanner:
         return OrphanStatus.ORPHAN
 
     def _ensure_apps_cache(self) -> set[str]:
-        """Ensure apps cache is populated and return it."""
         if self._installed_apps is None:
             self._installed_apps = get_installed_apps()
         return self._installed_apps
 
     def _calculate_confidence(self, target: str) -> float:
-        """Calculate orphan confidence based on target directory.
-
-        Higher confidence means safer to delete. Cache directories
-        have the highest confidence; /etc has the lowest.
-
-        Args:
-            target: String representation of the scan target directory.
-
-        Returns:
-            Confidence score between 0.0 and 1.0.
-        """
+        """Higher confidence = safer to delete. .cache highest, /etc lowest."""
         if ".cache" in target:
             return 0.95
         if ".local/share" in target:
@@ -201,15 +133,6 @@ class FilesystemScanner:
 
     @staticmethod
     def _format_target(target: Path) -> str:
-        """Format a target directory path with tilde for home directories.
-
-        Args:
-            target: Target directory path.
-
-        Returns:
-            Tilde-prefixed path string for home directories,
-            or absolute path string otherwise.
-        """
         try:
             home = Path.home()
             relative = target.relative_to(home)
@@ -219,15 +142,6 @@ class FilesystemScanner:
 
     @staticmethod
     def _determine_orphan_reason(path_type: PathType, target: Path) -> OrphanReason:
-        """Determine the orphan reason based on path type and target.
-
-        Args:
-            path_type: Type of the filesystem entry.
-            target: Scan target directory containing this entry.
-
-        Returns:
-            OrphanReason classification.
-        """
         if path_type == PathType.DEAD_SYMLINK:
             return OrphanReason.DEAD_LINK
 

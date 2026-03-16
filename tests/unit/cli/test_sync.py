@@ -11,6 +11,7 @@ import pytest
 from popctl.cli.main import app
 from popctl.core.diff import DiffEntry, DiffResult, DiffType
 from popctl.models.manifest import Manifest, PackageEntry
+from popctl.models.package import PackageSource
 from popctl.utils.shell import CommandResult
 from typer.testing import CliRunner
 
@@ -28,11 +29,17 @@ def diff_result_with_new() -> DiffResult:
     """Create a diff result with NEW packages (requires advisor)."""
     return DiffResult(
         new=(
-            DiffEntry(name="htop", source="apt", diff_type=DiffType.NEW, version="3.2.2"),
-            DiffEntry(name="curl", source="apt", diff_type=DiffType.NEW, version="8.0"),
+            DiffEntry(
+                name="htop", source=PackageSource.APT, diff_type=DiffType.NEW, version="3.2.2",
+            ),
+            DiffEntry(name="curl", source=PackageSource.APT, diff_type=DiffType.NEW, version="8.0"),
         ),
-        missing=(DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),),
-        extra=(DiffEntry(name="bloatware", source="apt", diff_type=DiffType.EXTRA, version="1.0"),),
+        missing=(DiffEntry(name="vim", source=PackageSource.APT, diff_type=DiffType.MISSING),),
+        extra=(
+            DiffEntry(
+                name="bloatware", source=PackageSource.APT, diff_type=DiffType.EXTRA, version="1.0",
+            ),
+        ),
     )
 
 
@@ -41,8 +48,12 @@ def diff_result_no_new() -> DiffResult:
     """Create a diff result with MISSING and EXTRA but no NEW."""
     return DiffResult(
         new=(),
-        missing=(DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),),
-        extra=(DiffEntry(name="bloatware", source="apt", diff_type=DiffType.EXTRA, version="1.0"),),
+        missing=(DiffEntry(name="vim", source=PackageSource.APT, diff_type=DiffType.MISSING),),
+        extra=(
+            DiffEntry(
+                name="bloatware", source=PackageSource.APT, diff_type=DiffType.EXTRA, version="1.0",
+            ),
+        ),
     )
 
 
@@ -315,7 +326,11 @@ def test_sync_reports_failures(sample_manifest: Manifest) -> None:
     """Failed system actions result in exit code 1."""
     missing_only = DiffResult(
         new=(),
-        missing=(DiffEntry(name="nonexistent-pkg", source="apt", diff_type=DiffType.MISSING),),
+        missing=(
+            DiffEntry(
+                name="nonexistent-pkg", source=PackageSource.APT, diff_type=DiffType.MISSING,
+            ),
+        ),
         extra=(),
     )
 
@@ -341,14 +356,14 @@ def test_sync_reports_failures(sample_manifest: Manifest) -> None:
 def test_sync_re_diffs_after_advisor(sample_manifest: Manifest) -> None:
     """Sync re-computes diff after advisor changes."""
     first_diff = DiffResult(
-        new=(DiffEntry(name="htop", source="apt", diff_type=DiffType.NEW),),
-        missing=(DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),),
+        new=(DiffEntry(name="htop", source=PackageSource.APT, diff_type=DiffType.NEW),),
+        missing=(DiffEntry(name="vim", source=PackageSource.APT, diff_type=DiffType.MISSING),),
         extra=(),
     )
     # After advisor, NEW is resolved, only MISSING remains
     second_diff = DiffResult(
         new=(),
-        missing=(DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),),
+        missing=(DiffEntry(name="vim", source=PackageSource.APT, diff_type=DiffType.MISSING),),
         extra=(),
     )
 
@@ -385,7 +400,7 @@ def test_sync_purge_uses_purge_command(sample_manifest: Manifest) -> None:
     extra_only = DiffResult(
         new=(),
         missing=(),
-        extra=(DiffEntry(name="bloatware", source="apt", diff_type=DiffType.EXTRA),),
+        extra=(DiffEntry(name="bloatware", source=PackageSource.APT, diff_type=DiffType.EXTRA),),
     )
 
     with (
@@ -505,10 +520,10 @@ class TestSyncFilesystem:
         ):
             result = _domain_scan("filesystem")
 
-        assert result == []
+        assert result is None
 
     def test_fs_scan_catches_os_error(self) -> None:
-        """_domain_scan catches OSError and returns empty list."""
+        """_domain_scan catches OSError and returns None."""
         from popctl.cli.commands.sync import _domain_scan
 
         with patch(
@@ -517,7 +532,7 @@ class TestSyncFilesystem:
         ):
             result = _domain_scan("filesystem")
 
-        assert result == []
+        assert result is None
 
     def test_sync_filesystem_dry_run_displays_orphans(
         self, sample_manifest: Manifest, diff_result_no_new: DiffResult
@@ -627,7 +642,9 @@ class TestSyncFilesystem:
         """Filesystem phases run even when package actions fail (before exit 1)."""
         missing_only = DiffResult(
             new=(),
-            missing=(DiffEntry(name="broken-pkg", source="apt", diff_type=DiffType.MISSING),),
+            missing=(
+                DiffEntry(name="broken-pkg", source=PackageSource.APT, diff_type=DiffType.MISSING),
+            ),
             extra=(),
         )
 
@@ -777,8 +794,13 @@ class TestSyncConfigs:
         self, sample_manifest: Manifest, in_sync_result: DiffResult
     ) -> None:
         """Config clean shows backup paths in output."""
-        from popctl.configs.operator import ConfigActionResult
-        from popctl.domain.models import OrphanReason, OrphanStatus, PathType, ScannedEntry
+        from popctl.domain.models import (
+            DomainActionResult,
+            OrphanReason,
+            OrphanStatus,
+            PathType,
+            ScannedEntry,
+        )
 
         mock_orphans = [
             ScannedEntry(
@@ -794,7 +816,7 @@ class TestSyncConfigs:
         ]
 
         mock_action_results = [
-            ConfigActionResult(
+            DomainActionResult(
                 path="/home/test/.config/old-app",
                 success=True,
                 backup_path="/home/test/.local/state/popctl/config-backups/20260215T120000Z/.config/old-app",
@@ -830,7 +852,7 @@ class TestSyncConfigs:
                 "popctl.configs.operator.ConfigOperator.delete",
                 return_value=mock_action_results,
             ),
-            patch("popctl.cli.commands.sync.record_domain_deletions"),
+            patch("popctl.cli.types.record_domain_deletions"),
         ):
             result = runner.invoke(app, ["sync", "--yes", "--no-advisor", "--no-filesystem"])
 
@@ -848,10 +870,10 @@ class TestSyncConfigs:
         ):
             result = _domain_scan("configs")
 
-        assert result == []
+        assert result is None
 
     def test_config_scan_catches_os_error(self) -> None:
-        """_domain_scan catches OSError and returns empty list."""
+        """_domain_scan catches OSError and returns None."""
         from popctl.cli.commands.sync import _domain_scan
 
         with patch(
@@ -860,18 +882,37 @@ class TestSyncConfigs:
         ):
             result = _domain_scan("configs")
 
-        assert result == []
+        assert result is None
 
-    def test_record_orphan_history_non_fatal(self) -> None:
-        """_record_orphan_history catches exceptions without crashing."""
-        from popctl.cli.commands.sync import _record_orphan_history
+    def test_post_clean_update_history_non_fatal(self) -> None:
+        """post_clean_update catches history exceptions without crashing."""
+        from popctl.cli.types import post_clean_update
+        from popctl.domain.models import DomainActionResult
 
-        with patch(
-            "popctl.core.state.record_domain_deletions",
-            side_effect=OSError("write error"),
+        mock_manifest = MagicMock()
+        mock_manifest.configs = MagicMock()
+        mock_manifest.configs.remove = {"/home/test/.config/deleted-app": MagicMock()}
+        results = [
+            DomainActionResult(path="/home/test/.config/deleted-app", success=True),
+        ]
+
+        with (
+            patch("popctl.cli.types.save_manifest"),
+            patch(
+                "popctl.cli.types.record_domain_deletions",
+                side_effect=OSError("write error"),
+            ),
         ):
             # Should not raise
-            _record_orphan_history("configs", ["/home/test/.config/deleted-app"])
+            successful = post_clean_update(
+                mock_manifest,
+                "configs",
+                results,
+                ["/home/test/.config/deleted-app"],
+                command="popctl sync",
+            )
+
+        assert successful == ["/home/test/.config/deleted-app"]
 
     def test_sync_config_phases_run_after_filesystem_phases(
         self, sample_manifest: Manifest, diff_result_no_new: DiffResult
@@ -1111,7 +1152,7 @@ class TestFsRunAdvisor:
         fs_decisions = DomainDecisions(
             keep=[
                 PathDecision(
-                    path="/home/test/.config/old-app",
+                    path="~/.config/old-app",
                     reason="Active config",
                     confidence=0.9,
                     category="config",
@@ -1207,7 +1248,7 @@ class TestConfigRunAdvisor:
         cfg_decisions = DomainDecisions(
             remove=[
                 PathDecision(
-                    path="/home/test/.config/old-app",
+                    path="~/.config/old-app",
                     reason="Orphaned config",
                     confidence=0.85,
                     category="obsolete",

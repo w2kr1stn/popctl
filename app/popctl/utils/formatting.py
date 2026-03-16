@@ -1,8 +1,3 @@
-"""Rich console formatting utilities.
-
-Provides consistent formatting for CLI output using Rich.
-"""
-
 from __future__ import annotations
 
 import sys
@@ -24,27 +19,22 @@ _err_console = Console(theme=_theme, stderr=True, color_system=_color_system)
 
 
 def print_info(message: str) -> None:
-    """Print an info message."""
     console.print(f"[info]{message}[/]")
 
 
 def print_warning(message: str) -> None:
-    """Print a warning message."""
     _err_console.print(f"[warning]Warning:[/] {message}")
 
 
 def print_error(message: str) -> None:
-    """Print an error message."""
     _err_console.print(f"[error]Error:[/] {message}")
 
 
 def print_success(message: str) -> None:
-    """Print a success message."""
     console.print(f"[success]{message}[/]")
 
 
 def format_size(size_bytes: int | None) -> str:
-    """Format byte count as human-readable string."""
     if size_bytes is None or size_bytes == 0:
         return "0 B"
     size = float(size_bytes)

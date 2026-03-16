@@ -1,8 +1,3 @@
-"""Init command implementation.
-
-Creates a manifest.toml file from the current system state.
-"""
-
 from pathlib import Path
 from typing import Annotated
 
@@ -35,21 +30,14 @@ def _show_manifest_summary(
     output_path: Path,
     skipped_protected: list[str] | None = None,
 ) -> None:
-    """Display a summary of the created manifest.
-
-    Args:
-        manifest: The manifest to summarize.
-        output_path: Path where manifest will be saved.
-        skipped_protected: List of protected package names that were skipped.
-    """
     apt_count = len(manifest.get_keep_packages("apt"))
     flatpak_count = len(manifest.get_keep_packages("flatpak"))
-    total = apt_count + flatpak_count
+    snap_count = len(manifest.get_keep_packages("snap"))
+    total = apt_count + flatpak_count + snap_count
 
     console.print()
     console.print("[bold]Manifest Summary[/bold]")
     console.print(f"  System: [info]{manifest.system.name}[/info]")
-    console.print(f"  Base: [muted]{manifest.system.base}[/muted]")
     console.print(f"  Output: [muted]{output_path}[/muted]")
     console.print()
     console.print(f"  Total packages: [bold]{total}[/bold]")
@@ -57,6 +45,8 @@ def _show_manifest_summary(
         console.print(f"    APT: [package_manual]{apt_count}[/package_manual]")
     if flatpak_count > 0:
         console.print(f"    Flatpak: [package_manual]{flatpak_count}[/package_manual]")
+    if snap_count > 0:
+        console.print(f"    Snap: [package_manual]{snap_count}[/package_manual]")
 
     # Show skipped protected packages for transparency
     if skipped_protected:
@@ -97,7 +87,7 @@ def init_manifest(
 ) -> None:
     """Initialize a new manifest from the current system state.
 
-    Scans the system for installed packages (APT and Flatpak) and creates
+    Scans the system for installed packages (APT, Flatpak, and Snap) and creates
     a manifest.toml file tracking manually installed packages.
 
     Protected system packages (kernels, systemd, Pop!_OS core, etc.) and
@@ -127,7 +117,7 @@ def init_manifest(
     # Get available scanners
     scanners = get_available_scanners()
     if not scanners:
-        print_error("No package managers available (APT or Flatpak required).")
+        print_error("No package managers available (APT, Flatpak, or Snap required).")
         raise typer.Exit(code=1)
 
     # Report which scanners are available

@@ -1,9 +1,3 @@
-"""Abstract base class for package scanners.
-
-This module defines the Scanner interface that all package source
-scanners must implement, and shared parsing helpers.
-"""
-
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
@@ -20,17 +14,9 @@ def parse_tab_fields(
 ) -> tuple[str, str, list[str]] | None:
     """Parse a tab-separated line into (name, version, remaining_parts).
 
-    Shared guard-clause logic for APT and Flatpak scanners that both
-    split on tabs, check minimum field count, and validate name/version.
-
-    Args:
-        line: Raw tab-separated line from a package manager.
-        source_label: Label for debug messages (e.g., "dpkg", "flatpak").
-        min_fields: Minimum number of tab-separated fields required.
-
-    Returns:
-        Tuple of (name, version, remaining_parts) on success, None on
-        malformed input.
+    Shared guard-clause logic for scanners that split on tabs, check
+    minimum field count, and validate name/version. Returns None on
+    malformed input.
     """
     parts = line.split("\t")
     if len(parts) < min_fields:
@@ -57,35 +43,10 @@ def parse_tab_fields(
 
 
 class Scanner(ABC):
-    """Abstract base class for all package scanners.
-
-    Scanners are responsible for querying a package manager
-    and yielding information about installed packages.
-
-    Example:
-        >>> scanner = AptScanner()
-        >>> if scanner.is_available():
-        ...     for pkg in scanner.scan():
-        ...         print(f"{pkg.name}: {pkg.version}")
-    """
-
     source: PackageSource
 
     @abstractmethod
-    def scan(self) -> Iterator[ScannedPackage]:
-        """Scan and yield all installed packages from this source.
-
-        Yields:
-            ScannedPackage instances for each installed package.
-
-        Raises:
-            RuntimeError: If the package manager is not available.
-        """
+    def scan(self) -> Iterator[ScannedPackage]: ...
 
     @abstractmethod
-    def is_available(self) -> bool:
-        """Check if this package manager is available on the system.
-
-        Returns:
-            True if the package manager can be used, False otherwise.
-        """
+    def is_available(self) -> bool: ...

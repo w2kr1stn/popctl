@@ -1,14 +1,3 @@
-"""Prompt templates for AI-assisted package classification.
-
-This module provides prompt templates for the Claude Advisor to classify
-packages as keep, remove, or ask. It supports headless (autonomous) mode
-and workspace-based interactive sessions via CLAUDE.md.
-
-Templates are loaded from external files in the ``popctl.data.prompts``
-package. Builder functions fill in placeholders (system context, paths,
-categories) and return the final prompt strings.
-"""
-
 import importlib.resources
 from datetime import UTC, datetime
 
@@ -31,14 +20,6 @@ CATEGORIES = (
 
 
 def _load_template(name: str) -> str:
-    """Load a prompt template from the data package.
-
-    Args:
-        name: Filename inside ``popctl.data.prompts`` (e.g. ``"headless.txt"``).
-
-    Returns:
-        Raw template string with ``{placeholders}`` intact.
-    """
     ref = importlib.resources.files("popctl.data.prompts").joinpath(name)
     return ref.read_text(encoding="utf-8")
 
@@ -78,22 +59,7 @@ def build_session_claude_md(
     domain: str = "packages",
     review: bool = False,
 ) -> str:
-    """Build CLAUDE.md content for an interactive session workspace.
-
-    Creates a comprehensive CLAUDE.md file that Claude Code picks up
-    automatically from the working directory. Selects a domain-specific
-    template (packages, filesystem, or configs) with appropriate
-    classification rules and workflow instructions.
-
-    Args:
-        system_info: Optional system context (hostname, os).
-        summary: Optional package count summary (total, manual, auto).
-        domain: Classification domain ("packages", "filesystem", or "configs").
-        review: If True, append review-specific instructions.
-
-    Returns:
-        CLAUDE.md content string.
-    """
+    """Selects domain-specific template and renders CLAUDE.md content."""
     # Build system context section
     context_lines: list[str] = []
     if system_info:

@@ -1,21 +1,3 @@
-"""Advisor workspace management for AI-assisted classification sessions.
-
-This module provides workspace creation and session discovery for the
-CLAUDE.md-based advisor workflow. Each session creates an ephemeral
-directory with all files needed for classification.
-
-Workspace structure:
-    <session_dir>/
-        .claude/
-            settings.json   — Auto-allow permissions with deny blacklist
-        CLAUDE.md           — Agent instructions (auto-picked up by Claude Code)
-        scan.json           — Package scan data
-        manifest.toml       — Current manifest (if exists)
-        memory.md           — Past session decisions (if exists)
-        output/             — Directory for agent output
-            decisions.toml  — Written by the agent
-"""
-
 from __future__ import annotations
 
 import json
@@ -32,6 +14,8 @@ from popctl.advisor.prompts import build_session_claude_md
 from popctl.core.paths import ensure_dir
 from popctl.scanners.apt import get_reverse_deps
 from popctl.utils.formatting import print_info
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from typing import Any
@@ -115,14 +99,6 @@ WORKSPACE_SETTINGS: dict[str, object] = {
 
 
 def ensure_advisor_sessions_dir() -> Path:
-    """Create the advisor sessions directory if it doesn't exist.
-
-    Returns:
-        Path to the advisor sessions directory.
-
-    Raises:
-        RuntimeError: If the directory cannot be created.
-    """
     return ensure_dir(Path.home() / ".djinn" / "sessions" / "popctl", "advisor sessions")
 
 
@@ -212,8 +188,8 @@ def create_session_workspace(
             raw = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
             pkgs = raw.get("packages", {})
             rdepends_filter = set(pkgs.get("keep", {})) | set(pkgs.get("remove", {}))
-        except (OSError, tomllib.TOMLDecodeError):
-            pass  # fall back to enriching all — better slow than wrong
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            logger.warning("Could not read manifest for rdepends filter, enriching all packages: %s", e)
 
     if enrich_rdepends:
         skip = rdepends_filter or set()
@@ -250,9 +226,13 @@ def create_session_workspace(
     # Write Claude Code permissions (auto-allow with deny blacklist)
     settings_dir = session_dir / ".claude"
     settings_dir.mkdir(exist_ok=True)
-    (settings_dir / "settings.json").write_text(
-        json.dumps(WORKSPACE_SETTINGS, indent=2), encoding="utf-8"
-    )
+    try:
+        (settings_dir / "settings.json").write_text(
+            json.dumps(WORKSPACE_SETTINGS, indent=2), encoding="utf-8"
+        )
+    except OSError as e:
+        msg = f"Failed to write settings.json: {e}"
+        raise RuntimeError(msg) from e
 
     return session_dir
 
@@ -267,20 +247,6 @@ def _build_scan_data(
     enrich_rdepends: bool = False,
     rdepends_filter: set[str] | None = None,
 ) -> dict[str, object]:
-    """Build scan.json data as a plain dictionary.
-
-    Args:
-        scan_result: Package scan data.
-        system_info: System context dict.
-        summary: Pre-computed package count summary.
-        filesystem_orphans: Optional FS orphan entry dicts.
-        config_orphans: Optional config orphan entry dicts.
-        enrich_rdepends: If True, query apt-cache for reverse dependencies.
-        rdepends_filter: If set, only query rdepends for packages NOT in this set.
-
-    Returns:
-        Dictionary ready for JSON serialization.
-    """
     pkg_entries: list[dict[str, object]] = [
         {
             k: v
@@ -327,14 +293,6 @@ def _build_scan_data(
 
 
 def _build_summary(packages: tuple[ScannedPackage, ...]) -> dict[str, int]:
-    """Build package count summary from packages.
-
-    Args:
-        packages: Tuple of scanned packages.
-
-    Returns:
-        Summary dict with source counts, total, manual, auto.
-    """
     summary: dict[str, int] = {}
     manual_count = 0
     auto_count = 0
@@ -360,12 +318,6 @@ def _copy_memory_to_workspace(
     memory_path: Path | None,
     session_dir: Path,
 ) -> None:
-    """Copy persistent memory.md into the session workspace.
-
-    Args:
-        memory_path: Persistent memory.md path (may be None or missing).
-        session_dir: Current session workspace to copy into.
-    """
     logger = logging.getLogger(__name__)
 
     if memory_path is None or not memory_path.exists():
@@ -386,18 +338,6 @@ def _copy_memory_to_workspace(
 
 
 def find_all_unapplied_decisions(sessions_dir: Path) -> list[Path]:
-    """Find all unapplied decisions.toml files across sessions.
-
-    Returns decisions from oldest to newest so they can be applied
-    in chronological order. Sessions are deleted after apply, so any
-    remaining session with a decisions.toml is unapplied.
-
-    Args:
-        sessions_dir: Base directory containing session workspaces.
-
-    Returns:
-        List of paths to unapplied decisions.toml files (oldest first).
-    """
     if not sessions_dir.exists():
         return []
 
@@ -413,14 +353,6 @@ def find_all_unapplied_decisions(sessions_dir: Path) -> list[Path]:
 
 
 def delete_session(decisions_path: Path) -> None:
-    """Delete an applied session directory.
-
-    Removes the entire session directory after its decisions have been
-    applied. Idempotent — safe to call on already-deleted sessions.
-
-    Args:
-        decisions_path: Path to the decisions.toml that was applied.
-    """
     logger = logging.getLogger(__name__)
     # decisions_path is <session_dir>/output/decisions.toml
     session_dir = decisions_path.parent.parent
@@ -432,17 +364,6 @@ def delete_session(decisions_path: Path) -> None:
 
 
 def cleanup_empty_sessions(sessions_dir: Path) -> int:
-    """Remove sessions that have no decisions.toml output.
-
-    Sessions without decisions are useless artifacts (e.g. from advisor
-    failures or interrupted runs) and should be cleaned up.
-
-    Args:
-        sessions_dir: Base directory containing session workspaces.
-
-    Returns:
-        Number of sessions removed.
-    """
     if not sessions_dir.exists():
         return 0
 
@@ -463,14 +384,6 @@ def cleanup_empty_sessions(sessions_dir: Path) -> int:
 
 
 def list_sessions(sessions_dir: Path) -> list[Path]:
-    """List session directories sorted by name (newest first).
-
-    Args:
-        sessions_dir: Base directory containing session workspaces.
-
-    Returns:
-        List of session directory paths, newest first.
-    """
     if not sessions_dir.exists():
         return []
 

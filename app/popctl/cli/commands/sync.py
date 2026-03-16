@@ -1,17 +1,8 @@
-"""Sync command implementation.
-
-Orchestrates the full system synchronization pipeline in a single
-invocation: init -> diff -> advisor -> advisor-apply -> system-apply,
-followed by optional filesystem scanning and cleanup phases.
-"""
-
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, Literal
-
-if TYPE_CHECKING:
-    from djinn_in_a_box.sessions import SessionManager
+from typing import Annotated, Any, Literal
 
 import typer
 
@@ -19,6 +10,7 @@ from popctl.advisor import (
     AgentRunner,
     cleanup_empty_sessions,
     delete_session,
+    get_session_manager,
     import_decisions,
 )
 from popctl.advisor.config import AdvisorConfigError, load_or_create_config
@@ -43,6 +35,7 @@ from popctl.cli.types import (
     SourceChoice,
     collect_domain_orphans,
     compute_system_diff,
+    post_clean_update,
 )
 from popctl.configs import ConfigOperator
 from popctl.core.diff import DiffResult, diff_to_actions
@@ -55,7 +48,6 @@ from popctl.core.manifest import (
     scan_and_create_manifest,
 )
 from popctl.core.paths import get_manifest_path, get_state_dir
-from popctl.core.state import record_domain_deletions
 from popctl.domain.models import ScannedEntry
 from popctl.domain.protected import is_protected
 from popctl.filesystem import FilesystemOperator
@@ -70,31 +62,15 @@ from popctl.utils.formatting import (
     print_warning,
 )
 
+logger = logging.getLogger(__name__)
+
 app = typer.Typer(
     help="Full system synchronization.",
     invoke_without_command=True,
 )
 
 
-def _get_session_manager() -> SessionManager | None:
-    """Create a SessionManager for popctl, or None if djinn is not installed."""
-    try:
-        from djinn_in_a_box.sessions import SessionManager
-
-        return SessionManager("popctl")
-    except ImportError:
-        return None
-
-
 def _ensure_manifest() -> None:
-    """Auto-create manifest if it does not exist.
-
-    Reuses init logic: scans the system for manually installed packages,
-    creates a manifest, and saves it to the default config directory.
-
-    Raises:
-        typer.Exit: If manifest creation fails.
-    """
     if manifest_exists():
         return
 
@@ -102,7 +78,7 @@ def _ensure_manifest() -> None:
 
     scanners = get_available_scanners()
     if not scanners:
-        print_error("No package managers available (APT or Flatpak required).")
+        print_error("No package managers available (APT, Flatpak, or Snap required).")
         raise typer.Exit(code=1)
 
     source_names = [s.source.value.upper() for s in scanners]
@@ -179,7 +155,7 @@ def _invoke_advisor(
         print_warning(f"Could not create advisor workspace: {e}")
         return None
 
-    session = _get_session_manager()
+    session = get_session_manager()
     runner = AgentRunner(config, session=session)
 
     try:
@@ -218,16 +194,6 @@ def _invoke_advisor(
 
 
 def _run_advisor(diff_result: DiffResult, auto: bool, *, review: bool = False) -> None:
-    """Run AI advisor to classify NEW packages.
-
-    If the advisor produces decisions, they are applied to the manifest.
-    Advisor failures are non-fatal: a warning is printed and sync continues.
-
-    Args:
-        diff_result: Current diff result containing NEW packages.
-        auto: If True, run headless advisor; otherwise interactive.
-        review: If True, advisor reviews existing classifications.
-    """
     if review:
         print_info("Review mode: running advisor to review existing classifications...")
     else:
@@ -242,14 +208,6 @@ def _run_advisor(diff_result: DiffResult, auto: bool, *, review: bool = False) -
 
 
 def _apply_advisor_decisions(decisions: DecisionsResult) -> None:
-    """Apply advisor decisions to the manifest.
-
-    Mutates the manifest (add keep/remove entries), updates the
-    timestamp, and saves. Errors are non-fatal.
-
-    Args:
-        decisions: Parsed advisor decisions to apply.
-    """
     try:
         manifest = load_manifest()
     except ManifestError as e:
@@ -283,7 +241,6 @@ def _run_both_orphan_phases(
     no_filesystem: bool,
     no_configs: bool,
 ) -> None:
-    """Run orphan phases for both domains if enabled."""
     if not no_filesystem:
         _run_orphan_phases("filesystem", dry_run=dry_run, yes=yes, no_advisor=no_advisor, auto=auto)
     if not no_configs:
@@ -291,14 +248,11 @@ def _run_both_orphan_phases(
 
 
 def _move_failed_removes_to_keep(packages: list[str]) -> None:
-    """Move packages that failed removal from remove → keep in the manifest.
-
-    Prevents repeated failures on subsequent sync runs by accepting that
-    these packages cannot be removed (usually due to reverse dependencies).
-    """
     try:
         manifest = load_manifest()
-    except ManifestError:
+    except ManifestError as e:
+        logger.warning("Cannot auto-fix failed removes: %s", e)
+        print_warning(f"Could not move failed removes to keep: {e}")
         return
 
     moved: list[str] = []
@@ -331,26 +285,6 @@ def _sync_packages(
     auto: bool,
     review: bool,
 ) -> bool:
-    """Run the package synchronization pipeline.
-
-    Encapsulates diff, advisor, action execution, and history recording.
-    Domain orphan phases are intentionally NOT called here; the caller
-    (``sync()``) runs them once after this function returns.
-
-    Args:
-        source: Package source filter (apt, flatpak, or all).
-        yes: If True, skip confirmation prompts.
-        dry_run: If True, show diff only without executing.
-        purge: If True, use purge instead of remove for APT packages.
-        no_advisor: If True, skip AI advisor classification.
-        auto: If True, use headless advisor instead of interactive.
-
-    Returns:
-        True if any executed action failed, False otherwise.
-
-    Raises:
-        typer.Exit: If the user aborts at the confirmation prompt (code=0).
-    """
     # Phase 2: Compute diff
     diff_result = compute_system_diff(source)
 
@@ -457,7 +391,7 @@ def sync(
         typer.Option(
             "--source",
             "-s",
-            help="Package source to sync: apt, flatpak, or all.",
+            help="Package source to sync: apt, flatpak, snap, or all.",
             case_sensitive=False,
         ),
     ] = SourceChoice.ALL,
@@ -466,7 +400,7 @@ def sync(
         typer.Option(
             "--purge",
             "-p",
-            help="Use purge instead of remove for APT packages (removes config files).",
+            help="Use purge instead of remove for APT/Snap packages (removes config files).",
         ),
     ] = False,
     no_advisor: Annotated[
@@ -604,26 +538,17 @@ def _run_orphan_phases(
     no_advisor: bool,
     auto: bool,
 ) -> None:
-    """Generic pipeline for domain orphan scanning and cleanup.
-
-    Handles both filesystem (phases 9-13) and config (phases 14-18)
-    domains. Dispatches to domain-specific functions for scan, advisor,
-    apply, and cleanup operations. All failures are non-fatal.
-
-    Args:
-        domain: Which domain to process.
-        dry_run: If True, show findings but do not delete.
-        yes: If True, skip confirmation prompts.
-        no_advisor: If True, skip advisor classification.
-        auto: If True, use headless advisor instead of interactive.
-    """
     is_fs = domain == "filesystem"
     display = "filesystem" if is_fs else "config"
     label = display.capitalize()
 
     # Scan
     console.print(f"\n[bold]{label} Scan[/bold]")
-    orphans: list[ScannedEntry] = _domain_scan(domain)
+    orphans = _domain_scan(domain)
+
+    if orphans is None:
+        print_warning(f"Skipping {display} phases due to scan failure.")
+        return
 
     if not orphans:
         print_info(f"No orphaned {display} entries found. Skipping {display} phases.")
@@ -650,48 +575,15 @@ def _run_orphan_phases(
 
     # Cleanup
     console.print(f"\n[bold]{label} Cleanup[/bold]")
-    deleted_paths = _domain_clean(domain, yes=yes)
-
-    # Record to history
-    if deleted_paths:
-        console.print(f"\n[bold]{label} History[/bold]")
-        _record_orphan_history(domain, deleted_paths)
+    _domain_clean(domain, yes=yes)
 
 
-def _record_orphan_history(
-    domain: Literal["filesystem", "configs"],
-    deleted_paths: list[str],
-) -> None:
-    """Record domain deletions to history.
-
-    Args:
-        domain: Which domain the deletions belong to.
-        deleted_paths: Paths that were successfully deleted.
-    """
-    display = "filesystem" if domain == "filesystem" else "config"
-
-    try:
-        record_domain_deletions(domain, deleted_paths, command="popctl sync")
-        print_info(f"{display.capitalize()} deletions recorded to history.")
-    except (OSError, RuntimeError) as e:
-        print_warning(f"Could not record {display} history: {e}")
-
-
-def _domain_scan(domain: Literal["filesystem", "configs"]) -> list[ScannedEntry]:
-    """Scan a domain for orphaned entries.
-
-    Args:
-        domain: Which domain to scan.
-
-    Returns:
-        List of orphan entries sorted by confidence (desc).
-        Empty list if the scan fails or finds nothing.
-    """
+def _domain_scan(domain: Literal["filesystem", "configs"]) -> list[ScannedEntry] | None:
     try:
         return collect_domain_orphans(domain)
     except (OSError, RuntimeError) as e:
         print_warning(f"{domain.capitalize()} scan failed: {e}")
-        return []
+        return None
 
 
 def _domain_run_advisor(
@@ -699,19 +591,6 @@ def _domain_run_advisor(
     orphans: list[ScannedEntry],
     auto: bool,
 ) -> DomainDecisions | None:
-    """Run advisor to classify domain orphans.
-
-    Converts scanner results to exchange model entries, invokes the
-    shared advisor workflow, and extracts the domain decisions.
-
-    Args:
-        domain: Which domain to classify.
-        orphans: List of orphaned entries from the scanner.
-        auto: If True, use headless advisor mode.
-
-    Returns:
-        Domain decisions or None if advisor is unavailable/fails.
-    """
     entries: list[dict[str, Any]] = []
     for p in orphans:
         d = {k: v for k, v in p.to_dict().items() if v is not None}
@@ -735,15 +614,6 @@ def _domain_apply_decisions(
     domain: Literal["filesystem", "configs"],
     decisions: DomainDecisions,
 ) -> None:
-    """Apply advisor decisions to the manifest for a domain.
-
-    Thin CLI wrapper around apply_domain_decisions_to_manifest() that
-    handles manifest I/O and user-facing output.
-
-    Args:
-        domain: Which domain section to update ("filesystem" or "configs").
-        decisions: Domain decisions from the advisor.
-    """
     try:
         manifest = load_manifest()
     except ManifestError as e:
@@ -772,20 +642,7 @@ def _domain_apply_decisions(
             console.print(f"  [dim]-[/dim] {decision.path}: {decision.reason}")
 
 
-def _domain_clean(domain: Literal["filesystem", "configs"], *, yes: bool) -> list[str]:
-    """Delete paths marked for removal in manifest for a given domain.
-
-    Loads the manifest, finds paths in the domain's ``[*.remove]``
-    section, prompts for confirmation (unless ``--yes``), then
-    delegates deletion to the appropriate operator.
-
-    Args:
-        domain: Which domain to clean ("filesystem" or "configs").
-        yes: If True, skip confirmation prompt.
-
-    Returns:
-        List of paths that were successfully deleted.
-    """
+def _domain_clean(domain: Literal["filesystem", "configs"], *, yes: bool) -> None:
     is_fs = domain == "filesystem"
     label = "filesystem" if is_fs else "config"
 
@@ -793,12 +650,12 @@ def _domain_clean(domain: Literal["filesystem", "configs"], *, yes: bool) -> lis
         manifest = load_manifest()
     except ManifestError as e:
         print_warning(f"Could not load manifest for {label} cleanup: {e}")
-        return []
+        return
 
-    remove_paths = manifest.get_fs_remove_paths() if is_fs else manifest.get_config_remove_paths()
+    remove_paths = manifest.get_domain_remove(domain)
     if not remove_paths:
         print_info(f"No {label} entries marked for removal.")
-        return []
+        return
 
     # Filter out protected paths (defense-in-depth: operators also check)
     paths_to_delete: list[str] = []
@@ -809,7 +666,7 @@ def _domain_clean(domain: Literal["filesystem", "configs"], *, yes: bool) -> lis
         paths_to_delete.append(path_str)
     if not paths_to_delete:
         print_info(f"No unprotected {label} entries to delete.")
-        return []
+        return
     print_info(f"{len(paths_to_delete)} {label} path(s) marked for removal.")
 
     if not yes:
@@ -821,7 +678,7 @@ def _domain_clean(domain: Literal["filesystem", "configs"], *, yes: bool) -> lis
         )
         if not confirmed:
             print_info(f"{label.capitalize()} cleanup skipped.")
-            return []
+            return
 
     operator = FilesystemOperator() if is_fs else ConfigOperator()
     results = operator.delete(paths_to_delete)
@@ -832,27 +689,13 @@ def _domain_clean(domain: Literal["filesystem", "configs"], *, yes: bool) -> lis
     if successful:
         if not is_fs:
             for r_ok in results:
-                backup = getattr(r_ok, "backup_path", None)
+                backup = r_ok.backup_path
                 if r_ok.success and backup:
                     print_info(f"Backed up {r_ok.path} -> {backup}")
         print_success(f"Deleted {len(successful)} {label} path(s).")
 
-        # Remove successfully deleted paths from manifest.
-        # Use original paths_to_delete (tilde form) as manifest keys,
-        # not result.path (expanded by operator to absolute form).
-        section = manifest.filesystem if is_fs else manifest.configs
-        if section:
-            for result, original_path in zip(results, paths_to_delete, strict=True):
-                if result.success:
-                    section.remove.pop(original_path, None)
-            manifest.meta.updated = datetime.now(UTC)
-            try:
-                save_manifest(manifest)
-            except (OSError, ManifestError) as e:
-                print_warning(f"Could not update manifest after {label} cleanup: {e}")
+        post_clean_update(manifest, domain, results, paths_to_delete, command="popctl sync")
 
     if failed:
         for r in failed:
             print_warning(f"Failed to delete {r.path}: {r.error}")
-
-    return successful

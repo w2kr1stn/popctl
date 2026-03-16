@@ -1,9 +1,3 @@
-"""Backup and restore CLI commands.
-
-Provides commands to create encrypted system snapshots, restore them
-on fresh installations, and manage existing backups.
-"""
-
 from typing import Annotated
 
 import typer
@@ -235,11 +229,13 @@ def list_backups(
     console.print(f"\n[bold]Available backups ({len(backups)}):[/bold]")
     for name in backups:
         # Parse hostname and timestamp from filename
-        # Format: popctl-backup-{hostname}-{YYYYMMDD-HHMMSS}.tar.zst.age
-        parts = name.replace(".tar.zst.age", "").split("-", 3)
-        if len(parts) >= 4:
-            hostname = parts[2]
-            timestamp = parts[3]
+        # Format: popctl-backup-{hostname}-{YYYYMMDD}-{HHMMSS}.tar.zst.age
+        stem = name.replace(".tar.zst.age", "")
+        # Split from right: last 2 parts are date and time
+        parts = stem.rsplit("-", 2)
+        if len(parts) == 3:
+            hostname = parts[0].removeprefix("popctl-backup-")
+            timestamp = f"{parts[1]}-{parts[2]}"
             console.print(f"  {name}  [dim]({hostname}, {timestamp})[/dim]")
         else:
             console.print(f"  {name}")

@@ -231,7 +231,6 @@ class TestInitManifestContent:
 
         # Check system
         assert "name" in data["system"]
-        assert data["system"]["base"] == "pop-os-24.04"
 
         # Check packages
         assert "keep" in data["packages"]

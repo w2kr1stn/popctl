@@ -1,9 +1,3 @@
-"""APT package scanner implementation.
-
-Scans installed packages using dpkg-query and determines
-installation status using apt-mark.
-"""
-
 import logging
 from collections.abc import Iterator
 
@@ -15,12 +9,6 @@ logger = logging.getLogger(__name__)
 
 
 class AptScanner(Scanner):
-    """Scanner for APT/dpkg packages.
-
-    Uses dpkg-query to list installed packages and apt-mark
-    to distinguish between manually and automatically installed packages.
-    """
-
     # dpkg-query format: Status, Package, Version, Installed-Size (KB), Description
     # Status field filters out packages in 'config-files' or 'not-installed' state
     # that linger in the dpkg database after apt-get remove (but not purge).
@@ -31,18 +19,9 @@ class AptScanner(Scanner):
     source = PackageSource.APT
 
     def is_available(self) -> bool:
-        """Check if dpkg and apt-mark are available."""
         return command_exists("dpkg-query") and command_exists("apt-mark")
 
     def scan(self) -> Iterator[ScannedPackage]:
-        """Scan all installed APT packages.
-
-        Yields:
-            ScannedPackage for each installed package.
-
-        Raises:
-            RuntimeError: If dpkg-query or apt-mark commands fail.
-        """
         if not self.is_available():
             msg = "APT package manager is not available on this system"
             raise RuntimeError(msg)
@@ -68,14 +47,6 @@ class AptScanner(Scanner):
                 yield package
 
     def _get_auto_installed(self) -> set[str]:
-        """Get set of package names that were auto-installed.
-
-        Returns:
-            Set of package names marked as automatically installed.
-
-        Raises:
-            RuntimeError: If apt-mark showauto command fails.
-        """
         result = run_command(["apt-mark", "showauto"])
         if not result.success:
             # Do not silently continue - the data would be unreliable
@@ -89,15 +60,6 @@ class AptScanner(Scanner):
         line: str,
         auto_packages: set[str],
     ) -> ScannedPackage | None:
-        """Parse a single line of dpkg-query output.
-
-        Args:
-            line: Tab-separated line from dpkg-query.
-            auto_packages: Set of auto-installed package names.
-
-        Returns:
-            ScannedPackage if parsing succeeds, None otherwise.
-        """
         # First field is dpkg status — skip anything not fully installed
         dpkg_status, _, remainder = line.partition("\t")
         if dpkg_status.strip() != "installed":
@@ -136,19 +98,8 @@ class AptScanner(Scanner):
 
 
 def get_reverse_deps(packages: list[str]) -> dict[str, list[str]]:
-    """Get installed reverse dependencies for a list of APT packages.
-
-    Calls ``apt-cache rdepends --installed`` for each package and parses
-    the output. Skips virtual-package markers and self-references.
-
-    Args:
-        packages: Package names to query.
-
-    Returns:
-        Mapping of package name → list of installed packages that depend on it.
-        Packages with no reverse deps or query failures are omitted.
-    """
     if not command_exists("apt-cache"):
+        logger.warning("apt-cache not available — skipping reverse dependency enrichment")
         return {}
 
     rdeps: dict[str, list[str]] = {}
@@ -156,6 +107,7 @@ def get_reverse_deps(packages: list[str]) -> dict[str, list[str]]:
     for pkg in packages:
         result = run_command(["apt-cache", "rdepends", "--installed", pkg], timeout=10.0)
         if not result.success:
+            logger.debug("apt-cache rdepends failed for %s: %s", pkg, result.stderr.strip())
             continue
 
         dependents: list[str] = []

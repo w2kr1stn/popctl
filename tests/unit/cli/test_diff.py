@@ -11,6 +11,7 @@ import pytest
 from popctl.cli.main import app
 from popctl.core.diff import DiffEntry, DiffResult, DiffType
 from popctl.models.manifest import Manifest
+from popctl.models.package import PackageSource
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -26,9 +27,17 @@ def in_sync_result() -> DiffResult:
 def diff_result_with_changes() -> DiffResult:
     """Create a diff result with various changes."""
     return DiffResult(
-        new=(DiffEntry(name="htop", source="apt", diff_type=DiffType.NEW, version="3.2.2"),),
-        missing=(DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),),
-        extra=(DiffEntry(name="bloatware", source="apt", diff_type=DiffType.EXTRA, version="1.0"),),
+        new=(
+            DiffEntry(
+                name="htop", source=PackageSource.APT, diff_type=DiffType.NEW, version="3.2.2",
+            ),
+        ),
+        missing=(DiffEntry(name="vim", source=PackageSource.APT, diff_type=DiffType.MISSING),),
+        extra=(
+            DiffEntry(
+                name="bloatware", source=PackageSource.APT, diff_type=DiffType.EXTRA, version="1.0",
+            ),
+        ),
     )
 
 
@@ -230,7 +239,7 @@ class TestDiffJson:
 def test_diff_source_apt(sample_manifest: Manifest) -> None:
     """Diff --source apt only processes APT packages."""
     apt_result = DiffResult(
-        new=(DiffEntry(name="htop", source="apt", diff_type=DiffType.NEW),),
+        new=(DiffEntry(name="htop", source=PackageSource.APT, diff_type=DiffType.NEW),),
         missing=(),
         extra=(),
     )

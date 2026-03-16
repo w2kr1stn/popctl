@@ -1,9 +1,3 @@
-"""Pop!_OS baseline package definitions.
-
-This module defines protected packages and patterns that are essential
-for system operation and should never be removed.
-"""
-
 import fnmatch
 
 # Protected package name patterns (glob-style)
@@ -71,17 +65,6 @@ PROTECTED_PACKAGES: set[str] = {
 
 
 def is_package_protected(package_name: str) -> bool:
-    """Check if a package is protected and should not be removed.
-
-    A package is protected if it matches any of the protected patterns
-    or is in the explicit protected packages set.
-
-    Args:
-        package_name: Name of the package to check.
-
-    Returns:
-        True if the package is protected, False otherwise.
-    """
     # Check exact matches first (faster, case-insensitive)
     if package_name.lower() in PROTECTED_PACKAGES:
         return True

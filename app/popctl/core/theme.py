@@ -1,8 +1,3 @@
-"""Theme management for popctl CLI.
-
-Provides color theming via TOML configuration files with user override support.
-"""
-
 import functools
 import logging
 import sys
@@ -20,11 +15,6 @@ logger = logging.getLogger(__name__)
 
 
 class ThemeColors(BaseModel):
-    """Color configuration for popctl CLI.
-
-    All colors must be valid hex codes (#RRGGBB or #RGB).
-    """
-
     model_config = ConfigDict(extra="forbid")
 
     # Base colors
@@ -50,7 +40,6 @@ class ThemeColors(BaseModel):
     @field_validator("*", mode="before")
     @classmethod
     def validate_hex_color(cls, v: object, info: Any) -> str:
-        """Validate that all color values are valid hex codes."""
         if not isinstance(v, str):
             msg = f"{info.field_name}: color must be a string"
             raise ValueError(msg)
@@ -71,14 +60,6 @@ class ThemeColors(BaseModel):
 
 
 def _load_toml_colors(path: Path) -> dict[str, str] | None:
-    """Load colors section from a TOML file.
-
-    Args:
-        path: Path to the TOML file.
-
-    Returns:
-        Dictionary of color name to hex value, or None if loading failed.
-    """
     try:
         with open(path, "rb") as f:
             data = tomllib.load(f)
@@ -150,14 +131,6 @@ def load_theme() -> ThemeColors:
 
 @functools.cache
 def get_theme() -> Theme:
-    """Get the Rich theme, loading and caching it if necessary.
-
-    This is the primary entry point for getting the theme.
-    The theme is loaded once and cached for performance.
-
-    Returns:
-        Cached Rich Theme instance.
-    """
     colors = load_theme()
     styles: dict[str, str] = {
         # Direct color mappings

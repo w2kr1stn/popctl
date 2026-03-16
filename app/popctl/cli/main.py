@@ -1,8 +1,3 @@
-"""Main CLI application entry point.
-
-Defines the Typer application and global options.
-"""
-
 from typing import Annotated
 
 import typer
@@ -34,7 +29,6 @@ app = typer.Typer(
 
 
 def version_callback(value: bool) -> None:
-    """Print version and exit."""
     if value:
         typer.echo(f"popctl version {__version__}")
         raise typer.Exit()

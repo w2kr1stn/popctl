@@ -1,9 +1,3 @@
-"""Manifest file I/O operations.
-
-This module provides functions for loading, saving, and creating manifest files
-in TOML format with proper validation using Pydantic models.
-"""
-
 import os
 import socket
 import tomllib
@@ -27,20 +21,16 @@ from popctl.models.package import PackageStatus
 from popctl.scanners.base import Scanner
 
 
-class ManifestError(Exception):
-    """Base exception for manifest-related errors."""
+class ManifestError(Exception): ...
 
 
-class ManifestNotFoundError(ManifestError):
-    """Raised when manifest file is not found."""
+class ManifestNotFoundError(ManifestError): ...
 
 
-class ManifestParseError(ManifestError):
-    """Raised when manifest file cannot be parsed."""
+class ManifestParseError(ManifestError): ...
 
 
-class ManifestValidationError(ManifestError):
-    """Raised when manifest content is invalid."""
+class ManifestValidationError(ManifestError): ...
 
 
 def load_manifest(path: Path | None = None) -> Manifest:
@@ -112,7 +102,7 @@ def save_manifest(manifest: Manifest, path: Path | None = None) -> Path:
         ) as f:
             tmp_path = Path(f.name)
             tomli_w.dump(data, f)
-        # os.replace() is atomic on POSIX and handles cross-filesystem moves
+        # os.replace() is atomic on POSIX (same filesystem guaranteed by temp file in same dir)
         os.replace(str(tmp_path), str(manifest_path))
     except OSError as e:
         # Cleanup temp file on failure
@@ -124,14 +114,6 @@ def save_manifest(manifest: Manifest, path: Path | None = None) -> Path:
 
 
 def manifest_exists(path: Path | None = None) -> bool:
-    """Check if a manifest file exists.
-
-    Args:
-        path: Path to check. If None, uses default manifest path.
-
-    Returns:
-        True if the manifest file exists, False otherwise.
-    """
     manifest_path = path or get_manifest_path()
     return manifest_path.exists()
 
@@ -144,16 +126,6 @@ def manifest_exists(path: Path | None = None) -> bool:
 def collect_manual_packages(
     scanners: list[Scanner],
 ) -> tuple[dict[str, PackageEntry], list[str]]:
-    """Collect manually installed packages from all scanners.
-
-    Protected packages and auto-installed dependencies are filtered out.
-
-    Args:
-        scanners: List of Scanner instances to use.
-
-    Returns:
-        Tuple of (packages dict, list of skipped protected package names).
-    """
     packages: dict[str, PackageEntry] = {}
     skipped_protected: list[str] = []
 
@@ -180,33 +152,12 @@ def collect_manual_packages(
 def scan_and_create_manifest(
     scanners: list[Scanner],
 ) -> tuple[Manifest, dict[str, PackageEntry], list[str]]:
-    """Scan system and create a new manifest from manually installed packages.
-
-    Combines collect_manual_packages and create_manifest into a single call.
-
-    Args:
-        scanners: List of Scanner instances to use.
-
-    Returns:
-        Tuple of (manifest, packages dict, list of skipped protected names).
-
-    Raises:
-        RuntimeError: If scanning fails.
-    """
     packages, skipped = collect_manual_packages(scanners)
     manifest = create_manifest(packages)
     return manifest, packages, skipped
 
 
 def create_manifest(packages: dict[str, PackageEntry]) -> Manifest:
-    """Create a new manifest with the given packages.
-
-    Args:
-        packages: Dictionary of packages to include.
-
-    Returns:
-        New Manifest object.
-    """
     now = datetime.now(UTC)
 
     return Manifest(
@@ -216,7 +167,6 @@ def create_manifest(packages: dict[str, PackageEntry]) -> Manifest:
         ),
         system=SystemConfig(
             name=socket.gethostname(),
-            base="pop-os-24.04",
         ),
         packages=PackageConfig(
             keep=packages,

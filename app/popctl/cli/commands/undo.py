@@ -1,9 +1,3 @@
-"""Undo command for reverting last action.
-
-This module provides the `popctl undo` command for reversing the most
-recent reversible package management action.
-"""
-
 from typing import Annotated
 
 import typer
@@ -86,14 +80,6 @@ def undo(
 
 
 def _show_undo_preview(entry: HistoryEntry) -> None:
-    """Display preview of undo action.
-
-    Shows details about what action will be reversed, including the
-    action type, entry ID, timestamp, and affected packages.
-
-    Args:
-        entry: The history entry to preview.
-    """
     inverse_type = INVERSE_ACTION_TYPES.get(entry.action_type)
     inverse = inverse_type.value if inverse_type else "unknown"
 
@@ -110,17 +96,6 @@ def _show_undo_preview(entry: HistoryEntry) -> None:
 
 
 def _execute_undo(entry: HistoryEntry) -> bool:
-    """Execute the inverse actions.
-
-    Builds inverse actions from the history entry, filters protected
-    packages, and delegates to the shared execution pipeline.
-
-    Args:
-        entry: The history entry to undo.
-
-    Returns:
-        True if all operations succeeded, False otherwise.
-    """
     # Determine inverse action type
     if entry.action_type == HistoryActionType.INSTALL:
         inverse_action = ActionType.REMOVE

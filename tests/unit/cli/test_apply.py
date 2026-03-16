@@ -10,6 +10,7 @@ import pytest
 from popctl.cli.main import app
 from popctl.core.diff import DiffEntry, DiffResult, DiffType
 from popctl.models.manifest import Manifest
+from popctl.models.package import PackageSource
 from popctl.utils.shell import CommandResult
 from typer.testing import CliRunner
 
@@ -28,15 +29,19 @@ def diff_result_with_actions() -> DiffResult:
     return DiffResult(
         new=(
             # NEW packages are NOT actioned by apply
-            DiffEntry(name="htop", source="apt", diff_type=DiffType.NEW, version="3.2.2"),
+            DiffEntry(
+                name="htop", source=PackageSource.APT, diff_type=DiffType.NEW, version="3.2.2",
+            ),
         ),
         missing=(
             # MISSING packages -> INSTALL
-            DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),
+            DiffEntry(name="vim", source=PackageSource.APT, diff_type=DiffType.MISSING),
         ),
         extra=(
             # EXTRA packages -> REMOVE
-            DiffEntry(name="bloatware", source="apt", diff_type=DiffType.EXTRA, version="1.0"),
+            DiffEntry(
+                name="bloatware", source=PackageSource.APT, diff_type=DiffType.EXTRA, version="1.0",
+            ),
         ),
     )
 
@@ -183,7 +188,7 @@ class TestApplyExecution:
         """Apply executes install actions for missing packages."""
         missing_only = DiffResult(
             new=(),
-            missing=(DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),),
+            missing=(DiffEntry(name="vim", source=PackageSource.APT, diff_type=DiffType.MISSING),),
             extra=(),
         )
 
@@ -213,7 +218,9 @@ class TestApplyExecution:
         extra_only = DiffResult(
             new=(),
             missing=(),
-            extra=(DiffEntry(name="bloatware", source="apt", diff_type=DiffType.EXTRA),),
+            extra=(
+                DiffEntry(name="bloatware", source=PackageSource.APT, diff_type=DiffType.EXTRA),
+            ),
         )
 
         with (
@@ -242,7 +249,9 @@ class TestApplyExecution:
         extra_only = DiffResult(
             new=(),
             missing=(),
-            extra=(DiffEntry(name="bloatware", source="apt", diff_type=DiffType.EXTRA),),
+            extra=(
+                DiffEntry(name="bloatware", source=PackageSource.APT, diff_type=DiffType.EXTRA),
+            ),
         )
 
         with (
@@ -268,7 +277,7 @@ class TestApplyExecution:
 def test_apply_ignores_new_packages(sample_manifest: Manifest) -> None:
     """Apply does NOT remove NEW packages (not in manifest)."""
     new_only = DiffResult(
-        new=(DiffEntry(name="htop", source="apt", diff_type=DiffType.NEW),),
+        new=(DiffEntry(name="htop", source=PackageSource.APT, diff_type=DiffType.NEW),),
         missing=(),
         extra=(),
     )
@@ -306,7 +315,7 @@ def test_apply_source_apt_only(sample_manifest: Manifest) -> None:
     """Apply --source apt only processes APT packages."""
     apt_result = DiffResult(
         new=(),
-        missing=(DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),),
+        missing=(DiffEntry(name="vim", source=PackageSource.APT, diff_type=DiffType.MISSING),),
         extra=(),
     )
 
@@ -337,7 +346,9 @@ def test_apply_reports_failures(sample_manifest: Manifest) -> None:
     """Apply reports failed actions in results."""
     missing_only = DiffResult(
         new=(),
-        missing=(DiffEntry(name="nonexistent-pkg", source="apt", diff_type=DiffType.MISSING),),
+        missing=(
+            DiffEntry(name="nonexistent-pkg", source=PackageSource.APT, diff_type=DiffType.MISSING),
+        ),
         extra=(),
     )
 
@@ -371,7 +382,7 @@ class TestApplyHistory:
         """Apply records successful actions to history."""
         missing_only = DiffResult(
             new=(),
-            missing=(DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),),
+            missing=(DiffEntry(name="vim", source=PackageSource.APT, diff_type=DiffType.MISSING),),
             extra=(),
         )
 
@@ -424,8 +435,8 @@ class TestApplyHistory:
         mixed_result = DiffResult(
             new=(),
             missing=(
-                DiffEntry(name="vim", source="apt", diff_type=DiffType.MISSING),
-                DiffEntry(name="nonexistent", source="apt", diff_type=DiffType.MISSING),
+                DiffEntry(name="vim", source=PackageSource.APT, diff_type=DiffType.MISSING),
+                DiffEntry(name="nonexistent", source=PackageSource.APT, diff_type=DiffType.MISSING),
             ),
             extra=(),
         )

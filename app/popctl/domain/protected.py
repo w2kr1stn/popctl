@@ -1,10 +1,3 @@
-"""Protected path patterns for filesystem and config domains.
-
-Defines path patterns for directories and files that are critical for
-system operation, user security, or application state, and must be
-excluded from cleanup operations in each domain.
-"""
-
 import fnmatch
 from pathlib import Path
 from typing import Literal
@@ -86,19 +79,7 @@ PROTECTED_PATTERNS: dict[str, tuple[str, ...]] = {
 
 
 def is_protected(path: str, domain: Literal["filesystem", "configs"]) -> bool:
-    """Check if a path is protected in the given domain.
-
-    The path argument should be an absolute path (e.g., /home/user/.ssh/id_rsa).
-    Patterns using ~ notation are expanded to the actual home directory before
-    comparison using fnmatch for glob-style matching.
-
-    Args:
-        path: Absolute path to check.
-        domain: Domain to check against ("filesystem" or "configs").
-
-    Returns:
-        True if the path matches any protected pattern, False otherwise.
-    """
+    """Patterns use ~ notation, expanded to the real home dir before fnmatch."""
     home = str(Path.home())
 
     for pattern in PROTECTED_PATTERNS[domain]:
