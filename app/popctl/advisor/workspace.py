@@ -1,0 +1,404 @@
+from __future__ import annotations
+
+import json
+import logging
+import platform
+import shutil
+import socket
+import tomllib
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from popctl.advisor.prompts import build_session_claude_md
+from popctl.core.paths import ensure_dir, get_state_dir
+from popctl.scanners.apt import get_reverse_deps
+from popctl.utils.formatting import print_info
+
+logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from typing import Any
+
+    from popctl.models.package import ScannedPackage, ScanResult
+
+# Claude Code project-level permissions for ephemeral advisor workspaces.
+# Allow: all tools auto-approved (no manual confirmation).
+# Deny: comprehensive blacklist — deny always overrides allow.
+WORKSPACE_SETTINGS: dict[str, object] = {
+    "permissions": {
+        "allow": ["Bash", "Read", "Edit", "Write"],
+        "deny": [
+            # Deletion
+            "Bash(rm *)",
+            "Bash(* rm *)",
+            "Bash(rmdir *)",
+            "Bash(* rmdir *)",
+            "Bash(unlink *)",
+            "Bash(shred *)",
+            "Bash(truncate *)",
+            # Permissions / ownership
+            "Bash(chmod *)",
+            "Bash(chown *)",
+            "Bash(chgrp *)",
+            # Privilege escalation
+            "Bash(sudo *)",
+            "Bash(su *)",
+            "Bash(doas *)",
+            # Network
+            "Bash(curl *)",
+            "Bash(wget *)",
+            "Bash(nc *)",
+            "Bash(ssh *)",
+            "Bash(scp *)",
+            "Bash(rsync *)",
+            "Bash(telnet *)",
+            "Bash(ftp *)",
+            "Bash(nmap *)",
+            # System
+            "Bash(shutdown *)",
+            "Bash(reboot *)",
+            "Bash(halt *)",
+            "Bash(poweroff *)",
+            "Bash(systemctl *)",
+            "Bash(service *)",
+            "Bash(kill *)",
+            "Bash(killall *)",
+            "Bash(pkill *)",
+            # Package managers
+            "Bash(apt *)",
+            "Bash(apt-get *)",
+            "Bash(dpkg *)",
+            "Bash(pip *)",
+            "Bash(pip3 *)",
+            "Bash(npm *)",
+            "Bash(yarn *)",
+            "Bash(snap *)",
+            "Bash(flatpak *)",
+            "Bash(uv *)",
+            # Git remote
+            "Bash(git push *)",
+            "Bash(git remote *)",
+            "Bash(git clone *)",
+            "Bash(git fetch *)",
+            "Bash(git pull *)",
+            # Containers (no Docker-in-Docker)
+            "Bash(docker *)",
+            "Bash(podman *)",
+            # Dangerous shell constructs
+            "Bash(eval *)",
+            "Bash(exec *)",
+            "Bash(dd *)",
+            "Bash(mkfs *)",
+            "Bash(fdisk *)",
+            "Bash(mount *)",
+            "Bash(umount *)",
+        ],
+    },
+}
+
+
+def get_advisor_sessions_dir(*, use_djinn: bool = False) -> Path:
+    if use_djinn:
+        # Djinn bind-mounts this host path into sessions; it is its mount contract.
+        return Path.home() / ".djinn" / "sessions" / "popctl"
+    return get_state_dir() / "sessions"
+
+
+def ensure_advisor_sessions_dir(use_djinn: bool = False) -> Path:
+    return ensure_dir(
+        get_advisor_sessions_dir(use_djinn=use_djinn),
+        "advisor sessions",
+    )
+
+
+def create_session_workspace(
+    scan_result: ScanResult,
+    sessions_dir: Path,
+    manifest_path: Path | None = None,
+    system_info: dict[str, str] | None = None,
+    memory_path: Path | None = None,
+    filesystem_orphans: list[dict[str, Any]] | None = None,
+    config_orphans: list[dict[str, Any]] | None = None,
+    domain: str = "packages",
+    review: bool = False,
+) -> Path:
+    """Create an ephemeral workspace directory for a classification session.
+
+    Creates a timestamped subdirectory containing all files needed for
+    an interactive or headless classification session.
+
+    Args:
+        scan_result: Scan result with package data.
+        sessions_dir: Base directory for session workspaces.
+        manifest_path: Optional path to manifest file to copy.
+        system_info: Optional system context for CLAUDE.md.
+        memory_path: Optional path to persistent memory.md to copy.
+        filesystem_orphans: Optional filesystem orphan entries for FS advisor.
+        config_orphans: Optional config orphan entries for config advisor.
+        domain: Classification domain ("packages", "filesystem", or "configs").
+        review: If True, include review-specific instructions in CLAUDE.md.
+
+    Returns:
+        Path to the created session workspace directory.
+
+    Raises:
+        RuntimeError: If workspace cannot be created.
+    """
+    # Create timestamped session directory
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+    session_dir = sessions_dir / timestamp
+
+    try:
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / "output").mkdir(exist_ok=True)
+    except OSError as e:
+        msg = f"Cannot create session workspace at {session_dir}: {e}"
+        raise RuntimeError(msg) from e
+
+    # Build system info if not provided
+    if system_info is None:
+        try:
+            os_name = platform.freedesktop_os_release()["PRETTY_NAME"]
+        except OSError:
+            os_name = "Unknown"
+
+        system_info = {
+            "hostname": socket.gethostname(),
+            "os": os_name,
+        }
+
+    # Build summary from packages
+    summary = _build_summary(scan_result)
+
+    # Write CLAUDE.md
+    claude_md_content = build_session_claude_md(
+        system_info=system_info,
+        summary=summary,
+        domain=domain,
+        review=review,
+    )
+    try:
+        (session_dir / "CLAUDE.md").write_text(claude_md_content, encoding="utf-8")
+    except OSError as e:
+        msg = f"Failed to write CLAUDE.md: {e}"
+        raise RuntimeError(msg) from e
+
+    # Write scan.json — enrich rdepends for packages domain only.
+    # In review mode, query ALL packages; otherwise only NEW ones (not in manifest).
+    enrich_rdepends = domain == "packages"
+    rdepends_filter: set[str] | None = None
+    if (
+        enrich_rdepends
+        and not review
+        and manifest_path is not None
+        and manifest_path.exists()
+    ):
+        try:
+            raw = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+            pkgs = raw.get("packages", {})
+            rdepends_filter = set(pkgs.get("keep", {})) | set(pkgs.get("remove", {}))
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            logger.warning(
+                "Could not read manifest for rdepends filter, enriching all packages: %s",
+                e,
+            )
+
+    if enrich_rdepends:
+        skip = rdepends_filter or set()
+        apt_count = sum(
+            1 for p in scan_result
+            if p.source.value == "apt" and p.name not in skip
+        )
+        if apt_count:
+            print_info(f"Querying reverse dependencies for {apt_count} APT package(s)...")
+
+    scan_data = _build_scan_data(
+        scan_result, system_info, summary, filesystem_orphans, config_orphans,
+        enrich_rdepends=enrich_rdepends,
+        rdepends_filter=rdepends_filter or None,
+    )
+    try:
+        with (session_dir / "scan.json").open("w", encoding="utf-8") as f:
+            json.dump(scan_data, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        msg = f"Failed to write scan.json: {e}"
+        raise RuntimeError(msg) from e
+
+    # Copy manifest if it exists
+    if manifest_path is not None and manifest_path.exists():
+        try:
+            shutil.copy2(manifest_path, session_dir / "manifest.toml")
+        except OSError as e:
+            # Non-critical — log but don't fail
+            logging.getLogger(__name__).warning("Could not copy manifest to workspace: %s", e)
+
+    # Copy memory.md for cross-session learning
+    _copy_memory_to_workspace(memory_path, session_dir)
+
+    # Write Claude Code permissions (auto-allow with deny blacklist)
+    settings_dir = session_dir / ".claude"
+    settings_dir.mkdir(exist_ok=True)
+    try:
+        (settings_dir / "settings.json").write_text(
+            json.dumps(WORKSPACE_SETTINGS, indent=2), encoding="utf-8"
+        )
+    except OSError as e:
+        msg = f"Failed to write settings.json: {e}"
+        raise RuntimeError(msg) from e
+
+    return session_dir
+
+
+def _build_scan_data(
+    scan_result: ScanResult,
+    system_info: dict[str, str],
+    summary: dict[str, int],
+    filesystem_orphans: list[dict[str, Any]] | None,
+    config_orphans: list[dict[str, Any]] | None,
+    *,
+    enrich_rdepends: bool = False,
+    rdepends_filter: set[str] | None = None,
+) -> dict[str, object]:
+    pkg_entries: list[dict[str, object]] = [
+        {
+            k: v
+            for k, v in {
+                "name": p.name,
+                "source": p.source.value,
+                "version": p.version,
+                "status": p.status.value,
+                "description": p.description,
+                "size_bytes": p.size_bytes,
+            }.items()
+            if v is not None
+        }
+        for p in scan_result
+    ]
+
+    # Enrich APT packages with reverse-dependency data (packages domain only).
+    # When rdepends_filter is set, only query packages NOT in the manifest
+    # to avoid slow apt-cache calls for hundreds of already-classified packages.
+    if enrich_rdepends:
+        skip = rdepends_filter or set()
+        apt_names = [
+            p.name for p in scan_result
+            if p.source.value == "apt" and p.name not in skip
+        ]
+        rdeps = get_reverse_deps(apt_names) if apt_names else {}
+        if rdeps:
+            for entry in pkg_entries:
+                name = entry.get("name")
+                if entry.get("source") == "apt" and isinstance(name, str) and name in rdeps:
+                    entry["rdepends"] = rdeps[name]
+
+    data: dict[str, object] = {
+        "scan_date": datetime.now(UTC).isoformat(),
+        "system": system_info,
+        "summary": summary,
+        "packages": {"unknown": pkg_entries},
+    }
+    if filesystem_orphans:
+        data["filesystem_orphans"] = filesystem_orphans
+    if config_orphans:
+        data["config_orphans"] = config_orphans
+    return data
+
+
+def _build_summary(packages: tuple[ScannedPackage, ...]) -> dict[str, int]:
+    summary: dict[str, int] = {}
+    manual_count = 0
+    auto_count = 0
+
+    for pkg in packages:
+        source_key = pkg.source.value
+        summary[source_key] = summary.get(source_key, 0) + 1
+        if pkg.is_manual:
+            manual_count += 1
+        else:
+            auto_count += 1
+
+    summary["total"] = len(packages)
+    summary["manual"] = manual_count
+    summary["auto"] = auto_count
+    return summary
+
+
+_MEMORY_SIZE_WARN_KB = 50
+
+
+def _copy_memory_to_workspace(
+    memory_path: Path | None,
+    session_dir: Path,
+) -> None:
+    logger = logging.getLogger(__name__)
+
+    if memory_path is None or not memory_path.exists():
+        return
+
+    try:
+        shutil.copy2(memory_path, session_dir / "memory.md")
+    except OSError as e:
+        logger.warning("Could not copy memory.md to workspace: %s", e)
+        return
+
+    # Warn if memory.md is getting large
+    size_kb = memory_path.stat().st_size / 1024
+    if size_kb > _MEMORY_SIZE_WARN_KB:
+        logger.warning(
+            "memory.md is %.1f KB (recommended max: %d KB)", size_kb, _MEMORY_SIZE_WARN_KB
+        )
+
+
+def find_all_unapplied_decisions(sessions_dir: Path) -> list[Path]:
+    if not sessions_dir.exists():
+        return []
+
+    unapplied: list[Path] = []
+    for session_dir in list_sessions(sessions_dir):
+        decisions_path = session_dir / "output" / "decisions.toml"
+        if decisions_path.exists():
+            unapplied.append(decisions_path)
+
+    # list_sessions returns newest-first; reverse for chronological apply
+    unapplied.reverse()
+    return unapplied
+
+
+def delete_session(decisions_path: Path) -> None:
+    logger = logging.getLogger(__name__)
+    # decisions_path is <session_dir>/output/decisions.toml
+    session_dir = decisions_path.parent.parent
+    try:
+        shutil.rmtree(session_dir)
+        logger.debug("Deleted applied session %s", session_dir.name)
+    except OSError as e:
+        logger.warning("Could not delete session %s: %s", session_dir.name, e)
+
+
+def cleanup_empty_sessions(sessions_dir: Path) -> int:
+    if not sessions_dir.exists():
+        return 0
+
+    logger = logging.getLogger(__name__)
+    removed = 0
+
+    for session_dir in list_sessions(sessions_dir):
+        decisions_path = session_dir / "output" / "decisions.toml"
+        if not decisions_path.exists():
+            try:
+                shutil.rmtree(session_dir)
+                logger.debug("Cleaned up empty session %s", session_dir.name)
+                removed += 1
+            except OSError as e:
+                logger.warning("Could not clean up session %s: %s", session_dir.name, e)
+
+    return removed
+
+
+def list_sessions(sessions_dir: Path) -> list[Path]:
+    if not sessions_dir.exists():
+        return []
+
+    sessions = [d for d in sessions_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
+    return sorted(sessions, key=lambda d: d.name, reverse=True)

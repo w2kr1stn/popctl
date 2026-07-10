@@ -1,0 +1,20 @@
+# popctl desktop alerts — systemd *user* service.
+#
+# Install with:
+#   popctl alerts install-service
+#
+# Runs with your graphical desktop session.
+
+[Unit]
+Description=popctl desktop alerts
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart={{ popctl_executable }} alerts watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

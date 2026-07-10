@@ -1,0 +1,1 @@
+Read scan.json, CLAUDE.md, and memory.md (if present). Start with Phase 0: briefly introduce yourself and present the agenda. Then follow the workflow in CLAUDE.md strictly, phase by phase.

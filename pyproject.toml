@@ -1,0 +1,140 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.sdist]
+include = ["app/popctl"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app/popctl"]
+
+[tool.hatch.build.targets.wheel.sources]
+"app" = ""
+
+[project]
+name = "popctl"
+version = "0.1.0"
+description = "Declarative system configuration for Debian/Ubuntu-based (APT) systems such as Pop!_OS"
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+authors = [{ name = "w2kr1stn" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Systems Administration",
+]
+keywords = [
+    "pop-os",
+    "apt",
+    "declarative",
+    "system-configuration",
+    "package-management",
+]
+dependencies = [
+    "typer>=0.15.0",
+    "rich>=14.0.0",
+    "pydantic>=2.11.0",
+    "tomli-w>=1.0.0",
+    "websocket-client>=1.9.0",
+]
+
+[project.optional-dependencies]
+agent = ["djinn-in-a-box"]
+
+[tool.uv.sources]
+djinn-in-a-box = { git = "https://github.com/w2kr1stn/djinn_in_a_box" }
+
+[dependency-groups]
+dev = [
+    "bandit>=1.8.3",
+    "mypy>=1.19.1",
+    "pyright>=1.1.408",
+    "pytest>=9.0.2",
+    "pytest-cov>=6.1.0",
+    "pytest-mock>=3.14.0",
+    "pytest-timeout>=2.4.0",
+    "ruff>=0.14.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/w2kr1stn/popctl"
+Repository = "https://github.com/w2kr1stn/popctl"
+
+[project.scripts]
+popctl = "popctl.cli.main:app"
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "N",   # pep8-naming
+    "B",   # flake8-bugbear
+    "I",   # isort
+    "UP",  # pyupgrade
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "B008", # FastAPI Depends() pattern in argument defaults
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.pyright]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+extraPaths = ["app"]
+reportMissingImports = true
+reportMissingTypeStubs = false
+reportUnusedImport = true
+reportUnusedVariable = true
+reportUnusedFunction = "warning"
+reportPrivateUsage = "warning"
+reportConstantRedefinition = "error"
+reportIncompatibleMethodOverride = "error"
+reportIncompatibleVariableOverride = "error"
+reportGeneralTypeIssues = "error"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["app"]
+addopts = "-ra -q --cov=popctl --cov-report=term-missing"
+filterwarnings = ["ignore::DeprecationWarning"]
+# Fail individual tests loudly instead of hanging forever if one ever reaches a
+# real external binary (e.g. an agent CLI) — unit tests must never block.
+timeout = 60
+timeout_method = "signal"
+
+[tool.coverage.run]
+source = ["app/popctl"]
+branch = true
+
+[tool.coverage.report]
+# Floor at the approved baseline (82% at W5 acceptance) minus one point of
+# rounding headroom — a coverage regression fails pytest and therefore CI.
+fail_under = 81
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+
+[tool.bandit]
+exclude_dirs = [".venv", "venv", "tests"]
+skips = []
+# Fail the build on Medium and High severity findings
+# Run with: uv run bandit -c pyproject.toml -r .

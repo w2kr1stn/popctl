@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.ruff_cache/
+
+# Virtual environments
+.venv
+
+# Test/Coverage artifacts
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Coding Agents
+.claude/
+CLAUDE.md
+PLAN.md
+TASKS.yml

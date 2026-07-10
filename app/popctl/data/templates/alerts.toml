@@ -1,0 +1,38 @@
+# Example popctl desktop-alerts config.
+# Copy to ~/.config/popctl/alerts.toml and adjust.
+
+# WebSocket endpoint of a compatible alert sink (e.g. a nanobot instance).
+ws_url = "ws://alert-host.example:8765/"
+
+# Static WS token, if the alert sink requires one (?token=).
+# token = "your-shared-secret"
+
+# Must match the channel identifier configured on the alert sink.
+chat_id = "desktop-alerts"
+client_id = "desktop-alerts"
+
+# Sound players tried in order; the first present on PATH is used. ffplay runs with
+# -nodisp -autoexit -loglevel quiet and mpv with --no-video --really-quiet --terminal=no.
+# Keep aplay last because it cannot play Ogg/Vorbis, including the bundled alert tone.
+sound_players = ["pw-play", "paplay", "canberra-gtk-play", "ffplay", "mpv", "aplay"]
+
+# Default sound played for every alert. Leave empty to use the bundled alert tone
+# that ships with popctl (recommended); set a path to override it.
+default_sound = ""
+
+# notify-send expire-time in ms. If omitted, it is 30000 (30 seconds) only when a
+# non-COSMIC desktop is detected; COSMIC, unknown, or unset desktop signals use 0 (persistent).
+# Set an explicit value to override the automatic default.
+# expire_ms = 0
+
+[sound_by_kind]
+# warning = "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga"
+
+# These names are sent by the alert server; do not rename them.
+# urgency=critical gives these alerts the highest notification priority.
+# A provided table replaces the all-critical default wholesale; unset kinds
+# still default to critical at render time.
+[urgency_by_kind]
+preeve = "normal"
+pre = "critical"
+warning = "critical"
