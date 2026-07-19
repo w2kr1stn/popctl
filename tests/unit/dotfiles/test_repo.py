@@ -390,6 +390,65 @@ def test_checked_gateway_and_inbound_tree_reject_hard_secret_content(
             b'[network]\nProxy-Authorization = " Bearer opaque"\n',
             "proxy-auth",
         ),
+        (
+            ".config/tool/config",
+            b"curl -u $(printf alice:password) https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl --user `printf alice:password` https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl --user ${DOTFILES_CREDENTIAL} https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (".curlrc", b"proxy-u = alice:password\n", "curl-user-password"),
+        (".curlrc", b"use = alice:password\n", "curl-user-password"),
+        (
+            ".config/tool/config",
+            b"curl --proxy-u alice:password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl --use alice:password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"sh -c 'curl -u a:b https://example.invalid'\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"$(curl -u a:b https://example.invalid)\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"printf safe && curl -u a:b https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (".config/tool/config.json", b'["curl", "-u", "a:b"]\n', "curl-user-password"),
+        (".config/tool/config.yaml", b"- curl\n- -u\n- a:b\n", "curl-user-password"),
+        (
+            ".config/tool/config.toml",
+            b'argv = ["curl", "-u", "a:b"]\n',
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"note " + base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG") + b" tail\n",
+            "age-secret-key",
+        ),
+        (
+            ".config/tool/config",
+            b"b2s=\n" + base64.b64encode(b"Authorization: Bearer opaque-value"),
+            "authorization",
+        ),
     ],
 )
 def test_checked_gateway_rejects_structural_curl_and_base64_secret_variants(

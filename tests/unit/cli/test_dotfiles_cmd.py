@@ -971,7 +971,7 @@ def test_sync_pushes_a_local_ahead_tracked_path_addition(
 
 
 @pytest.mark.real_git
-def test_sync_recovers_plan_only_state_after_the_remote_advances_again(
+def test_sync_retires_completed_state_after_the_remote_advances_again(
     real_git: RealGitEnvironment,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -999,19 +999,18 @@ def test_sync_recovers_plan_only_state_after_the_remote_advances_again(
     monkeypatch.setattr(dotfiles, "_record_dotfiles_action", lambda *_args, **_kwargs: None)
     original_clear = state.clear_materialization_state
 
-    def crash_after_retiring_the_journal(
+    def crash_before_retiring_completed_state(
         operation: PlanOperation, state_dir: Path | None = None
     ) -> None:
-        get_completed_paths_journal_path(operation, state_dir).unlink()
-        raise DotfilesStateError("injected journal-retirement crash")
+        raise DotfilesStateError("injected completed-state retirement crash")
 
-    monkeypatch.setattr(state, "clear_materialization_state", crash_after_retiring_the_journal)
-    with pytest.raises(DotfilesStateError, match="journal-retirement"):
+    monkeypatch.setattr(state, "clear_materialization_state", crash_before_retiring_completed_state)
+    with pytest.raises(DotfilesStateError, match="completed-state retirement"):
         dotfiles._sync_online(repository, config, interactive=False)
 
     assert repository.ref_oid(MAIN_REF) == source_oid
     assert get_plan_path(PlanOperation.INBOUND_SYNC, state_dir).exists()
-    assert not get_completed_paths_journal_path(PlanOperation.INBOUND_SYNC, state_dir).exists()
+    assert get_completed_paths_journal_path(PlanOperation.INBOUND_SYNC, state_dir).exists()
     assert repository.conditional_advance_ref(REMOTE_MAIN_REF, newer_oid, source_oid)
     monkeypatch.setattr(state, "clear_materialization_state", original_clear)
 
@@ -1024,7 +1023,7 @@ def test_sync_recovers_plan_only_state_after_the_remote_advances_again(
 
 
 @pytest.mark.real_git
-def test_apply_retires_plan_only_state_before_preflighting_new_source(
+def test_apply_retires_completed_state_before_preflighting_new_source(
     real_git: RealGitEnvironment,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1033,19 +1032,18 @@ def test_apply_retires_plan_only_state_before_preflighting_new_source(
     state_dir = real_git.state_home / "popctl" / "dotfiles"
     original_clear = state.clear_materialization_state
 
-    def crash_after_retiring_the_journal(
+    def crash_before_retiring_completed_state(
         operation: PlanOperation, state_dir: Path | None = None
     ) -> None:
-        get_completed_paths_journal_path(operation, state_dir).unlink()
-        raise DotfilesStateError("injected journal-retirement crash")
+        raise DotfilesStateError("injected completed-state retirement crash")
 
-    monkeypatch.setattr(state, "clear_materialization_state", crash_after_retiring_the_journal)
-    with pytest.raises(DotfilesStateError, match="journal-retirement"):
+    monkeypatch.setattr(state, "clear_materialization_state", crash_before_retiring_completed_state)
+    with pytest.raises(DotfilesStateError, match="completed-state retirement"):
         dotfiles._apply_source(repository, config, dry_run=False)
 
     assert repository.ref_oid(MAIN_REF) == source_oid
     assert get_plan_path(PlanOperation.APPLY, state_dir).exists()
-    assert not get_completed_paths_journal_path(PlanOperation.APPLY, state_dir).exists()
+    assert get_completed_paths_journal_path(PlanOperation.APPLY, state_dir).exists()
     _write(real_git.home, b"newer remote\n")
     newer_oid = repository.checked_commit((_PATH,), "newer remote").commit_oid
     assert repository.conditional_advance_ref(REMOTE_MAIN_REF, newer_oid, source_oid)

@@ -20,6 +20,8 @@ from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 MAX_CANDIDATE_BYTES = 1_048_576
 MAX_BASE64_DEPTH = 2
 MIN_BASE64_RUN_LENGTH = 8
+MAX_BASE64_SUBSPAN_BOUNDARIES = 64
+MAX_SHELL_NESTING_DEPTH = 2
 
 PATH_DENY_PATTERNS: tuple[str, ...] = (
     ".ssh/**",
@@ -84,7 +86,7 @@ _CREDENTIALED_PROXY_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _CURL_USER_PATTERN = re.compile(
-    rb"^\s*(?:user|proxy-user)\s*=\s*['\"]?[^:\s'\"]+:[^\s'\"]+",
+    rb"^\s*(?:us(?:e(?:r)?)?|proxy-u(?:s(?:e(?:r)?)?)?)\s*=\s*['\"]?[^:\s'\"]+:[^\s'\"]+",
     re.IGNORECASE | re.MULTILINE,
 )
 _URL_USERINFO_PATTERN = re.compile(
@@ -96,6 +98,8 @@ _BASE64_RUN_PATTERN = re.compile(
 )
 _ASCII_WHITESPACE_PATTERN = re.compile(rb"[ \t\r\n\v\f]+")
 _SHELL_LINE_CONTINUATION_PATTERN = re.compile(r"\\\n")
+_SHELL_COMMAND_SUBSTITUTION_PATTERN = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
+_SHELL_OPERATOR_PATTERN = re.compile(r"&&|[;|]")
 _FIELD_NORMALIZATION_PATTERN = re.compile(r"[^a-z0-9]+")
 _CREDENTIAL_SHAPED_FIELD_PATTERN = re.compile(
     r"(?:pass(?:word)?|secret|token|key|credential|auth)",
@@ -149,6 +153,7 @@ class SecretVerdict:
 class _ParserInspection:
     scalar_forms: tuple[bytes, ...] = ()
     pair_forms: tuple[bytes, ...] = ()
+    argument_vectors: tuple[tuple[str, ...], ...] = ()
     ambiguous_fields: tuple[str, ...] = ()
     duplicate_credential_field: bool = False
     error_category: str | None = None
@@ -247,6 +252,8 @@ def scan_dotfile_bytes(
             SecretVerdictKind.DENIED_UNAMBIGUOUS_CONTENT,
             inspection.error_category,
         )
+    if _argument_vectors_have_curl_credentials(inspection.argument_vectors):
+        return SecretVerdict(SecretVerdictKind.DENIED_UNAMBIGUOUS_CONTENT, "curl-user-password")
 
     scalar_forms, scalar_too_deep = _expand_base64_forms(inspection.scalar_forms)
     hard_category = _first_hard_category(scalar_forms)
@@ -330,15 +337,44 @@ def _expand_base64_forms(initial_forms: Iterable[bytes]) -> tuple[tuple[bytes, .
 def _canonical_base64_candidates(value: bytes) -> Iterable[bytes]:
     candidates: set[bytes] = set()
     for match in _BASE64_RUN_PATTERN.finditer(value):
-        candidate = _ASCII_WHITESPACE_PATTERN.sub(b"", match.group(0))
-        if len(candidate) >= MIN_BASE64_RUN_LENGTH:
-            candidates.add(candidate)
+        for span in _base64_subspans(match.group(0)):
+            candidate = _ASCII_WHITESPACE_PATTERN.sub(b"", span)
+            if len(candidate) >= MIN_BASE64_RUN_LENGTH:
+                candidates.add(candidate)
     for candidate in sorted(candidates):
         if (
             len(candidate) <= MAX_CANDIDATE_BYTES
             and _decode_canonical_base64(candidate) is not None
         ):
             yield candidate
+
+
+def _base64_subspans(run: bytes) -> tuple[bytes, ...]:
+    spans: set[bytes] = {run}
+    starts = {0}
+    for match in _ASCII_WHITESPACE_PATTERN.finditer(run):
+        if len(starts) >= MAX_BASE64_SUBSPAN_BOUNDARIES:
+            break
+        starts.add(match.end())
+    for index, character in enumerate(run):
+        if len(starts) >= MAX_BASE64_SUBSPAN_BOUNDARIES:
+            break
+        if character == ord("="):
+            starts.add(index + 1)
+    for start in sorted(starts):
+        if start >= len(run):
+            continue
+        spans.add(run[start:])
+        whitespace = _ASCII_WHITESPACE_PATTERN.search(run, start)
+        if whitespace is not None:
+            spans.add(run[start : whitespace.start()])
+        padding = run.find(b"=", start)
+        if padding >= 0:
+            end = padding + 1
+            while end < len(run) and run[end] == ord("="):
+                end += 1
+            spans.add(run[start:end])
+    return tuple(spans)
 
 
 def _decode_canonical_base64(candidate: bytes) -> bytes | None:
@@ -406,14 +442,41 @@ def _has_curl_credentials(value: bytes) -> bool:
     logical_value = _SHELL_LINE_CONTINUATION_PATTERN.sub(
         "", value.decode("utf-8", errors="replace")
     )
-    for line in logical_value.splitlines():
-        arguments = _shell_arguments(line)
-        for index, argument in enumerate(arguments):
-            if argument.rsplit("/", 1)[-1] != "curl":
-                continue
-            if _curl_arguments_have_credentials(arguments[index + 1 :]):
+    return _shell_command_has_curl_credentials(logical_value, depth=0)
+
+
+def _shell_command_has_curl_credentials(command: str, *, depth: int) -> bool:
+    for fragment in _shell_command_fragments(command):
+        arguments = _shell_arguments(fragment)
+        if _arguments_have_curl_credentials(arguments):
+            return True
+        if depth >= MAX_SHELL_NESTING_DEPTH:
+            continue
+        for nested_command in _nested_shell_commands(fragment, arguments):
+            if _shell_command_has_curl_credentials(nested_command, depth=depth + 1):
                 return True
     return False
+
+
+def _shell_command_fragments(command: str) -> tuple[str, ...]:
+    return tuple(
+        fragment
+        for line in command.splitlines()
+        for fragment in _SHELL_OPERATOR_PATTERN.split(line)
+        if fragment.strip()
+    )
+
+
+def _nested_shell_commands(command: str, arguments: tuple[str, ...]) -> tuple[str, ...]:
+    nested: list[str] = []
+    for index, argument in enumerate(arguments):
+        if argument.rsplit("/", 1)[-1] not in {"sh", "bash", "dash", "ksh", "zsh"}:
+            continue
+        if index + 2 < len(arguments) and arguments[index + 1] == "-c":
+            nested.append(arguments[index + 2])
+    for match in _SHELL_COMMAND_SUBSTITUTION_PATTERN.finditer(command):
+        nested.append(match.group(1) or match.group(2))
+    return tuple(nested)
 
 
 def _shell_arguments(line: str) -> tuple[str, ...]:
@@ -428,6 +491,24 @@ def _shell_arguments(line: str) -> tuple[str, ...]:
             return tuple(line.split())
 
 
+def _arguments_have_curl_credentials(arguments: tuple[str, ...]) -> bool:
+    for index, argument in enumerate(arguments):
+        if argument.rsplit("/", 1)[-1] == "curl" and _curl_arguments_have_credentials(
+            arguments[index + 1 :]
+        ):
+            return True
+    return False
+
+
+def _argument_vectors_have_curl_credentials(argument_vectors: Iterable[tuple[str, ...]]) -> bool:
+    return any(
+        bool(arguments)
+        and arguments[0].rsplit("/", 1)[-1] == "curl"
+        and _curl_arguments_have_credentials(arguments[1:])
+        for arguments in argument_vectors
+    )
+
+
 def _curl_arguments_have_credentials(arguments: tuple[str, ...]) -> bool:
     for index, argument in enumerate(arguments):
         credential = _curl_credential_option_value(arguments, index, argument)
@@ -439,12 +520,11 @@ def _curl_arguments_have_credentials(arguments: tuple[str, ...]) -> bool:
 def _curl_credential_option_value(
     arguments: tuple[str, ...], index: int, argument: str
 ) -> str | None:
-    if argument in {"-u", "-U", "--user", "--proxy-user"}:
+    if argument in {"-u", "-U"} or _is_curl_user_option(argument):
         return _curl_next_option_value(arguments, index)
-    if argument.startswith("--user="):
-        return argument.removeprefix("--user=")
-    if argument.startswith("--proxy-user="):
-        return argument.removeprefix("--proxy-user=")
+    option, separator, attached = argument.partition("=")
+    if separator and _is_curl_user_option(option):
+        return attached
     if argument.startswith("-") and not argument.startswith("--"):
         short_options = argument[1:]
         for option_index, option in enumerate(short_options):
@@ -452,6 +532,18 @@ def _curl_credential_option_value(
                 attached = short_options[option_index + 1 :].removeprefix("=")
                 return attached or _curl_next_option_value(arguments, index)
     return None
+
+
+def _is_curl_user_option(argument: str) -> bool:
+    return argument in {
+        "--us",
+        "--use",
+        "--user",
+        "--proxy-u",
+        "--proxy-us",
+        "--proxy-use",
+        "--proxy-user",
+    }
 
 
 def _curl_next_option_value(arguments: tuple[str, ...], index: int) -> str | None:
@@ -465,6 +557,8 @@ def _curl_next_option_value(arguments: tuple[str, ...], index: int) -> str | Non
 
 def _is_user_password(value: str) -> bool:
     normalized = value.replace("'", "").replace('"', "")
+    if normalized.startswith(("$(", "${", "`")):
+        return True
     _, separator, password = normalized.partition(":")
     return bool(separator and password)
 
@@ -529,11 +623,14 @@ def _inspect_json(text: str) -> _ParserInspection:
     value = json.loads(text, object_pairs_hook=pairs_hook)
     scalars: list[bytes] = []
     pairs: list[bytes] = []
+    argument_vectors: list[tuple[str, ...]] = []
     ambiguous_fields: list[str] = []
     duplicate = _walk_json(value, scalars, pairs, ambiguous_fields)
+    _collect_argument_vectors(value, argument_vectors)
     return _ParserInspection(
         tuple(scalars),
         tuple(pairs),
+        tuple(argument_vectors),
         tuple(ambiguous_fields),
         duplicate,
     )
@@ -571,6 +668,7 @@ def _inspect_yaml(text: str) -> _ParserInspection:
     root = _compose_yaml(text)
     scalars: list[bytes] = []
     pairs: list[bytes] = []
+    argument_vectors: list[tuple[str, ...]] = []
     ambiguous_fields: list[str] = []
     duplicate = False
     if root is not None:
@@ -579,14 +677,17 @@ def _inspect_yaml(text: str) -> _ParserInspection:
         return _ParserInspection(
             tuple(scalars),
             tuple(pairs),
+            tuple(argument_vectors),
             tuple(ambiguous_fields),
             duplicate_credential_field=True,
         )
     semantic_value = _safe_load_yaml(text)
     _collect_semantic_scalars(semantic_value, scalars)
+    _collect_argument_vectors(semantic_value, argument_vectors)
     return _ParserInspection(
         tuple(scalars),
         tuple(pairs),
+        tuple(argument_vectors),
         tuple(ambiguous_fields),
         duplicate,
     )
@@ -655,9 +756,17 @@ def _inspect_toml(text: str) -> _ParserInspection:
     value = tomllib.loads(text)
     scalars: list[bytes] = []
     pairs: list[bytes] = []
+    argument_vectors: list[tuple[str, ...]] = []
     ambiguous_fields: list[str] = []
     _walk_mapping(value, scalars, pairs, ambiguous_fields)
-    return _ParserInspection(tuple(scalars), tuple(pairs), tuple(ambiguous_fields), duplicate)
+    _collect_argument_vectors(value, argument_vectors)
+    return _ParserInspection(
+        tuple(scalars),
+        tuple(pairs),
+        tuple(argument_vectors),
+        tuple(ambiguous_fields),
+        duplicate,
+    )
 
 
 def _inspect_dotenv(text: str) -> _ParserInspection:
@@ -673,7 +782,12 @@ def _inspect_dotenv(text: str) -> _ParserInspection:
         normalized_key = _normalize_field_name(key)
         if _is_credential_shaped_field(normalized_key):
             ambiguous_fields.append(normalized_key)
-    return _ParserInspection(tuple(scalars), tuple(pairs), tuple(ambiguous_fields), duplicate)
+    return _ParserInspection(
+        scalar_forms=tuple(scalars),
+        pair_forms=tuple(pairs),
+        ambiguous_fields=tuple(ambiguous_fields),
+        duplicate_credential_field=duplicate,
+    )
 
 
 def _parse_dotenv(text: str) -> tuple[tuple[str, str], ...]:
@@ -722,7 +836,12 @@ def _inspect_ini(text: str) -> _ParserInspection:
             normalized_key = _normalize_field_name(key)
             if _is_credential_shaped_field(normalized_key):
                 ambiguous_fields.append(normalized_key)
-    return _ParserInspection(tuple(scalars), tuple(pairs), tuple(ambiguous_fields), duplicate)
+    return _ParserInspection(
+        scalar_forms=tuple(scalars),
+        pair_forms=tuple(pairs),
+        ambiguous_fields=tuple(ambiguous_fields),
+        duplicate_credential_field=duplicate,
+    )
 
 
 def _preserve_option_case(optionstr: str) -> str:
@@ -766,6 +885,21 @@ def _collect_semantic_scalars(value: object, scalars: list[bytes]) -> None:
             _collect_semantic_scalars(item, scalars)
     else:
         _append_scalar(scalars, value)
+
+
+def _collect_argument_vectors(value: object, destination: list[tuple[str, ...]]) -> None:
+    if isinstance(value, _JsonObject):
+        for _, nested_value in value.pairs:
+            _collect_argument_vectors(nested_value, destination)
+    elif isinstance(value, dict):
+        for nested_value in cast("dict[object, object]", value).values():
+            _collect_argument_vectors(nested_value, destination)
+    elif isinstance(value, list):
+        items = cast("list[object]", value)
+        if all(isinstance(item, str) for item in items):
+            destination.append(tuple(cast("list[str]", items)))
+        for item in items:
+            _collect_argument_vectors(item, destination)
 
 
 def _pair_form(key: object, value: object) -> bytes:

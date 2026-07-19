@@ -69,12 +69,12 @@ from popctl.dotfiles.state import (
     clear_init_finalization_journal,
     complete_materialization_state,
     complete_materialization_state_for_source,
-    complete_plan_only_materialization_state_for_local_ref,
     dotfiles_lock,
     get_dotfiles_state_dir,
     get_plan_path,
     load_materialization_plan,
     recover_init_finalization,
+    retire_completed_materialization_state_for_local_ref,
     save_init_finalization_journal,
 )
 from popctl.models.history import HistoryActionType, HistoryItem, create_history_entry
@@ -934,7 +934,7 @@ def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: boo
         _refuse("Remote dotfiles main ref is absent.")
     local_oid = repo.ref_oid(MAIN_REF)
     if local_oid is not None:
-        complete_plan_only_materialization_state_for_local_ref(
+        retire_completed_materialization_state_for_local_ref(
             PlanOperation.INBOUND_SYNC,
             local_source_ref=local_oid,
             state_dir=_state_dir(),
@@ -1160,7 +1160,7 @@ def _apply_source(
     sources = _sources(repo, source_tree.entries)
     expected = repo.ref_oid(MAIN_REF)
     if not dry_run and expected is not None:
-        complete_plan_only_materialization_state_for_local_ref(
+        retire_completed_materialization_state_for_local_ref(
             PlanOperation.APPLY,
             local_source_ref=expected,
             state_dir=_state_dir(),

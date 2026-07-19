@@ -480,6 +480,34 @@ def complete_plan_only_materialization_state_for_local_ref(
     return True
 
 
+def retire_completed_materialization_state_for_local_ref(
+    operation: PlanOperation,
+    *,
+    local_source_ref: str,
+    state_dir: Path | None = None,
+) -> bool:
+    plan_path = get_plan_path(operation, state_dir)
+    journal_path = get_completed_paths_journal_path(operation, state_dir)
+    if not plan_path.exists():
+        return False
+    plan = load_materialization_plan(operation, state_dir)
+    if plan.source_ref != local_source_ref:
+        return False
+    if not journal_path.exists():
+        return complete_plan_only_materialization_state_for_local_ref(
+            operation,
+            local_source_ref=local_source_ref,
+            state_dir=state_dir,
+        )
+    complete_materialization_state_for_source(
+        operation,
+        source_ref=plan.source_ref,
+        source_tree_oid=plan.source_tree_oid,
+        state_dir=state_dir,
+    )
+    return True
+
+
 def resume_completed_path(
     plan: MaterializationPlan,
     entry: PlannedPath,

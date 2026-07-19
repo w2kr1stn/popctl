@@ -904,7 +904,7 @@ exposure, before staging, over complete committed and fetched trees, and before 
 
 1. Rejects canonical paths matching hard deny globs (keys, credential stores, browser login data,
    popctl state, and similar secret-bearing locations), non-regular files, oversized files, binary
-   data, and unreadable paths.
+   data, and unreadable paths. These key-material path classes are a hard guarantee.
 2. Normalizes line endings, examines raw assignment pairs, and applies hard recognizers for private
    key blocks, AGE keys, known tokens, authorization and Git extra headers, proxy credentials,
    curl credentials, and URL userinfo. Authorization and proxy-auth values remove enclosing quotes
@@ -913,18 +913,28 @@ exposure, before staging, over complete committed and fetched trees, and before 
 3. Parses JSON, YAML, TOML, dotenv, and selected INI files fail closed. Parsed scalars and key/value
    pairs re-enter the hard recognizers, including YAML's semantic scalars. Duplicate
    credential-shaped fields are a hard rejection rather than a last-value-wins ambiguity.
-4. Finds maximal standard or URL-safe base64-alphabet runs, collapses every interior ASCII whitespace
-   form, canonically decodes sufficiently long runs with recovered padding, and recursively scans to
-   depth two; a further decodable layer is rejected. This closes whitespace-grouped base64 without
+4. Finds maximal standard or URL-safe base64-alphabet runs and bounded valid subspans at whitespace
+   or `=` boundaries, collapses every interior ASCII whitespace form, canonically decodes sufficiently
+   long runs with recovered padding, and recursively scans to depth two; a further decodable layer is
+   rejected. This closes whitespace-grouped and common prose/interior-padding base64 without
    per-group-size grammar variants.
 5. Returns ambiguous findings only for an explicit canonical-path allowlist acknowledgement. An
    allowlist can never override a hard finding, malformed structured content, or an unsafe path.
 
 Curl command credentials are tokenized with POSIX shlex after backslash-newline continuation
 normalization, with the existing non-POSIX fallback. The parser covers user and proxy-user short,
-attached, clustered, and long option forms, including empty-user passwords. ANSI-C shell quoting
-is an intentionally documented best-effort defense-in-depth residual because Python shlex does not
-model that shell extension.
+attached, clustered, long, and unambiguous abbreviated option forms, including empty-user passwords,
+command-substituted values, bounded nested `sh -c` and substitution commands, operator-separated
+commands, and JSON/YAML/TOML argv arrays. The `.curlrc` matcher recognizes the corresponding user and
+proxy-user abbreviations.
+
+The embedded-credential content scanner is a conservative, fail-closed, best-effort
+defense-in-depth control, not a completeness guarantee. It covers all known raw credential/token
+formats, generic whitespace-obfuscated base64, and the common realistic shell/curl forms above.
+Novel encoding or prose-embedding obfuscations of a self-authored credential remain an accepted
+residual, mitigated by the private-repository model, advisor curation, and mandatory explicit
+per-file review during `init`. ANSI-C `$'...'` quoting and arbitrarily nested prose or encoding
+embeddings are the accepted residual class. This documented best-effort scanner boundary is frozen.
 
 ### Transport isolation
 

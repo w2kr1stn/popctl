@@ -457,6 +457,95 @@ def test_structural_curl_credential_options_are_not_allowlistable(content: bytes
 
 
 @pytest.mark.parametrize(
+    ("path", "content", "category"),
+    [
+        (
+            ".config/tool/config",
+            b"curl -u $(printf alice:password) https://example.invalid",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl --user `printf alice:password` https://example.invalid",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl --user ${DOTFILES_CREDENTIAL} https://example.invalid",
+            "curl-user-password",
+        ),
+        (
+            ".curlrc",
+            b"proxy-u = alice:password",
+            "curl-user-password",
+        ),
+        (
+            ".curlrc",
+            b"use = alice:password",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl --proxy-u alice:password https://example.invalid",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl --use alice:password https://example.invalid",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"sh -c 'curl -u a:b https://example.invalid'",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"$(curl -u a:b https://example.invalid)",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"printf safe && curl -u a:b https://example.invalid",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config.json",
+            b'["curl", "-u", "a:b"]',
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config.yaml",
+            b"- curl\n- -u\n- a:b\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config.toml",
+            b'argv = ["curl", "-u", "a:b"]',
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"note " + base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG") + b" tail",
+            "age-secret-key",
+        ),
+        (
+            ".config/tool/config",
+            b"b2s=\n" + base64.b64encode(b"Authorization: Bearer opaque-value"),
+            "authorization",
+        ),
+    ],
+)
+def test_realistic_curl_and_base64_embeddings_are_not_allowlistable(
+    path: str, content: bytes, category: str
+) -> None:
+    verdict = _scan(path, content, (path,))
+
+    assert verdict.kind is SecretVerdictKind.DENIED_UNAMBIGUOUS_CONTENT
+    assert verdict.category == category
+
+
+@pytest.mark.parametrize(
     ("key", "value", "category"),
     [
         ("Proxy-Authorization", " Bearer opaque", "proxy-auth"),

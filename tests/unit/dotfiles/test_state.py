@@ -25,6 +25,7 @@ from popctl.dotfiles.state import (
     record_completed_path,
     recover_init_finalization,
     resume_completed_path,
+    retire_completed_materialization_state_for_local_ref,
     save_init_finalization_journal,
 )
 
@@ -166,6 +167,41 @@ class TestMaterializationState:
 
         assert recovered
         assert not get_plan_path(operation, tmp_path).exists()
+
+    def test_retires_fully_completed_state_by_the_advanced_local_ref(
+        self, tmp_path: Path, operation: PlanOperation
+    ) -> None:
+        plan = replace(_plan(operation), source_ref="b" * 40)
+        prepare_materialization_plan(plan, tmp_path)
+        for entry in plan.entries:
+            record_completed_path(plan, entry.path, tmp_path)
+
+        retired = retire_completed_materialization_state_for_local_ref(
+            operation,
+            local_source_ref=plan.source_ref,
+            state_dir=tmp_path,
+        )
+
+        assert retired
+        assert not get_plan_path(operation, tmp_path).exists()
+        assert not get_completed_paths_journal_path(operation, tmp_path).exists()
+
+    def test_refuses_to_retire_incomplete_state_by_the_advanced_local_ref(
+        self, tmp_path: Path, operation: PlanOperation
+    ) -> None:
+        plan = replace(_plan(operation), source_ref="b" * 40)
+        prepare_materialization_plan(plan, tmp_path)
+        record_completed_path(plan, plan.entries[0].path, tmp_path)
+
+        with pytest.raises(DotfilesRecoveryError, match="materialization is incomplete"):
+            retire_completed_materialization_state_for_local_ref(
+                operation,
+                local_source_ref=plan.source_ref,
+                state_dir=tmp_path,
+            )
+
+        assert get_plan_path(operation, tmp_path).exists()
+        assert get_completed_paths_journal_path(operation, tmp_path).exists()
 
     def test_preserves_plan_only_state_when_the_local_ref_is_not_its_source(
         self, tmp_path: Path, operation: PlanOperation
