@@ -453,7 +453,7 @@ class TestRunHeadlessSession:
             result = runner.run_headless(tmp_path)
 
         assert result is host_result
-        mock_host.assert_called_once_with(tmp_path)
+        mock_host.assert_called_once_with(tmp_path, INITIAL_PROMPT)
         session.run_headless.assert_not_called()
         mock_warn.assert_called_once_with(
             "djinn session backend does not support api_key environment forwarding; "
@@ -536,7 +536,7 @@ class TestLaunchInteractiveSession:
             result = runner.launch_interactive(tmp_path)
 
         assert result is host_result
-        mock_host.assert_called_once_with(tmp_path)
+        mock_host.assert_called_once_with(tmp_path, INITIAL_PROMPT)
         session.run_interactive.assert_not_called()
         mock_warn.assert_called_once_with(
             "djinn session backend does not support api_key environment forwarding; "
@@ -597,6 +597,64 @@ class TestBuildCommands:
         assert mock_run.call_args.args[0][:2] == ["codex", "exec"]
         assert mock_run.call_args.kwargs["stdin"] is subprocess.DEVNULL
         assert mock_run.call_args.kwargs["env"]["OPENAI_API_KEY"] == "codex-key"
+
+    @pytest.mark.parametrize("provider", ["claude", "gemini", "codex"])
+    def test_custom_prompt_reaches_host_commands(self, provider: str) -> None:
+        prompt = "dotfiles prompt"
+        runner = AgentRunner(AdvisorConfig(provider=provider))
+
+        assert prompt in runner._build_headless_command(prompt)
+        assert prompt in runner._build_interactive_command(prompt)
+
+
+class TestCustomInitialPrompt:
+    @pytest.mark.parametrize("provider", ["claude", "gemini", "codex"])
+    def test_custom_prompt_reaches_host_headless_execution(
+        self, tmp_path: Path, provider: str
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "output").mkdir()
+        (workspace / "output" / "decisions.toml").write_text("[dotfiles]\n")
+        command_result = MagicMock(success=True, stdout="", stderr="", returncode=0)
+        runner = AgentRunner(AdvisorConfig(provider=provider))
+
+        with patch.object(runner, "_run_headless_command", return_value=command_result) as execute:
+            runner.run_headless(workspace, initial_prompt="dotfiles prompt")
+
+        assert "dotfiles prompt" in execute.call_args.args[0]
+
+    @pytest.mark.parametrize("provider", ["claude", "gemini", "codex"])
+    def test_custom_prompt_reaches_session_execution(self, tmp_path: Path, provider: str) -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "output").mkdir()
+        (workspace / "output" / "decisions.toml").write_text("[dotfiles]\n")
+        session = MagicMock()
+        session.run_headless.return_value = _FakeSessionResult(
+            returncode=0,
+            stdout="",
+            stderr="",
+            workspace_dir=workspace,
+        )
+        session.run_interactive.return_value = _FakeSessionResult(
+            returncode=0,
+            stdout="",
+            stderr="",
+            workspace_dir=workspace,
+        )
+        runner = AgentRunner(AdvisorConfig(provider=provider), session=session)
+
+        runner.run_headless(workspace, initial_prompt="dotfiles prompt")
+        runner.launch_interactive(workspace, initial_prompt="dotfiles prompt")
+
+        assert session.run_headless.call_args.kwargs["prompt"] == "dotfiles prompt"
+        assert session.run_interactive.call_args.kwargs["initial_prompt"] == "dotfiles prompt"
+
+    def test_custom_prompt_reaches_manual_instructions(self, tmp_path: Path) -> None:
+        result = AgentRunner(AdvisorConfig())._manual_instructions(tmp_path, "dotfiles prompt")
+
+        assert 'claude "dotfiles prompt"' in result.output
 
 
 # ── Persist memory ─────────────────────────────────────────────

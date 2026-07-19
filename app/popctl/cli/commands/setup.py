@@ -12,6 +12,7 @@ from popctl.advisor.config import (
     load_advisor_config,
     save_advisor_config,
 )
+from popctl.cli.commands.dotfiles import init as init_dotfiles
 from popctl.cli.commands.init import init_manifest
 from popctl.core.manifest import manifest_exists
 from popctl.core.paths import get_config_dir
@@ -53,7 +54,8 @@ def _print_static_guide() -> None:
     typer.echo("4. Set up optional alerts: popctl alerts init-config")
     typer.echo("5. Install the optional alerts service: popctl alerts install-service")
     typer.echo("6. Set up encrypted backups: popctl backup init")
-    typer.echo("7. Synchronize your system: popctl sync")
+    typer.echo("7. Set up private dotfiles: popctl dotfiles init")
+    typer.echo("8. Synchronize your system: popctl sync")
 
 
 def _get_distribution() -> tuple[str, bool]:
@@ -208,6 +210,12 @@ def _configure_optional_features() -> list[str]:
         configured.append("Encrypted backups: next step shown")
     else:
         configured.append("Encrypted backups: skipped")
+
+    if typer.confirm("Would you like to initialize private dotfiles now?", default=False):
+        init_dotfiles()
+        configured.append("Private dotfiles: initialized")
+    else:
+        configured.append("Private dotfiles: skipped")
     return configured
 
 

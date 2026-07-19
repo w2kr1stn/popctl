@@ -28,12 +28,15 @@ def _load_template(name: str) -> str:
 SESSION_CLAUDE_MD = _load_template("session_claude_md.txt")
 SESSION_CLAUDE_MD_FILESYSTEM = _load_template("session_claude_md_filesystem.txt")
 SESSION_CLAUDE_MD_CONFIGS = _load_template("session_claude_md_configs.txt")
+SESSION_CLAUDE_MD_DOTFILES = _load_template("session_claude_md_dotfiles.txt")
 INITIAL_PROMPT = _load_template("initial_prompt.txt")
+DOTFILES_INITIAL_PROMPT = SESSION_CLAUDE_MD_DOTFILES
 
 _DOMAIN_TEMPLATES: dict[str, str] = {
     "packages": SESSION_CLAUDE_MD,
     "filesystem": SESSION_CLAUDE_MD_FILESYSTEM,
     "configs": SESSION_CLAUDE_MD_CONFIGS,
+    "dotfiles": SESSION_CLAUDE_MD_DOTFILES,
 }
 
 REVIEW_ADDENDUM = """
@@ -83,6 +86,8 @@ def build_session_claude_md(
     categories_list = "\n".join(f"- `{cat}`" for cat in CATEGORIES)
 
     template = _DOMAIN_TEMPLATES.get(domain, SESSION_CLAUDE_MD)
+    if domain == "dotfiles":
+        return template
 
     content = template.format(
         system_context=system_context,

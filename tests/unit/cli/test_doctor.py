@@ -1,8 +1,11 @@
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import pytest
 from popctl.advisor.config import AdvisorConfig, AdvisorConfigError
 from popctl.cli.main import app
+from popctl.dotfiles.config import DotfilesConfig
+from popctl.dotfiles.repo import LsRemoteResult, TransportOutcome, TransportResult
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -209,3 +212,73 @@ def test_doctor_missing_backup_config_shows_setup_command(tmp_path: Path) -> Non
     assert result.exit_code == 0
     assert "Absent:" in result.output
     assert "popctl backup init" in result.output
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_detail"),
+    [
+        (TransportOutcome.SUCCESS, "Remote is reachable"),
+        (TransportOutcome.OFFLINE, "offline or unreachable"),
+        (TransportOutcome.AUTH, "authentication failed"),
+        (TransportOutcome.TIMEOUT, "timed out"),
+        (TransportOutcome.OTHER, "probe failed"),
+    ],
+)
+def test_doctor_reports_typed_dotfiles_reachability_without_failing(
+    tmp_path: Path,
+    outcome: TransportOutcome,
+    expected_detail: str,
+) -> None:
+    config_path = tmp_path / "dotfiles.toml"
+    bare_repo = tmp_path / "dotfiles.git"
+    config_path.touch()
+    bare_repo.mkdir()
+    repository = MagicMock()
+    repository.ls_remote.return_value = LsRemoteResult(TransportResult(outcome))
+    config = DotfilesConfig(
+        bare_repo=bare_repo,
+        remote_url="https://github.com/example/dotfiles.git",
+    )
+
+    with (
+        patch("popctl.cli.commands.doctor.load_dotfiles_config", return_value=config),
+        patch("popctl.cli.commands.doctor.DotfilesRepo", return_value=repository),
+    ):
+        result = _run_doctor(tmp_path, advisor_config=AdvisorConfig(provider="claude"))
+
+    assert result.exit_code == 0
+    assert "Dotfiles (optional)" in result.output
+    assert expected_detail in result.output
+    repository.ls_remote.assert_called_once_with(
+        "https://github.com/example/dotfiles.git",
+        timeout_seconds=5.0,
+    )
+
+
+def test_doctor_recommends_gh_when_dotfiles_privacy_cannot_be_rechecked(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "dotfiles.toml"
+    bare_repo = tmp_path / "dotfiles.git"
+    config_path.touch()
+    bare_repo.mkdir()
+    repository = MagicMock()
+    repository.ls_remote.return_value = LsRemoteResult(TransportResult(TransportOutcome.SUCCESS))
+    config = DotfilesConfig(
+        bare_repo=bare_repo,
+        remote_url="https://github.com/example/dotfiles.git",
+    )
+
+    with (
+        patch("popctl.cli.commands.doctor.load_dotfiles_config", return_value=config),
+        patch("popctl.cli.commands.doctor.DotfilesRepo", return_value=repository),
+    ):
+        result = _run_doctor(
+            tmp_path,
+            missing={"gh"},
+            advisor_config=AdvisorConfig(provider="claude"),
+        )
+
+    assert result.exit_code == 0
+    assert "cannot recheck repository visibility" in result.output
+    assert "Install gh for per-push privacy verification" in result.output

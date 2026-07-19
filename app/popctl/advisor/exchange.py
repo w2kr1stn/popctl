@@ -4,13 +4,18 @@ import logging
 import os
 import re
 import tomllib
-from pathlib import Path
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from popctl.advisor.prompts import CATEGORIES
 from popctl.core.state import record_action
+from popctl.dotfiles.config import DotfilesConfig
+from popctl.dotfiles.discovery import DiscoveryResult
+from popctl.dotfiles.materialize import HomePathError, canonical_home_relative_path
 from popctl.models.history import (
     HistoryActionType,
     HistoryItem,
@@ -111,6 +116,55 @@ class DomainDecisions(BaseModel):
     ask: list[PathDecision] = Field(default_factory=lambda: [])
 
 
+class DotfilesPathDecision(BaseModel):
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str
+    reason: str = Field(min_length=1)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        if value != value.strip():
+            msg = "Dotfiles path must not have surrounding whitespace"
+            raise ValueError(msg)
+        try:
+            canonical = canonical_home_relative_path(value)
+        except HomePathError as e:
+            raise ValueError(str(e)) from e
+        if _contains_symlink(Path.home(), canonical):
+            msg = f"Dotfiles path must not traverse a symlink: {canonical!r}"
+            raise ValueError(msg)
+        return canonical
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            msg = "Dotfiles decision reason cannot be empty"
+            raise ValueError(msg)
+        return stripped
+
+
+class DotfilesDecisions(BaseModel):
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    track: list[DotfilesPathDecision] = Field(default_factory=lambda: [])
+    ignore: list[DotfilesPathDecision] = Field(default_factory=lambda: [])
+    ask: list[DotfilesPathDecision] = Field(default_factory=lambda: [])
+
+
+@dataclass(frozen=True, slots=True)
+class DotfilesReviewFinalization:
+    tracked_paths: tuple[str, ...]
+    ignored_paths: tuple[str, ...]
+    pending_paths: tuple[str, ...]
+
+
 class DecisionsResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
@@ -118,6 +172,7 @@ class DecisionsResult(BaseModel):
     packages: dict[PackageSourceType, SourceDecisions] = Field(default_factory=lambda: {})
     filesystem: DomainDecisions | None = None
     configs: DomainDecisions | None = None
+    dotfiles: DotfilesDecisions | None = None
 
 
 # =============================================================================
@@ -125,7 +180,11 @@ class DecisionsResult(BaseModel):
 # =============================================================================
 
 
-def import_decisions(decisions_path: Path) -> DecisionsResult:
+def import_decisions(
+    decisions_path: Path,
+    *,
+    discovery: DiscoveryResult | None = None,
+) -> DecisionsResult:
     # Check if file exists
     if not decisions_path.exists():
         msg = f"decisions.toml not found at {decisions_path}"
@@ -150,10 +209,82 @@ def import_decisions(decisions_path: Path) -> DecisionsResult:
 
     # Let Pydantic validate the full structure
     try:
-        return DecisionsResult.model_validate(data)
+        decisions = DecisionsResult.model_validate(data)
     except ValidationError as e:
         msg = f"Invalid decisions.toml schema: {e}"
         raise ValueError(msg) from e
+    if decisions.dotfiles is not None:
+        if discovery is None:
+            msg = "Dotfiles decisions require a fresh discovery snapshot"
+            raise ValueError(msg)
+        validate_dotfiles_decisions(decisions.dotfiles, discovery)
+    return decisions
+
+
+def validate_dotfiles_decisions(
+    decisions: DotfilesDecisions,
+    discovery: DiscoveryResult,
+) -> None:
+    _validated_dotfiles_paths(decisions, discovery)
+
+
+def finalize_dotfiles_review(
+    decisions: DotfilesDecisions,
+    discovery: DiscoveryResult,
+    config: DotfilesConfig,
+    *,
+    confirmed: bool,
+    finalize_operation: Callable[[tuple[str, ...], DotfilesConfig], None],
+) -> DotfilesReviewFinalization:
+    track_paths, ignore_paths, ask_paths = _validated_dotfiles_paths(decisions, discovery)
+    if not confirmed:
+        return DotfilesReviewFinalization((), (), ask_paths)
+    ignored = sorted(set(config.ignored) | set(ignore_paths))
+    updated_config = config.model_copy(update={"ignored": ignored})
+    finalize_operation(track_paths, updated_config)
+    return DotfilesReviewFinalization(track_paths, ignore_paths, ask_paths)
+
+
+def _validated_dotfiles_paths(
+    decisions: DotfilesDecisions,
+    discovery: DiscoveryResult,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    snapshot = set(discovery.candidate_paths)
+    seen: set[str] = set()
+    paths_by_decision: list[tuple[str, tuple[DotfilesPathDecision, ...]]] = [
+        ("track", tuple(decisions.track)),
+        ("ignore", tuple(decisions.ignore)),
+        ("ask", tuple(decisions.ask)),
+    ]
+    validated: dict[str, tuple[str, ...]] = {}
+    for action, path_decisions in paths_by_decision:
+        paths: list[str] = []
+        for decision in path_decisions:
+            if decision.path not in snapshot:
+                msg = (
+                    "Dotfiles decision path is not in the fresh discovery snapshot: "
+                    f"{decision.path}"
+                )
+                raise ValueError(msg)
+            if decision.path in seen:
+                msg = f"Dotfiles path is classified more than once: {decision.path}"
+                raise ValueError(msg)
+            seen.add(decision.path)
+            paths.append(decision.path)
+        validated[action] = tuple(paths)
+    return validated["track"], validated["ignore"], validated["ask"]
+
+
+def _contains_symlink(home: Path, canonical_path: str) -> bool:
+    current = home
+    for component in PurePosixPath(canonical_path).parts:
+        current = current / component
+        try:
+            if current.is_symlink():
+                return True
+        except OSError:
+            return True
+    return False
 
 
 def apply_decisions_to_manifest(

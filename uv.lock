@@ -225,6 +225,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
+    { name = "pyyaml" },
     { name = "rich" },
     { name = "tomli-w" },
     { name = "typer" },
@@ -252,6 +253,7 @@ dev = [
 requires-dist = [
     { name = "djinn-in-a-box", marker = "extra == 'agent'", git = "https://github.com/w2kr1stn/djinn_in_a_box" },
     { name = "pydantic", specifier = ">=2.11.0" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "tomli-w", specifier = ">=1.0.0" },
     { name = "typer", specifier = ">=0.15.0" },

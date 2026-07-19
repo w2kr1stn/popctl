@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from popctl.advisor.prompts import build_session_claude_md
 from popctl.core.paths import ensure_dir, get_state_dir
+from popctl.dotfiles.discovery import DiscoveryResult
 from popctl.scanners.apt import get_reverse_deps
 from popctl.utils.formatting import print_info
 
@@ -110,6 +111,36 @@ def ensure_advisor_sessions_dir(use_djinn: bool = False) -> Path:
         get_advisor_sessions_dir(use_djinn=use_djinn),
         "advisor sessions",
     )
+
+
+def create_dotfiles_session_workspace(
+    discovery: DiscoveryResult,
+    sessions_dir: Path,
+) -> Path:
+    """Create the minimal workspace required for a dotfiles classification session."""
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+    session_dir = sessions_dir / timestamp
+    try:
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / "output").mkdir(exist_ok=True)
+        (session_dir / "CLAUDE.md").write_text(
+            build_session_claude_md(domain="dotfiles"),
+            encoding="utf-8",
+        )
+        candidates = {
+            "dotfiles_candidates": [
+                {"path": candidate.path, "group": candidate.group}
+                for candidate in discovery.candidates
+            ]
+        }
+        (session_dir / "dotfiles_candidates.json").write_text(
+            json.dumps(candidates, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        msg = f"Cannot create dotfiles session workspace at {session_dir}: {e}"
+        raise RuntimeError(msg) from e
+    return session_dir
 
 
 def create_session_workspace(

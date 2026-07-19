@@ -68,7 +68,7 @@ class TestHistoryCommand:
         result = runner.invoke(app, ["history", "--help"])
         assert result.exit_code == 0
         output = strip_ansi(result.stdout)
-        assert "View history of package changes" in output
+        assert "View action history" in output
         assert "--limit" in output
         assert "--since" in output
         assert "--json" in output
@@ -91,7 +91,8 @@ class TestHistoryCommand:
             result = runner.invoke(app, ["history"])
 
         assert result.exit_code == 0
-        assert "Package History" in result.stdout
+        assert "Action History" in result.stdout
+        assert "Items" in result.stdout
         assert "abc12345" in result.stdout  # First 8 chars of ID
         assert "def67890" in result.stdout
         assert "ghi11223" in result.stdout
@@ -217,6 +218,27 @@ class TestHistoryTableFormatting:
         assert "pkg1" in result.stdout
         assert "pkg2" in result.stdout
         assert "(+7 more)" in result.stdout
+
+    def test_dotfiles_entry_uses_action_history_and_items_labels(self) -> None:
+        entry = HistoryEntry(
+            id="dotfiles123",
+            timestamp="2026-01-26T14:30:00+00:00",
+            action_type=HistoryActionType.DOTFILES_SYNC,
+            items=(HistoryItem(name=".config/tool/config"),),
+            reversible=False,
+        )
+
+        with patch("popctl.cli.commands.history.get_history") as mock_get_history:
+            mock_get_history.return_value = ([entry], 0)
+
+            result = runner.invoke(app, ["history"])
+
+        assert result.exit_code == 0
+        assert "Action History" in result.stdout
+        assert "Items" in result.stdout
+        assert "dotfiles_sync" in result.stdout
+        assert ".config/tool/config" in result.stdout
+        assert "No" in result.stdout
 
 
 class TestHistoryJsonOutput:

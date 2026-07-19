@@ -48,28 +48,40 @@ class AgentRunner:
 
     # ── Public API ──────────────────────────────────────────────
 
-    def run_headless(self, workspace_dir: Path) -> AgentResult:
+    def run_headless(
+        self,
+        workspace_dir: Path,
+        initial_prompt: str = INITIAL_PROMPT,
+    ) -> AgentResult:
         if self.session is not None and not self.config.api_key:
-            return self._run_headless_session(workspace_dir)
+            return self._run_headless_session(workspace_dir, initial_prompt)
         if self.session is not None:
             self._warn_session_api_key_fallback()
-        return self._run_headless_host(workspace_dir)
+        return self._run_headless_host(workspace_dir, initial_prompt)
 
-    def launch_interactive(self, workspace_dir: Path) -> AgentResult:
+    def launch_interactive(
+        self,
+        workspace_dir: Path,
+        initial_prompt: str = INITIAL_PROMPT,
+    ) -> AgentResult:
         if self.session is not None and not self.config.api_key:
-            return self._launch_interactive_session(workspace_dir)
+            return self._launch_interactive_session(workspace_dir, initial_prompt)
         if self.session is not None:
             self._warn_session_api_key_fallback()
-        return self._launch_host(workspace_dir)
+        return self._launch_host(workspace_dir, initial_prompt)
 
     # ── SessionManager mode ──────────────────────────────────────
 
-    def _run_headless_session(self, workspace_dir: Path) -> AgentResult:
+    def _run_headless_session(
+        self,
+        workspace_dir: Path,
+        initial_prompt: str = INITIAL_PROMPT,
+    ) -> AgentResult:
         assert self.session is not None
         try:
             result = self.session.run_headless(
                 workspace_dir=workspace_dir,
-                prompt=INITIAL_PROMPT,
+                prompt=initial_prompt,
                 timeout=self.config.timeout_seconds,
                 **self._session_agent_kwargs(),
             )
@@ -96,12 +108,16 @@ class AgentRunner:
             workspace_path=workspace_dir,
         )
 
-    def _launch_interactive_session(self, workspace_dir: Path) -> AgentResult:
+    def _launch_interactive_session(
+        self,
+        workspace_dir: Path,
+        initial_prompt: str = INITIAL_PROMPT,
+    ) -> AgentResult:
         assert self.session is not None
         try:
             result = self.session.run_interactive(
                 workspace_dir=workspace_dir,
-                initial_prompt=INITIAL_PROMPT,
+                initial_prompt=initial_prompt,
                 **self._session_agent_kwargs(),
             )
         except ValueError as e:
@@ -122,22 +138,34 @@ class AgentRunner:
 
     # ── Host mode ───────────────────────────────────────────────
 
-    def _launch_host(self, workspace_dir: Path) -> AgentResult:
+    def _launch_host(
+        self,
+        workspace_dir: Path,
+        initial_prompt: str = INITIAL_PROMPT,
+    ) -> AgentResult:
         if not shutil.which(self.config.provider):
-            return self._manual_instructions(workspace_dir)
+            return self._manual_instructions(workspace_dir, initial_prompt)
         if not sys.stdin.isatty():
-            return self._run_headless_host(workspace_dir)
-        return self._exec_host_interactive(workspace_dir)
+            return self._run_headless_host(workspace_dir, initial_prompt)
+        return self._exec_host_interactive(workspace_dir, initial_prompt)
 
-    def _exec_host_interactive(self, workspace_dir: Path) -> AgentResult:
-        cmd = self._build_interactive_command()
+    def _exec_host_interactive(
+        self,
+        workspace_dir: Path,
+        initial_prompt: str = INITIAL_PROMPT,
+    ) -> AgentResult:
+        cmd = self._build_interactive_command(initial_prompt)
         # The provider inherits the user's terminal; an echoed key stays there.
         # popctl captures and persists none of the interactive output.
         run_interactive(cmd, cwd=str(workspace_dir), env=self._host_env())
         return self._post_session_result(workspace_dir)
 
-    def _run_headless_host(self, workspace_dir: Path) -> AgentResult:
-        command = self._build_headless_command()
+    def _run_headless_host(
+        self,
+        workspace_dir: Path,
+        initial_prompt: str = INITIAL_PROMPT,
+    ) -> AgentResult:
+        command = self._build_headless_command(initial_prompt)
 
         try:
             result = self._run_headless_command(command, workspace_dir)
@@ -185,23 +213,23 @@ class AgentRunner:
             "falling back to host execution",
         )
 
-    def _build_interactive_command(self) -> list[str]:
+    def _build_interactive_command(self, initial_prompt: str = INITIAL_PROMPT) -> list[str]:
         provider = self.config.provider
         if provider == "claude":
-            return ["claude", INITIAL_PROMPT, *self._model_flags()]
+            return ["claude", initial_prompt, *self._model_flags()]
         if provider == "gemini":
-            return ["gemini", "--prompt", INITIAL_PROMPT, *self._model_flags()]
+            return ["gemini", "--prompt", initial_prompt, *self._model_flags()]
         # The interactive codex TUI rejects --skip-git-repo-check (exec-only flag)
         # and prompts the user itself when the workspace is not a git repository.
-        return ["codex", *self._model_flags(), INITIAL_PROMPT]
+        return ["codex", *self._model_flags(), initial_prompt]
 
-    def _build_headless_command(self) -> list[str]:
+    def _build_headless_command(self, initial_prompt: str = INITIAL_PROMPT) -> list[str]:
         provider = self.config.provider
         if provider == "claude":
-            return ["claude", "-p", INITIAL_PROMPT, "--output-format", "json", *self._model_flags()]
+            return ["claude", "-p", initial_prompt, "--output-format", "json", *self._model_flags()]
         if provider == "gemini":
-            return ["gemini", "--prompt", INITIAL_PROMPT, *self._model_flags()]
-        return ["codex", "exec", "--skip-git-repo-check", *self._model_flags(), INITIAL_PROMPT]
+            return ["gemini", "--prompt", initial_prompt, *self._model_flags()]
+        return ["codex", "exec", "--skip-git-repo-check", *self._model_flags(), initial_prompt]
 
     def _model_flags(self) -> list[str]:
         if self.config.model or self.config.provider == "codex":
@@ -257,7 +285,11 @@ class AgentRunner:
             "setup, or rerun with `--no-advisor` to skip AI classification."
         )
 
-    def _manual_instructions(self, workspace_dir: Path) -> AgentResult:
+    def _manual_instructions(
+        self,
+        workspace_dir: Path,
+        initial_prompt: str = INITIAL_PROMPT,
+    ) -> AgentResult:
         provider = self.config.provider
         return AgentResult(
             success=False,
@@ -269,7 +301,7 @@ class AgentRunner:
                 f"\n"
                 f"To start manually:\n"
                 f"  cd {workspace_dir}\n"
-                f'  {provider} "{INITIAL_PROMPT}"\n'
+                f'  {provider} "{initial_prompt}"\n'
                 f"\n"
                 f"After classification:\n"
                 f"  popctl advisor apply\n"
