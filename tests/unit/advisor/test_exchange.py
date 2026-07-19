@@ -12,13 +12,20 @@ import pytest
 from popctl.advisor.exchange import (
     DecisionsResult,
     DomainDecisions,
+    DotfilesDecisions,
+    DotfilesPathDecision,
     PackageDecision,
     PathDecision,
     SourceDecisions,
     apply_domain_decisions_to_manifest,
+    finalize_dotfiles_review,
     import_decisions,
+    validate_dotfiles_decisions,
 )
+from popctl.dotfiles.config import DotfilesConfig
+from popctl.dotfiles.discovery import Candidate, DiscoveryResult, discover_dotfiles
 from popctl.models.manifest import DomainConfig, DomainEntry, Manifest, PackageEntry
+from pydantic import ValidationError
 
 # =============================================================================
 # Test Fixtures
@@ -1152,3 +1159,214 @@ class TestApplyDomainDecisionsToManifest:
         assert "~/.config/nvim" in empty_manifest.filesystem.keep
         assert empty_manifest.configs is not None
         assert "~/.config/vlc" in empty_manifest.configs.remove
+
+
+def _dotfiles_snapshot(*paths: str) -> DiscoveryResult:
+    return DiscoveryResult(
+        candidates=tuple(
+            Candidate(path=path, group=path.split("/", maxsplit=1)[0]) for path in paths
+        ),
+        blocked=(),
+    )
+
+
+class TestDotfilesDecisions:
+    def test_model_uses_the_exact_public_fields(self) -> None:
+        decision = DotfilesPathDecision(
+            path=".config/nvim/init.lua",
+            reason=" Personal editor settings ",
+            confidence=0.95,
+        )
+
+        assert decision.model_dump() == {
+            "path": ".config/nvim/init.lua",
+            "reason": "Personal editor settings",
+            "confidence": 0.95,
+        }
+        assert DotfilesDecisions(track=[decision]).track == [decision]
+
+    @pytest.mark.parametrize(
+        "path",
+        ["", "/etc/hosts", "../.bashrc", ".config/../bad", "./.bashrc", ".config\\bad"],
+    )
+    def test_rejects_noncanonical_paths(self, path: str) -> None:
+        with pytest.raises(ValidationError):
+            DotfilesPathDecision(path=path, reason="Reason", confidence=0.5)
+
+    def test_rejects_empty_reasons_unknown_fields_and_invalid_confidence(self) -> None:
+        with pytest.raises(ValidationError):
+            DotfilesPathDecision(path=".bashrc", reason=" ", confidence=0.5)
+        with pytest.raises(ValidationError):
+            DotfilesPathDecision.model_validate(
+                {
+                    "path": ".bashrc",
+                    "reason": "Reason",
+                    "confidence": 0.5,
+                    "category": "not-allowed",
+                }
+            )
+        with pytest.raises(ValidationError):
+            DotfilesPathDecision(path=".bashrc", reason="Reason", confidence=1.1)
+        with pytest.raises(ValidationError):
+            DotfilesDecisions.model_validate({"track": [], "unexpected": []})
+
+    def test_rejects_symlink_paths(self) -> None:
+        target = Path.home() / "target"
+        target.write_text("safe", encoding="utf-8")
+        symlink = Path.home() / ".bashrc"
+        symlink.symlink_to(target)
+
+        with pytest.raises(ValidationError, match="symlink"):
+            DotfilesPathDecision(path=".bashrc", reason="Reason", confidence=0.5)
+
+    def test_toml_round_trip_requires_and_uses_the_fresh_snapshot(self, tmp_path: Path) -> None:
+        decisions_path = tmp_path / "decisions.toml"
+        decisions_path.write_text(
+            """
+[dotfiles]
+track = [{ path = ".bashrc", reason = "Shell setup", confidence = 0.9 }]
+ignore = [{ path = ".config/tool/cache", reason = "Generated cache", confidence = 0.8 }]
+ask = []
+""",
+            encoding="utf-8",
+        )
+        snapshot = _dotfiles_snapshot(".bashrc", ".config/tool/cache")
+
+        result = import_decisions(decisions_path, discovery=snapshot)
+
+        assert result.dotfiles is not None
+        assert result.dotfiles.track[0].path == ".bashrc"
+        assert validate_dotfiles_decisions(result.dotfiles, snapshot) is None
+
+    def test_old_decision_files_remain_compatible_without_a_snapshot(self, tmp_path: Path) -> None:
+        decisions_path = tmp_path / "decisions.toml"
+        decisions_path.write_text(
+            "[packages.apt]\nkeep = []\nremove = []\nask = []\n",
+            encoding="utf-8",
+        )
+
+        result = import_decisions(decisions_path)
+
+        assert result.dotfiles is None
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            ".config/../escape",
+            "/etc/hosts",
+            ".zshrc",
+            ".config/popctl/dotfiles.toml",
+        ],
+    )
+    def test_hostile_output_never_accepts_paths_outside_the_snapshot(
+        self, tmp_path: Path, path: str
+    ) -> None:
+        decisions_path = tmp_path / "decisions.toml"
+        decisions_path.write_text(
+            "[dotfiles]\n"
+            f'track = [{{ path = "{path}", reason = "advisor prose", confidence = 0.9 }}]\n'
+            "ignore = []\nask = []\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError):
+            import_decisions(decisions_path, discovery=_dotfiles_snapshot(".bashrc"))
+
+    def test_duplicate_classifications_are_rejected(self, tmp_path: Path) -> None:
+        decisions_path = tmp_path / "decisions.toml"
+        decisions_path.write_text(
+            """
+[dotfiles]
+track = [{ path = ".bashrc", reason = "Track", confidence = 0.9 }]
+ignore = [{ path = ".bashrc", reason = "Ignore", confidence = 0.8 }]
+ask = []
+""",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="more than once"):
+            import_decisions(decisions_path, discovery=_dotfiles_snapshot(".bashrc"))
+
+    def test_finalizer_only_passes_exact_paths_and_persists_confirmed_ignores(self) -> None:
+        decisions = DotfilesDecisions(
+            track=[DotfilesPathDecision(path=".bashrc", reason="Shell setup", confidence=0.9)],
+            ignore=[
+                DotfilesPathDecision(
+                    path=".config/tool/cache",
+                    reason="Generated cache",
+                    confidence=0.8,
+                )
+            ],
+            ask=[
+                DotfilesPathDecision(
+                    path=".config/tool/unknown",
+                    reason="Unclear",
+                    confidence=0.5,
+                )
+            ],
+        )
+        calls: list[tuple[tuple[str, ...], DotfilesConfig]] = []
+
+        finalization = finalize_dotfiles_review(
+            decisions,
+            _dotfiles_snapshot(".bashrc", ".config/tool/cache", ".config/tool/unknown"),
+            DotfilesConfig(ignored=[".zshrc"]),
+            confirmed=True,
+            finalize_operation=lambda tracks, config: calls.append((tracks, config)),
+        )
+
+        assert finalization.tracked_paths == (".bashrc",)
+        assert finalization.ignored_paths == (".config/tool/cache",)
+        assert finalization.pending_paths == (".config/tool/unknown",)
+        assert calls[0][0] == (".bashrc",)
+        assert calls[0][1].ignored == [".config/tool/cache", ".zshrc"]
+        assert "Shell setup" not in repr(calls)
+        assert "Generated cache" not in repr(calls)
+        assert "Unclear" not in repr(calls)
+
+    def test_unconfirmed_finalizer_leaves_all_paths_unstaged(self) -> None:
+        decisions = DotfilesDecisions(
+            track=[DotfilesPathDecision(path=".bashrc", reason="Shell setup", confidence=0.9)],
+            ignore=[DotfilesPathDecision(path=".zshrc", reason="Generated", confidence=0.8)],
+            ask=[DotfilesPathDecision(path=".profile", reason="Unclear", confidence=0.5)],
+        )
+        finalized = finalize_dotfiles_review(
+            decisions,
+            _dotfiles_snapshot(".bashrc", ".zshrc", ".profile"),
+            DotfilesConfig(),
+            confirmed=False,
+            finalize_operation=lambda _tracks, _config: pytest.fail("must not finalize"),
+        )
+
+        assert finalized.tracked_paths == ()
+        assert finalized.ignored_paths == ()
+        assert finalized.pending_paths == (".profile",)
+
+    def test_confirmed_ignore_is_suppressed_by_the_next_discovery(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".config/tool").mkdir(parents=True)
+        (home / ".bashrc").write_text("setting = true\n", encoding="utf-8")
+        (home / ".config/tool/cache").write_text("generated = true\n", encoding="utf-8")
+        discovery = discover_dotfiles(home)
+        decisions = DotfilesDecisions(
+            ignore=[
+                DotfilesPathDecision(
+                    path=".config/tool/cache",
+                    reason="Generated cache",
+                    confidence=0.8,
+                )
+            ]
+        )
+        finalized_configs: list[DotfilesConfig] = []
+
+        finalize_dotfiles_review(
+            decisions,
+            discovery,
+            DotfilesConfig(),
+            confirmed=True,
+            finalize_operation=lambda _tracks, config: finalized_configs.append(config),
+        )
+
+        next_discovery = discover_dotfiles(home, ignored=finalized_configs[0].ignored)
+        assert ".config/tool/cache" not in next_discovery.candidate_paths
+        assert next_discovery.candidate_paths == (".bashrc",)

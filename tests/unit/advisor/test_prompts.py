@@ -8,8 +8,10 @@ import re
 
 from popctl.advisor.prompts import (
     CATEGORIES,
+    DOTFILES_INITIAL_PROMPT,
     INITIAL_PROMPT,
     SESSION_CLAUDE_MD,
+    SESSION_CLAUDE_MD_DOTFILES,
     build_session_claude_md,
 )
 
@@ -143,6 +145,21 @@ class TestInitialPrompt:
         assert "memory.md" in INITIAL_PROMPT
 
 
+class TestDotfilesPrompt:
+    def test_dotfiles_template_has_the_curation_and_security_contract(self) -> None:
+        assert "dotfiles_candidates.json" in SESSION_CLAUDE_MD_DOTFILES
+        assert "TRACK" in SESSION_CLAUDE_MD_DOTFILES
+        assert "IGNORE" in SESSION_CLAUDE_MD_DOTFILES
+        assert "ASK" in SESSION_CLAUDE_MD_DOTFILES
+        assert "no security authority" in SESSION_CLAUDE_MD_DOTFILES
+        assert "output/decisions.toml" in SESSION_CLAUDE_MD_DOTFILES
+        assert "[dotfiles]" in SESSION_CLAUDE_MD_DOTFILES
+        assert DOTFILES_INITIAL_PROMPT == SESSION_CLAUDE_MD_DOTFILES
+
+    def test_dotfiles_domain_selects_its_registered_template(self) -> None:
+        assert build_session_claude_md(domain="dotfiles") == SESSION_CLAUDE_MD_DOTFILES
+
+
 class TestBuildSessionClaudeMd:
     """Tests for build_session_claude_md function."""
 
@@ -219,6 +236,7 @@ class TestModuleExports:
 
         assert hasattr(prompts, "SESSION_CLAUDE_MD")
         assert hasattr(prompts, "INITIAL_PROMPT")
+        assert hasattr(prompts, "SESSION_CLAUDE_MD_DOTFILES")
         assert hasattr(prompts, "CATEGORIES")
         assert hasattr(prompts, "build_session_claude_md")
 

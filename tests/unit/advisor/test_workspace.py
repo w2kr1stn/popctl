@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 from popctl.advisor.workspace import (
     cleanup_empty_sessions,
+    create_dotfiles_session_workspace,
     create_session_workspace,
     delete_session,
     ensure_advisor_sessions_dir,
@@ -15,6 +16,7 @@ from popctl.advisor.workspace import (
     get_advisor_sessions_dir,
     list_sessions,
 )
+from popctl.dotfiles.discovery import Candidate, DiscoveryResult
 from popctl.models.package import PackageSource, PackageStatus, ScannedPackage, ScanResult
 
 
@@ -257,6 +259,32 @@ class TestCreateSessionWorkspace:
             pass
         finally:
             readonly_dir.chmod(0o755)
+
+
+class TestCreateDotfilesSessionWorkspace:
+    def test_writes_only_dotfiles_inputs_and_the_output_contract(self, tmp_path: Path) -> None:
+        discovery = DiscoveryResult(
+            candidates=(
+                Candidate(path=".bashrc", group=".bashrc"),
+                Candidate(path=".config/nvim/init.lua", group=".config"),
+            ),
+            blocked=(),
+        )
+
+        workspace = create_dotfiles_session_workspace(discovery, tmp_path)
+
+        assert (workspace / "output").is_dir()
+        assert "Dotfiles Curation" in (workspace / "CLAUDE.md").read_text(encoding="utf-8")
+        assert json.loads((workspace / "dotfiles_candidates.json").read_text(encoding="utf-8")) == {
+            "dotfiles_candidates": [
+                {"path": ".bashrc", "group": ".bashrc"},
+                {"path": ".config/nvim/init.lua", "group": ".config"},
+            ]
+        }
+        assert not (workspace / "scan.json").exists()
+        assert not (workspace / "manifest.toml").exists()
+        assert not (workspace / "memory.md").exists()
+        assert not (workspace / ".claude").exists()
 
 
 class TestListSessions:
