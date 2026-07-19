@@ -128,6 +128,26 @@ class TestMaterializationState:
         assert not get_plan_path(operation, tmp_path).exists()
         assert not get_completed_paths_journal_path(operation, tmp_path).exists()
 
+    def test_recovers_a_plan_only_retirement_by_validated_source(
+        self, tmp_path: Path, operation: PlanOperation
+    ) -> None:
+        plan = _plan(operation)
+        prepare_materialization_plan(plan, tmp_path)
+        for entry in plan.entries:
+            record_completed_path(plan, entry.path, tmp_path)
+        get_completed_paths_journal_path(operation, tmp_path).unlink()
+
+        complete_materialization_state_for_source(
+            operation,
+            source_ref=plan.source_ref,
+            source_tree_oid=plan.source_tree_oid,
+            state_dir=tmp_path,
+            recover_plan_only=True,
+        )
+
+        assert not get_plan_path(operation, tmp_path).exists()
+        assert not get_completed_paths_journal_path(operation, tmp_path).exists()
+
 
 class TestInitFinalizationRecovery:
     def test_no_journal_needs_no_recovery(self, tmp_path: Path) -> None:
@@ -138,10 +158,12 @@ class TestInitFinalizationRecovery:
         final_store = tmp_path / "dotfiles.git"
         temporary_store.mkdir()
         final_store.mkdir()
+        config_path = tmp_path / "dotfiles.toml"
+        config_path.write_text("remote_url = ''\n", encoding="utf-8")
         journal = InitFinalizationJournal(
             temporary_store=temporary_store,
             final_store=final_store,
-            config_path=tmp_path / "dotfiles.toml",
+            config_path=config_path,
             phase=InitPhase.STORE_PROMOTED,
             created_remote="git@github.com:example/dotfiles.git",
         )
@@ -153,6 +175,28 @@ class TestInitFinalizationRecovery:
         assert recovery.reusable_remote == journal.created_remote
         assert set(recovery.removed_stores) == {temporary_store, final_store}
         assert not temporary_store.exists()
+        assert not final_store.exists()
+        assert recovery.removed_configs == (config_path,)
+        assert not config_path.exists()
+
+    def test_recovers_store_promotion_before_its_journal_phase_is_written(
+        self, tmp_path: Path
+    ) -> None:
+        final_store = tmp_path / "dotfiles.git"
+        final_store.mkdir()
+        journal = InitFinalizationJournal(
+            temporary_store=tmp_path / ".dotfiles.git.tmp",
+            final_store=final_store,
+            config_path=tmp_path / "dotfiles.toml",
+            phase=InitPhase.PREPARED,
+        )
+        save_init_finalization_journal(journal, tmp_path / "state")
+
+        recovery = recover_init_finalization(tmp_path / "state")
+
+        assert recovery is not None
+        assert recovery.removed_stores == (final_store,)
+        assert recovery.removed_configs == ()
         assert not final_store.exists()
 
     def test_keeps_finalized_store_and_config_after_config_write(self, tmp_path: Path) -> None:
@@ -172,6 +216,7 @@ class TestInitFinalizationRecovery:
 
         assert recovery is not None
         assert recovery.removed_stores == ()
+        assert recovery.removed_configs == ()
         assert final_store.exists()
         assert config_path.exists()
 

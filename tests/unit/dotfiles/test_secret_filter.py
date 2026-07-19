@@ -133,6 +133,9 @@ def test_private_key_variants_and_crlf_are_hard_denied(content: bytes) -> None:
         (b"user = user:password\r\n", "curl-user-password"),
         (b"proxy-user = 'user:password'\r\n", "curl-user-password"),
         (b'  user = "user:password"\r\n', "curl-user-password"),
+        (b"curl --user alice:password https://example.invalid\r\n", "curl-user-password"),
+        (b"curl -u=alice:password https://example.invalid\r\n", "curl-user-password"),
+        (b"curl --proxy-user 'alice:password' https://example.invalid\r\n", "curl-user-password"),
     ],
 )
 def test_hard_content_grammars_are_crlf_tolerant(content: bytes, category: str) -> None:
@@ -336,6 +339,17 @@ def test_base64_without_secret_content_is_allowed_at_each_supported_depth() -> N
     assert _scan(".config/tool/config", double_encoded).kind is SecretVerdictKind.ALLOWED
 
 
+def test_mime_wrapped_and_unpadded_base64_hard_content_is_denied() -> None:
+    authorization = base64.b64encode(b"Authorization: Bearer opaque-value")
+    mime_wrapped = b"\n".join(
+        authorization[offset : offset + 8] for offset in range(0, len(authorization), 8)
+    )
+    unpadded_age = base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG").rstrip(b"=")
+
+    _assert_hard(".config/tool/config", mime_wrapped, "authorization")
+    _assert_hard(".config/tool/config", unpadded_age, "age-secret-key")
+
+
 @pytest.mark.parametrize(
     ("path", "content", "category"),
     [
@@ -346,15 +360,44 @@ def test_base64_without_secret_content_is_allowed_at_each_supported_depth() -> N
         (".config/tool/config.ini", b"token = x\n", "malformed-ini"),
     ],
 )
-def test_malformed_named_parser_input_is_ambiguous_and_requires_allowlisting(
+def test_malformed_named_parser_input_is_terminal_and_not_allowlistable(
     path: str, content: bytes, category: str
 ) -> None:
     blocked = _scan(path, content)
     allowed = _scan(path, content, (path,))
 
-    assert blocked.kind is SecretVerdictKind.DENIED_AMBIGUOUS_CONTENT
+    assert blocked.kind is SecretVerdictKind.DENIED_UNAMBIGUOUS_CONTENT
     assert blocked.category == category
-    assert allowed.kind is SecretVerdictKind.ALLOWED
+    assert allowed == blocked
+
+
+@pytest.mark.parametrize(
+    ("path", "content", "category"),
+    [
+        (
+            ".config/tool/config.json",
+            b'{"identity":"AGE\\u002dSECRET\\u002dKEY\\u002d1ABCDEFG","broken":}',
+            "malformed-json",
+        ),
+        (
+            ".config/tool/config.yaml",
+            b'identity: "AGE\\x2dSECRET\\x2dKEY\\x2d1ABCDEFG"\nbroken: [',
+            "malformed-yaml",
+        ),
+        (
+            ".config/tool/config.toml",
+            b'identity = "AGE\\u002dSECRET\\u002dKEY\\u002d1ABCDEFG"\nbroken = [',
+            "malformed-toml",
+        ),
+    ],
+)
+def test_malformed_escaped_hard_content_is_terminal_despite_exact_allowlist(
+    path: str, content: bytes, category: str
+) -> None:
+    verdict = _scan(path, content, (path,))
+
+    assert verdict.kind is SecretVerdictKind.DENIED_UNAMBIGUOUS_CONTENT
+    assert verdict.category == category
 
 
 def test_invalid_or_safe_content_has_no_implicit_allowlist_effect() -> None:

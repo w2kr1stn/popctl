@@ -94,6 +94,24 @@ def test_initializes_a_bare_main_repository(real_git: RealGitEnvironment, tmp_pa
 
 
 @pytest.mark.real_git
+def test_owned_git_assets_are_not_rewritten_when_unchanged(
+    real_git: RealGitEnvironment, tmp_path: Path
+) -> None:
+    repository = _repository(real_git, tmp_path)
+    assets = {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in repository._assets_dir.iterdir()
+    }
+
+    repository._write_owned_assets()
+
+    assert {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in repository._assets_dir.iterdir()
+    } == assets
+
+
+@pytest.mark.real_git
 def test_checked_gateway_uses_immutable_snapshots_and_never_deletes_missing_paths(
     real_git: RealGitEnvironment,
     tmp_path: Path,
@@ -173,6 +191,33 @@ def test_checked_gateway_rejects_missing_source_and_conditional_ref_races(
         )
 
     assert repository.ref_oid(MAIN_REF) == first
+
+
+@pytest.mark.real_git
+@pytest.mark.parametrize(
+    ("content", "category"),
+    [
+        (b"-----BEGIN OPENSSH PRIVATE KEY-----\n", "private-key"),
+        (b"AGE-SECRET-KEY-1ABCDEFG\n", "age-secret-key"),
+        (b"Authorization: Bearer opaque-value\n", "authorization"),
+    ],
+)
+def test_checked_gateway_and_inbound_tree_reject_hard_secret_content(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    content: bytes,
+    category: str,
+) -> None:
+    repository = _repository(real_git, tmp_path)
+    _write(real_git.home, ".config/tool/config", content)
+
+    with pytest.raises(TreeValidationError, match=category):
+        repository.checked_commit([".config/tool/config"], "blocked")
+
+    assert repository.ref_oid(MAIN_REF) is None
+    tree_oid = _literal_tree(repository, "100644", b".config/tool/config", content)
+    with pytest.raises(TreeValidationError, match=category):
+        repository.validate_tree(tree_oid)
 
 
 @pytest.mark.real_git
@@ -471,6 +516,50 @@ def test_network_calls_keep_the_literal_url_refspec_and_disable_hostile_hooks(
 
     assert result.success
     assert remote_store.ref_oid(MAIN_REF) == commit
+
+
+@pytest.mark.real_git
+def test_network_transport_never_contacts_hostile_global_or_pushurl_sentinels(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = tmp_path / "transport-sentinel"
+    contacted = tmp_path / "transport-contacted"
+    sentinel.write_text(f"#!/bin/sh\ntouch {contacted}\nexit 97\n", encoding="utf-8")
+    sentinel.chmod(0o755)
+    with real_git.global_config.open("a", encoding="utf-8") as file:
+        file.write(
+            "[core]\n"
+            f"\tsshCommand = {sentinel}\n"
+            "[url \"ssh://127.0.0.1:9/\"]\n"
+            "\tinsteadOf = file://\n"
+            "[http]\n"
+            "\tproxy = http://127.0.0.1:9\n"
+        )
+    monkeypatch.setenv("GIT_ASKPASS", str(sentinel))
+    monkeypatch.setenv("SSH_ASKPASS", str(sentinel))
+    remote_store = _repository(real_git, tmp_path, "remote")
+    source = _repository(real_git, tmp_path, "source")
+    _write(real_git.home, ".config/tool/config", b"safe\n")
+    commit = _commit(source, [".config/tool/config"], "safe")
+    source.create_marker(commit)
+    remote_url = f"file://{remote_store.bare_repo}"
+    source._install_test_remote(remote_url)
+
+    result = source._network_git(
+        ["push", remote_url, f"{MAIN_REF}:{MAIN_REF}", f"{MARKER_REF}:{MARKER_REF}"],
+        remote_url,
+    )
+
+    assert result.success
+    assert remote_store.ref_oid(MAIN_REF) == commit
+    assert not contacted.exists()
+    with (source.bare_repo / "config").open("a", encoding="utf-8") as file:
+        file.write(f"\n[remote \"origin\"]\n\tpushurl = ext::{sentinel}\n")
+    with pytest.raises(DotfilesRepoError, match="Unexpected dotfiles local Git config key"):
+        source._network_git(["push", remote_url, f"{MAIN_REF}:{MAIN_REF}"], remote_url)
+    assert not contacted.exists()
 
 
 @pytest.mark.real_git

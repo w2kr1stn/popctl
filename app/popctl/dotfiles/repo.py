@@ -660,17 +660,30 @@ class DotfilesRepo:
         return environment
 
     def _write_owned_assets(self) -> None:
-        self._content_config.write_text("[core]\n\thooksPath = /dev/null\n", encoding="utf-8")
+        assets: list[tuple[Path, str]] = [
+            (self._content_config, "[core]\n\thooksPath = /dev/null\n"),
+        ]
         network_lines = ["[core]", "\thooksPath = /dev/null"]
         for helper in self._credential_helpers:
             network_lines.extend(["[credential]", f"\thelper = {_quote_config_value(helper)}"])
-        self._network_config.write_text("\n".join(network_lines) + "\n", encoding="utf-8")
-        self._ssh_config.write_text(
-            "Host *\n\tProxyCommand none\n\tProxyJump none\n\tPermitLocalCommand no\n",
-            encoding="utf-8",
+        assets.extend(
+            (
+                (self._network_config, "\n".join(network_lines) + "\n"),
+                (
+                    self._ssh_config,
+                    "Host *\n\tProxyCommand none\n\tProxyJump none\n\tPermitLocalCommand no\n",
+                ),
+            )
         )
-        for path in (self._content_config, self._network_config, self._ssh_config):
-            path.chmod(0o600)
+        for path, content in assets:
+            try:
+                unchanged = path.read_text(encoding="utf-8") == content
+            except FileNotFoundError:
+                unchanged = False
+            if not unchanged:
+                path.write_text(content, encoding="utf-8")
+            if path.stat().st_mode & 0o777 != 0o600:
+                path.chmod(0o600)
 
     def _validate_owned_local_config(self, canonical_url: str) -> None:
         result = self._content_git(["config", "--local", "--null", "--list"])

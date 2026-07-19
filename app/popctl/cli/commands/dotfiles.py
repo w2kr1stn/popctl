@@ -64,12 +64,15 @@ from popctl.dotfiles.state import (
     DotfilesStateError,
     InitFinalizationJournal,
     InitPhase,
+    MaterializationPlan,
     PlanOperation,
     clear_init_finalization_journal,
     complete_materialization_state,
     complete_materialization_state_for_source,
     dotfiles_lock,
     get_dotfiles_state_dir,
+    get_plan_path,
+    load_materialization_plan,
     recover_init_finalization,
     save_init_finalization_journal,
 )
@@ -150,6 +153,37 @@ def _sources(repo: DotfilesRepo, entries: Iterable[TreeEntry]) -> tuple[Material
             content=repo.read_blob(entry.oid),
         )
         for entry in sorted(entries, key=lambda item: item.path)
+    )
+
+
+def _preflight_or_resume_materialization(
+    *,
+    operation: PlanOperation,
+    source_ref: str,
+    source_tree_oid: str,
+    sources: tuple[MaterializationSource, ...],
+    base_files: dict[str, HomeFileSnapshot],
+    home: Path,
+) -> MaterializationPlan:
+    plan_path = get_plan_path(operation, _state_dir())
+    if plan_path.exists():
+        plan = load_materialization_plan(operation, _state_dir())
+        expected_sources = {(source.path, source.oid, source.mode) for source in sources}
+        planned_sources = {(entry.path, entry.oid, entry.mode) for entry in plan.entries}
+        if (
+            plan.source_ref != source_ref
+            or plan.source_tree_oid != source_tree_oid
+            or planned_sources != expected_sources
+        ):
+            raise DotfilesStateError("Materialization state does not match the validated source")
+        return plan
+    return preflight_materialization(
+        operation=operation,
+        source_ref=source_ref,
+        source_tree_oid=source_tree_oid,
+        sources=sources,
+        base_files=base_files,
+        home=home,
     )
 
 
@@ -478,8 +512,10 @@ def _remote_tree_or_refuse(
     repo: DotfilesRepo,
     tracked: Collection[str],
     allowlist: Collection[str],
+    *,
+    source_ref: str = REMOTE_MAIN_REF,
 ) -> TreeRead:
-    tree = repo.validate_tree(REMOTE_MAIN_REF, ambiguous_content_allowlist=allowlist)
+    tree = repo.validate_tree(source_ref, ambiguous_content_allowlist=allowlist)
     source_paths = {entry.path for entry in tree.entries}
     dropped = sorted(set(tracked) - source_paths)
     if dropped:
@@ -863,7 +899,8 @@ def sync() -> None:
 
 
 def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: bool) -> None:
-    if repo.ref_oid(REMOTE_MAIN_REF) is None:
+    source_oid = repo.ref_oid(REMOTE_MAIN_REF)
+    if source_oid is None:
         _refuse("Remote dotfiles main ref is absent.")
     base_entries = _tracked_entries(repo)
     tracked = _tracked_paths(base_entries)
@@ -871,22 +908,24 @@ def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: boo
         repo,
         tracked,
         config.ambiguous_content_allowlist,
+        source_ref=source_oid,
     )
-    relation = repo.merge_base_relation()
-    classifications = repo.classify_paths(tracked) if base_entries else ()
+    relation = repo.merge_base_relation(remote_ref=source_oid)
+    classifications = repo.classify_paths(tracked, remote_ref=source_oid) if base_entries else ()
     _refuse_sync_conflicts(repo, relation, classifications)
     if relation in {RefRelation.EQUAL, RefRelation.AHEAD}:
         complete_materialization_state_for_source(
             operation=PlanOperation.INBOUND_SYNC,
-            source_ref=REMOTE_MAIN_REF,
+            source_ref=source_oid,
             source_tree_oid=remote_tree.tree_oid,
             state_dir=_state_dir(),
+            recover_plan_only=relation is RefRelation.EQUAL,
         )
     inbound_paths: tuple[str, ...] = ()
     if relation is RefRelation.BEHIND or relation is RefRelation.BOOTSTRAP_BEHIND:
         expected = repo.ref_oid(MAIN_REF)
         if relation is RefRelation.BEHIND:
-            remote_modified = repo.changed_paths(MAIN_REF, REMOTE_MAIN_REF)
+            remote_modified = repo.changed_paths(MAIN_REF, source_oid)
             _refuse_remote_changes_to_deleted_paths(repo, classifications, remote_modified)
         else:
             remote_modified = {entry.path for entry in remote_tree.entries}
@@ -897,9 +936,9 @@ def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: boo
         )
         inbound_plan = None
         if sources:
-            inbound_plan = preflight_materialization(
+            inbound_plan = _preflight_or_resume_materialization(
                 operation=PlanOperation.INBOUND_SYNC,
-                source_ref=REMOTE_MAIN_REF,
+                source_ref=source_oid,
                 source_tree_oid=remote_tree.tree_oid,
                 sources=sources,
                 base_files=_base_files(repo, base_entries),
@@ -911,8 +950,7 @@ def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: boo
                 home=repo.home,
                 state_dir=_state_dir(),
             )
-        remote_oid = repo.ref_oid(REMOTE_MAIN_REF)
-        if remote_oid is None or not repo.conditional_advance_ref(MAIN_REF, remote_oid, expected):
+        if not repo.conditional_advance_ref(MAIN_REF, source_oid, expected):
             _refuse("Dotfiles main ref changed while synchronizing; retry sync.")
         if inbound_plan is not None:
             complete_materialization_state(inbound_plan, _state_dir())
@@ -1004,21 +1042,11 @@ def apply(
 ) -> None:
     """Materialize validated tracked files without a checkout or merge."""
     try:
-        with dotfiles_lock(_state_dir()):
-            diff = compute_system_diff(SourceChoice.ALL, silent_warnings=True)
-            if diff.missing:
-                _refuse(
-                    "Package manifest is incomplete; install missing packages before "
-                    "applying dotfiles."
-                )
-            config = _load_initialized()
-            repo = DotfilesRepo(config.bare_repo, home=Path.home(), state_dir=_state_dir())
-            fetch = repo.fetch(config.remote_url)
-            if not fetch.success:
-                if fetch.outcome is not TransportOutcome.OFFLINE:
-                    _refuse(f"Apply fetch {_transport_detail(fetch.outcome)}.")
-                print_warning("Offline: applying from cached origin/main.")
-            _apply_source(repo, config, dry_run=dry_run)
+        if dry_run:
+            _run_apply(dry_run=True)
+        else:
+            with dotfiles_lock(_state_dir()):
+                _run_apply(dry_run=False)
     except (
         DotfilesCommandError,
         DotfilesConfigError,
@@ -1033,12 +1061,35 @@ def apply(
         raise typer.Exit(code=1) from None
 
 
+def _run_apply(*, dry_run: bool) -> None:
+    diff = compute_system_diff(SourceChoice.ALL, silent_warnings=True)
+    if diff.missing:
+        _refuse(
+            "Package manifest is incomplete; install missing packages before "
+            "applying dotfiles."
+        )
+    config = _load_initialized()
+    repo = DotfilesRepo(
+        config.bare_repo,
+        home=Path.home(),
+        state_dir=_state_dir(),
+        read_only=dry_run,
+    )
+    fetch = repo.fetch(config.remote_url, status=dry_run)
+    if not fetch.success:
+        if fetch.outcome is not TransportOutcome.OFFLINE:
+            _refuse(f"Apply fetch {_transport_detail(fetch.outcome)}.")
+        print_warning("Offline: applying from cached origin/main.")
+    _apply_source(repo, config, dry_run=dry_run)
+
+
 def _apply_source(repo: DotfilesRepo, config: DotfilesConfig, *, dry_run: bool) -> None:
-    if repo.ref_oid(REMOTE_MAIN_REF) is None:
+    source_oid = repo.ref_oid(REMOTE_MAIN_REF)
+    if source_oid is None:
         _refuse("No fetched or cached remote dotfiles ref is available.")
     base_entries = _tracked_entries(repo)
     tracked = _tracked_paths(base_entries)
-    relation = repo.merge_base_relation()
+    relation = repo.merge_base_relation(remote_ref=source_oid)
     if relation in {RefRelation.AHEAD, RefRelation.DIVERGED}:
         _print_recovery(repo, tracked, divergence=relation is RefRelation.DIVERGED)
         _refuse("Local dotfiles history is ahead of or diverged from the source; refusing apply.")
@@ -1048,12 +1099,13 @@ def _apply_source(repo: DotfilesRepo, config: DotfilesConfig, *, dry_run: bool) 
         repo,
         tracked,
         config.ambiguous_content_allowlist,
+        source_ref=source_oid,
     )
     sources = _sources(repo, source_tree.entries)
     expected = repo.ref_oid(MAIN_REF)
-    plan = preflight_materialization(
+    plan = _preflight_or_resume_materialization(
         operation=PlanOperation.APPLY,
-        source_ref=REMOTE_MAIN_REF,
+        source_ref=source_oid,
         source_tree_oid=source_tree.tree_oid,
         sources=sources,
         base_files=_base_files(repo, base_entries),
@@ -1065,7 +1117,13 @@ def _apply_source(repo: DotfilesRepo, config: DotfilesConfig, *, dry_run: bool) 
         return
     needs_write = any(entry.action != "noop" for entry in plan.entries)
     if not needs_write and relation is RefRelation.EQUAL:
-        complete_materialization_state(plan, _state_dir())
+        complete_materialization_state_for_source(
+            PlanOperation.APPLY,
+            source_ref=source_oid,
+            source_tree_oid=source_tree.tree_oid,
+            state_dir=_state_dir(),
+            recover_plan_only=True,
+        )
         print_info("Dotfiles already match the validated source.")
         return
     changed = execute_materialization_plan(
@@ -1074,8 +1132,7 @@ def _apply_source(repo: DotfilesRepo, config: DotfilesConfig, *, dry_run: bool) 
         home=repo.home,
         state_dir=_state_dir(),
     )
-    remote_oid = repo.ref_oid(REMOTE_MAIN_REF)
-    if remote_oid is None or not repo.conditional_advance_ref(MAIN_REF, remote_oid, expected):
+    if not repo.conditional_advance_ref(MAIN_REF, source_oid, expected):
         _refuse("Dotfiles main ref changed while applying; retry apply.")
     complete_materialization_state(plan, _state_dir())
     _record_dotfiles_action(

@@ -12,6 +12,7 @@ import pytest
 
 def pytest_configure(config: pytest.Config) -> None:
     """Isolate user-state paths before test collection imports application modules."""
+    config.addinivalue_line("markers", "real_git: opt in to the scoped real-Git fixture")
     session_dir = Path(tempfile.mkdtemp(prefix="popctl-pytest-"))
     home_dir = session_dir / "home"
     config_dir = session_dir / "xdg-config"

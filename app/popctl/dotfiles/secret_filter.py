@@ -85,13 +85,22 @@ _CURL_USER_PATTERN = re.compile(
     rb"^\s*(?:user|proxy-user)\s*=\s*['\"]?[^:\s'\"]+:[^\s'\"]+",
     re.IGNORECASE | re.MULTILINE,
 )
+_CURL_CREDENTIAL_FLAG_PATTERN = re.compile(
+    rb"\bcurl\b[^\r\n]*?"
+    rb"(?:--user|--proxy-user|-u)(?:\s+|=)\s*['\"]?[^:\s'\"]+:[^\s'\"]+",
+    re.IGNORECASE,
+)
 _URL_USERINFO_PATTERN = re.compile(
     rb"\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@",
     re.IGNORECASE,
 )
 _BASE64_CANDIDATE_PATTERN = re.compile(
-    rb"(?<![A-Za-z0-9+/=])(?:[A-Za-z0-9+/]{4}){2,}"
-    rb"(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?(?![A-Za-z0-9+/=])"
+    rb"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{8,}={0,2}(?![A-Za-z0-9+/=])"
+)
+_BASE64_WRAPPED_CANDIDATE_PATTERN = re.compile(
+    rb"(?<![A-Za-z0-9+/=])"
+    rb"[A-Za-z0-9+/=]{4,}(?:[ \t\r\n]+[A-Za-z0-9+/=]{2,})+"
+    rb"(?![A-Za-z0-9+/=])"
 )
 _FIELD_NORMALIZATION_PATTERN = re.compile(r"[^a-z0-9]+")
 _CREDENTIAL_SHAPED_FIELD_PATTERN = re.compile(
@@ -114,6 +123,7 @@ _HARD_RECOGNIZERS: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     ("proxy-auth", _PROXY_AUTH_PATTERN),
     ("credentialed-proxy", _CREDENTIALED_PROXY_PATTERN),
     ("curl-user-password", _CURL_USER_PATTERN),
+    ("curl-user-password", _CURL_CREDENTIAL_FLAG_PATTERN),
     ("authorization", _AUTHORIZATION_PATTERN),
 )
 
@@ -240,10 +250,9 @@ def scan_dotfile_bytes(
             "duplicate-credential-field",
         )
     if inspection.error_category is not None:
-        return _ambiguous_verdict(
-            canonical_path,
+        return SecretVerdict(
+            SecretVerdictKind.DENIED_UNAMBIGUOUS_CONTENT,
             inspection.error_category,
-            ambiguous_content_allowlist,
         )
 
     scalar_forms, scalar_too_deep = _expand_base64_forms(inspection.scalar_forms)
@@ -326,20 +335,35 @@ def _expand_base64_forms(initial_forms: Iterable[bytes]) -> tuple[tuple[bytes, .
 
 
 def _canonical_base64_candidates(value: bytes) -> Iterable[bytes]:
+    candidates: set[bytes] = set()
     for match in _BASE64_CANDIDATE_PATTERN.finditer(value):
-        candidate = match.group(0)
-        if len(candidate) <= MAX_CANDIDATE_BYTES:
-            decoded = _decode_canonical_base64(candidate)
-            if decoded is not None:
-                yield candidate
+        candidates.add(match.group(0))
+    for match in _BASE64_WRAPPED_CANDIDATE_PATTERN.finditer(value):
+        candidates.add(re.sub(rb"[ \t\r\n]+", b"", match.group(0)))
+    for candidate in sorted(candidates):
+        if (
+            len(candidate) <= MAX_CANDIDATE_BYTES
+            and _decode_canonical_base64(candidate) is not None
+        ):
+            yield candidate
 
 
 def _decode_canonical_base64(candidate: bytes) -> bytes | None:
+    if not candidate or b"=" in candidate.rstrip(b"="):
+        return None
+    unpadded = candidate.rstrip(b"=")
+    remainder = len(unpadded) % 4
+    if remainder == 1:
+        return None
+    padded = unpadded + b"=" * (-len(unpadded) % 4)
     try:
-        decoded = base64.b64decode(candidate, validate=True)
+        decoded = base64.b64decode(padded, validate=True)
     except ValueError:
         return None
-    if base64.b64encode(decoded) != candidate:
+    encoded = base64.b64encode(decoded)
+    if encoded.rstrip(b"=") != unpadded:
+        return None
+    if b"=" in candidate and encoded != candidate:
         return None
     return decoded
 

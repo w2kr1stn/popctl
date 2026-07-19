@@ -10,10 +10,12 @@ from popctl.advisor.runner import AgentResult
 from popctl.cli.commands import dotfiles
 from popctl.cli.main import app
 from popctl.core.state import get_history
+from popctl.dotfiles import materialize
 from popctl.dotfiles.config import (
     DotfilesConfig,
     RemotePrivacyRecord,
     load_dotfiles_config,
+    save_dotfiles_config,
 )
 from popctl.dotfiles.discovery import Candidate
 from popctl.dotfiles.repo import (
@@ -27,6 +29,13 @@ from popctl.dotfiles.repo import (
     TransportResult,
     TreeEntry,
     TreeRead,
+)
+from popctl.dotfiles.state import (
+    DotfilesStateError,
+    PlanOperation,
+    get_completed_paths_journal_path,
+    get_dotfiles_lock_path,
+    get_plan_path,
 )
 from popctl.models.history import HistoryActionType
 from popctl.utils.shell import CommandResult
@@ -55,6 +64,53 @@ def _write(home: Path, content: bytes) -> None:
 
 def _success_transport() -> TransportResult:
     return TransportResult(TransportOutcome.SUCCESS)
+
+
+def _configured_source_repo(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    *,
+    target: bytes = b"base\n",
+) -> tuple[DotfilesRepo, DotfilesConfig, str, str]:
+    state_dir = real_git.state_home / "popctl" / "dotfiles"
+    repository = DotfilesRepo(tmp_path / "dotfiles.git", home=real_git.home, state_dir=state_dir)
+    repository.initialize_bare()
+    _write(real_git.home, b"base\n")
+    base_oid = repository.checked_commit((_PATH,), "base").commit_oid
+    _write(real_git.home, b"remote\n")
+    source_oid = repository.checked_commit((_PATH,), "source").commit_oid
+    assert repository.conditional_advance_ref(REMOTE_MAIN_REF, source_oid, None)
+    assert repository.conditional_advance_ref(MAIN_REF, base_oid, source_oid)
+    _write(real_git.home, target)
+    config = DotfilesConfig(
+        bare_repo=repository.bare_repo,
+        remote_url=_REMOTE,
+        remote_privacy=RemotePrivacyRecord(canonical_remote_url=_REMOTE, method="acknowledged"),
+    )
+    save_dotfiles_config(config)
+    return repository, config, base_oid, source_oid
+
+
+def _add_remote_descendant(
+    repository: DotfilesRepo,
+    real_git: RealGitEnvironment,
+    *,
+    base_oid: str,
+    source_oid: str,
+) -> str:
+    assert repository.conditional_advance_ref(MAIN_REF, source_oid, base_oid)
+    _write(real_git.home, b"newer remote\n")
+    newer_oid = repository.checked_commit((_PATH,), "newer remote").commit_oid
+    assert repository.conditional_advance_ref(MAIN_REF, base_oid, newer_oid)
+    _write(real_git.home, b"base\n")
+    return newer_oid
+
+
+def _owned_asset_state(state_dir: Path) -> dict[str, tuple[bytes, int]]:
+    return {
+        path.name: (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in (state_dir / "git").iterdir()
+    }
 
 
 def _review_with_track(
@@ -414,14 +470,16 @@ def test_online_sync_materializes_changed_and_new_remote_leaves(
                 "e" * 40: b"new\n",
             }[oid]
 
-        def merge_base_relation(self) -> RefRelation:
+        def merge_base_relation(self, **_kwargs: object) -> RefRelation:
             return RefRelation.EQUAL if self.advanced else RefRelation.BEHIND
 
-        def classify_paths(self, _tracked: object) -> tuple[PathClassification, ...]:
+        def classify_paths(
+            self, _tracked: object, **_kwargs: object
+        ) -> tuple[PathClassification, ...]:
             return (PathClassification(_PATH, PathState.REMOTE_MOD),)
 
         def changed_paths(self, old_ref: str, new_ref: str) -> frozenset[str]:
-            assert (old_ref, new_ref) == (MAIN_REF, REMOTE_MAIN_REF)
+            assert (old_ref, new_ref) == (MAIN_REF, "c" * 40)
             return frozenset({_PATH, _NEW_PATH})
 
         def conditional_advance_ref(self, *_args: object) -> bool:
@@ -479,10 +537,12 @@ def test_online_sync_refuses_remote_change_to_locally_deleted_path(tmp_path: Pat
         def validate_tree(self, _ref: str, *, ambiguous_content_allowlist: object) -> TreeRead:
             return remote
 
-        def merge_base_relation(self) -> RefRelation:
+        def merge_base_relation(self, **_kwargs: object) -> RefRelation:
             return RefRelation.BEHIND
 
-        def classify_paths(self, _tracked: object) -> tuple[PathClassification, ...]:
+        def classify_paths(
+            self, _tracked: object, **_kwargs: object
+        ) -> tuple[PathClassification, ...]:
             return (PathClassification(_PATH, PathState.MISSING),)
 
         def changed_paths(self, _old_ref: str, _new_ref: str) -> frozenset[str]:
@@ -570,3 +630,277 @@ def test_apply_source_materializes_before_creating_bootstrap_main(
     )
     history_after, _ = get_history()
     assert history_after == history
+
+
+@pytest.mark.real_git
+@pytest.mark.parametrize("operation", ["apply", "sync"])
+def test_materialization_pins_the_validated_source_when_origin_moves(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    repository, config, base_oid, source_oid = _configured_source_repo(real_git, tmp_path)
+    newer_oid = _add_remote_descendant(
+        repository,
+        real_git,
+        base_oid=base_oid,
+        source_oid=source_oid,
+    )
+    original_execute = dotfiles.execute_materialization_plan
+
+    def materialize_then_advance_origin(*args: object, **kwargs: object) -> tuple[str, ...]:
+        changed = original_execute(*args, **kwargs)
+        assert repository.conditional_advance_ref(REMOTE_MAIN_REF, newer_oid, source_oid)
+        return changed
+
+    monkeypatch.setattr(dotfiles, "execute_materialization_plan", materialize_then_advance_origin)
+    monkeypatch.setattr(dotfiles, "_record_dotfiles_action", lambda *_args, **_kwargs: None)
+    if operation == "apply":
+        dotfiles._apply_source(repository, config, dry_run=False)
+    else:
+        monkeypatch.setattr(
+            dotfiles,
+            "discover_dotfiles",
+            lambda *_args, **_kwargs: dotfiles.DiscoveryResult((), ()),
+        )
+        monkeypatch.setattr(
+            dotfiles,
+            "_review_candidates",
+            lambda *_args, **_kwargs: dotfiles.ReviewResult(
+                DotfilesReviewFinalization((), (), ()), config
+            ),
+        )
+        dotfiles._sync_online(repository, config, interactive=False)
+
+    assert (real_git.home / _PATH).read_bytes() == b"remote\n"
+    assert repository.ref_oid(MAIN_REF) == source_oid
+    assert repository.ref_oid(REMOTE_MAIN_REF) == newer_oid
+
+
+@pytest.mark.real_git
+def test_apply_dry_run_with_a_differing_source_has_status_only_mutations(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, _config, base_oid, source_oid = _configured_source_repo(real_git, tmp_path)
+    state_dir = real_git.state_home / "popctl" / "dotfiles"
+    assets_before = _owned_asset_state(state_dir)
+    history_before, _ = get_history()
+    fetch_calls: list[tuple[bool, bool]] = []
+
+    def cached_fetch(
+        _self: DotfilesRepo, _url: str, *, status: bool = False
+    ) -> TransportResult:
+        fetch_calls.append((True, status))
+        return _success_transport()
+
+    monkeypatch.setattr(DotfilesRepo, "fetch", cached_fetch)
+    monkeypatch.setattr(
+        dotfiles,
+        "compute_system_diff",
+        lambda *_args, **_kwargs: SimpleNamespace(missing=[]),
+    )
+
+    result = runner.invoke(app, ["dotfiles", "apply", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "replace" in result.output
+    assert fetch_calls == [(True, True)]
+    assert (real_git.home / _PATH).read_bytes() == b"base\n"
+    assert repository.ref_oid(MAIN_REF) == base_oid
+    assert repository.ref_oid(REMOTE_MAIN_REF) == source_oid
+    assert not get_plan_path(PlanOperation.APPLY, state_dir).exists()
+    assert not get_completed_paths_journal_path(PlanOperation.APPLY, state_dir).exists()
+    assert not get_dotfiles_lock_path(state_dir).exists()
+    assert get_history()[0] == history_before
+    assert _owned_asset_state(state_dir) == assets_before
+
+
+@pytest.mark.real_git
+def test_full_cli_init_status_sync_and_apply_uses_a_real_constrained_transport(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_dir = real_git.state_home / "popctl" / "dotfiles"
+    remote_store = DotfilesRepo(
+        tmp_path / "remote.git",
+        home=real_git.home,
+        state_dir=real_git.state_home / "popctl" / "remote",
+    )
+    remote_store.initialize_bare()
+    local_url = f"file://{remote_store.bare_repo}"
+    original_network_git = DotfilesRepo._network_git
+
+    def local_network_git(
+        self: DotfilesRepo,
+        args: list[str],
+        canonical_url: str,
+        *,
+        timeout_seconds: float = 30.0,
+    ) -> object:
+        local_args = [local_url if argument == canonical_url else argument for argument in args]
+        return original_network_git(
+            self,
+            local_args,
+            canonical_url,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def review_current_candidates(
+        discovery: dotfiles.DiscoveryResult,
+        config: DotfilesConfig,
+        *,
+        interactive: bool,
+    ) -> dotfiles.ReviewResult:
+        tracked = (_PATH,) if discovery.candidates else ()
+        return dotfiles.ReviewResult(DotfilesReviewFinalization(tracked, (), ()), config)
+
+    monkeypatch.setattr(DotfilesRepo, "_network_git", local_network_git)
+    monkeypatch.setattr(dotfiles.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(dotfiles, "_review_candidates", review_current_candidates)
+    monkeypatch.setattr(
+        dotfiles,
+        "_acquire_private_remote",
+        lambda url, **_kwargs: (
+            RemotePrivacyRecord(canonical_remote_url=url, method="acknowledged"),
+            False,
+        ),
+    )
+    monkeypatch.setattr(
+        dotfiles,
+        "compute_system_diff",
+        lambda *_args, **_kwargs: SimpleNamespace(missing=[]),
+    )
+    _write(real_git.home, b"initial\n")
+
+    initialized = runner.invoke(app, ["dotfiles", "init", "--remote", _REMOTE])
+    status = runner.invoke(app, ["dotfiles", "status"])
+    _write(real_git.home, b"synced\n")
+    synced = runner.invoke(app, ["dotfiles", "sync"])
+
+    assert initialized.exit_code == 0, initialized.output
+    assert status.exit_code == 0, status.output
+    assert synced.exit_code == 0, synced.output
+    config = load_dotfiles_config()
+    repository = DotfilesRepo(config.bare_repo, home=real_git.home, state_dir=state_dir)
+    synced_oid = repository.ref_oid(MAIN_REF)
+    assert synced_oid is not None
+    _write(real_git.home, b"remote apply\n")
+    remote_oid = repository.checked_commit((_PATH,), "remote apply").commit_oid
+    assert repository.push(_REMOTE).success
+    assert repository.conditional_advance_ref(MAIN_REF, synced_oid, remote_oid)
+    _write(real_git.home, b"synced\n")
+
+    applied = runner.invoke(app, ["dotfiles", "apply"])
+
+    assert applied.exit_code == 0, applied.output
+    assert (real_git.home / _PATH).read_bytes() == b"remote apply\n"
+    assert repository.ref_oid(MAIN_REF) == remote_oid
+    assert remote_store.ref_oid(MAIN_REF) == remote_oid
+
+
+@pytest.mark.real_git
+def test_cli_apply_refuses_no_clobber_without_state_mutation(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, _config, base_oid, source_oid = _configured_source_repo(
+        real_git,
+        tmp_path,
+        target=b"foreign\n",
+    )
+    state_dir = real_git.state_home / "popctl" / "dotfiles"
+    monkeypatch.setattr(DotfilesRepo, "fetch", lambda *_args, **_kwargs: _success_transport())
+    monkeypatch.setattr(
+        dotfiles,
+        "compute_system_diff",
+        lambda *_args, **_kwargs: SimpleNamespace(missing=[]),
+    )
+
+    result = runner.invoke(app, ["dotfiles", "apply"])
+
+    assert result.exit_code == 1
+    assert "differing dotfiles target" in result.output
+    assert (real_git.home / _PATH).read_bytes() == b"foreign\n"
+    assert repository.ref_oid(MAIN_REF) == base_oid
+    assert repository.ref_oid(REMOTE_MAIN_REF) == source_oid
+    assert not get_plan_path(PlanOperation.APPLY, state_dir).exists()
+    assert get_history()[0] == []
+
+
+@pytest.mark.real_git
+@pytest.mark.parametrize("refusal", ["conflict", "divergence"])
+def test_cli_sync_refusal_exit_codes_preserve_home_refs_history_and_state(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    refusal: str,
+) -> None:
+    repository, _config, base_oid, source_oid = _configured_source_repo(
+        real_git,
+        tmp_path,
+        target=b"local\n",
+    )
+    if refusal == "divergence":
+        _write(real_git.home, b"local divergence\n")
+        local_oid = repository.checked_commit((_PATH,), "local divergence").commit_oid
+    else:
+        local_oid = base_oid
+    state_dir = real_git.state_home / "popctl" / "dotfiles"
+    monkeypatch.setattr(DotfilesRepo, "fetch", lambda *_args, **_kwargs: _success_transport())
+
+    result = runner.invoke(app, ["dotfiles", "sync"])
+
+    assert result.exit_code == 1
+    assert ("Conflicted" if refusal == "conflict" else "diverged") in result.output
+    assert repository.ref_oid(MAIN_REF) == local_oid
+    assert repository.ref_oid(REMOTE_MAIN_REF) == source_oid
+    assert (real_git.home / _PATH).read_bytes() == (
+        b"local\n" if refusal == "conflict" else b"local divergence\n"
+    )
+    assert not get_plan_path(PlanOperation.INBOUND_SYNC, state_dir).exists()
+    assert get_history()[0] == []
+
+
+@pytest.mark.real_git
+def test_cli_apply_recovers_after_replace_before_journal_record(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, _config, base_oid, source_oid = _configured_source_repo(real_git, tmp_path)
+    state_dir = real_git.state_home / "popctl" / "dotfiles"
+    original_record = materialize.record_completed_path
+    monkeypatch.setattr(DotfilesRepo, "fetch", lambda *_args, **_kwargs: _success_transport())
+    monkeypatch.setattr(
+        dotfiles,
+        "compute_system_diff",
+        lambda *_args, **_kwargs: SimpleNamespace(missing=[]),
+    )
+
+    def crash_after_replace(*_args: object, **_kwargs: object) -> None:
+        raise DotfilesStateError("crash after replace")
+
+    monkeypatch.setattr(materialize, "record_completed_path", crash_after_replace)
+    interrupted = runner.invoke(app, ["dotfiles", "apply"])
+
+    assert interrupted.exit_code == 1
+    assert (real_git.home / _PATH).read_bytes() == b"remote\n"
+    assert repository.ref_oid(MAIN_REF) == base_oid
+    assert repository.ref_oid(REMOTE_MAIN_REF) == source_oid
+    assert get_plan_path(PlanOperation.APPLY, state_dir).exists()
+    assert get_completed_paths_journal_path(PlanOperation.APPLY, state_dir).exists()
+    assert get_history()[0] == []
+
+    monkeypatch.setattr(materialize, "record_completed_path", original_record)
+    resumed = runner.invoke(app, ["dotfiles", "apply"])
+
+    assert resumed.exit_code == 0, resumed.output
+    assert repository.ref_oid(MAIN_REF) == source_oid
+    assert not get_plan_path(PlanOperation.APPLY, state_dir).exists()
+    assert not get_completed_paths_journal_path(PlanOperation.APPLY, state_dir).exists()
+    assert get_history()[0][0].action_type is HistoryActionType.DOTFILES_APPLY

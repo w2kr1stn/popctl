@@ -150,6 +150,19 @@ def test_hard_exclusions_and_actionable_blocks_are_redacted(tmp_path: Path) -> N
     assert "opaque-value" not in repr(result.blocked)
 
 
+def test_discovery_blocks_shell_curl_credential_flags(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    _write(home, ".zshrc", b"curl --user 'alice:password' https://example.invalid\n")
+
+    result = discover_dotfiles(home)
+
+    assert result.candidates == ()
+    assert [(blocked.path, blocked.category) for blocked in result.blocked] == [
+        (".zshrc", "curl-user-password"),
+    ]
+
+
 def test_binary_and_oversize_leaves_are_not_candidates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

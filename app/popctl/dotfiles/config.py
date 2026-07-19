@@ -92,6 +92,14 @@ def load_dotfiles_config(path: Path | None = None) -> DotfilesConfig:
 
 def save_dotfiles_config(config: DotfilesConfig, path: Path | None = None) -> Path:
     config_path = path or get_dotfiles_config_path()
+    content = tomli_w.dumps(config.model_dump(mode="json", exclude_none=True)).encode("utf-8")
+    try:
+        if config_path.read_bytes() == content:
+            return config_path
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        raise DotfilesConfigError(f"Failed to read dotfiles config {config_path}: {e}") from e
     config_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
     try:
@@ -102,7 +110,7 @@ def save_dotfiles_config(config: DotfilesConfig, path: Path | None = None) -> Pa
             suffix=".tmp",
         ) as f:
             temporary_path = Path(f.name)
-            tomli_w.dump(config.model_dump(mode="json", exclude_none=True), f)
+            f.write(content)
             f.flush()
             os.fsync(f.fileno())
         os.replace(temporary_path, config_path)

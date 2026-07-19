@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from popctl.dotfiles.config import (
@@ -38,6 +39,20 @@ class TestDotfilesConfig:
 
         assert saved_path == path
         assert load_dotfiles_config(path) == config
+
+    def test_does_not_replace_an_unchanged_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        path = tmp_path / "dotfiles.toml"
+        config = DotfilesConfig(remote_url="https://github.com/example/dotfiles.git")
+        save_dotfiles_config(config, path)
+        replace = MagicMock()
+        monkeypatch.setattr("popctl.dotfiles.config.os.replace", replace)
+
+        saved_path = save_dotfiles_config(config, path)
+
+        assert saved_path == path
+        replace.assert_not_called()
 
     def test_rejects_extra_fields(self, tmp_path: Path) -> None:
         with pytest.raises(ValidationError):

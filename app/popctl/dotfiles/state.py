@@ -268,6 +268,7 @@ class InitFinalizationJournal:
 class InitRecovery:
     reusable_remote: str | None
     removed_stores: tuple[Path, ...]
+    removed_configs: tuple[Path, ...]
 
 
 def get_dotfiles_state_dir() -> Path:
@@ -427,16 +428,27 @@ def complete_materialization_state_for_source(
     source_ref: str,
     source_tree_oid: str,
     state_dir: Path | None = None,
+    recover_plan_only: bool = False,
 ) -> None:
     plan_path = get_plan_path(operation, state_dir)
     journal_path = get_completed_paths_journal_path(operation, state_dir)
     if not plan_path.exists() and not journal_path.exists():
         return
-    if not plan_path.exists() or not journal_path.exists():
+    if not plan_path.exists() and journal_path.exists():
         raise DotfilesStateError("Dotfiles materialization state is incomplete")
     existing_plan = load_materialization_plan(operation, state_dir)
     if existing_plan.source_ref != source_ref or existing_plan.source_tree_oid != source_tree_oid:
         raise DotfilesPlanMismatchError("Materialization state does not match the validated source")
+    if not journal_path.exists():
+        if not recover_plan_only:
+            raise DotfilesStateError("Dotfiles materialization state is incomplete")
+        try:
+            plan_path.unlink()
+        except OSError as e:
+            raise DotfilesStateError(
+                f"Failed to clear completed {operation.value} materialization state: {e}"
+            ) from e
+        return
     journal = load_completed_paths_journal(operation, state_dir)
     _verify_journal_for_plan(journal, existing_plan)
     if set(journal.completed_paths) != {entry.path for entry in existing_plan.entries}:
@@ -494,15 +506,16 @@ def recover_init_finalization(state_dir: Path | None = None) -> InitRecovery | N
     if journal is None:
         return None
     removed_stores: list[Path] = []
-    if journal.phase is InitPhase.PREPARED:
-        _remove_owned_store(journal.temporary_store, removed_stores)
-    elif journal.phase is InitPhase.STORE_PROMOTED:
+    removed_configs: list[Path] = []
+    if journal.phase in {InitPhase.PREPARED, InitPhase.STORE_PROMOTED}:
         _remove_owned_store(journal.temporary_store, removed_stores)
         _remove_owned_store(journal.final_store, removed_stores)
+        _remove_owned_config(journal.config_path, removed_configs)
     clear_init_finalization_journal(state_dir)
     return InitRecovery(
         reusable_remote=journal.created_remote,
         removed_stores=tuple(removed_stores),
+        removed_configs=tuple(removed_configs),
     )
 
 
@@ -584,3 +597,13 @@ def _remove_owned_store(path: Path, removed_stores: list[Path]) -> None:
     except OSError as e:
         raise DotfilesStateError(f"Failed to remove unfinished dotfiles store {path}: {e}") from e
     removed_stores.append(path)
+
+
+def _remove_owned_config(path: Path, removed_configs: list[Path]) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    try:
+        path.unlink()
+    except OSError as e:
+        raise DotfilesStateError(f"Failed to remove unfinished dotfiles config {path}: {e}") from e
+    removed_configs.append(path)
