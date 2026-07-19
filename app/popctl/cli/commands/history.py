@@ -11,7 +11,7 @@ from popctl.utils.formatting import console, print_error, print_info, print_warn
 
 app = typer.Typer(
     name="history",
-    help="View history of package changes.",
+    help="View action history.",
     invoke_without_command=True,
 )
 
@@ -41,11 +41,10 @@ def history(
         ),
     ] = False,
 ) -> None:
-    """Show history of package changes.
+    """Show action history.
 
-    Displays a list of past package management operations that have been
-    recorded by popctl. Each entry shows the action type, affected packages,
-    timestamp, and whether the action can be undone.
+    Displays a list of past actions recorded by popctl. Each entry shows the action type,
+    affected items, timestamp, and whether the action can be undone.
 
     Examples:
         popctl history              # Show last 20 entries
@@ -77,18 +76,18 @@ def history(
 
 
 def _print_table(entries: list[HistoryEntry]) -> None:
-    table = Table(title="Package History")
+    table = Table(title="Action History")
     table.add_column("ID", style="dim")
     table.add_column("Timestamp", style="cyan")
     table.add_column("Action", style="green")
-    table.add_column("Packages", style="white")
+    table.add_column("Items", style="white")
     table.add_column("Undo?", style="yellow")
 
     for entry in entries:
-        pkg_count = len(entry.items)
-        pkg_names = ", ".join(item.name for item in entry.items[:3])
-        if pkg_count > 3:
-            pkg_names += f" (+{pkg_count - 3} more)"
+        item_count = len(entry.items)
+        item_names = ", ".join(item.name for item in entry.items[:3])
+        if item_count > 3:
+            item_names += f" (+{item_count - 3} more)"
 
         table.add_row(
             entry.id[:8],
@@ -96,7 +95,7 @@ def _print_table(entries: list[HistoryEntry]) -> None:
                 "%Y-%m-%d %H:%M"
             ),
             entry.action_type.value,
-            pkg_names,
+            item_names,
             "[green]Yes[/]" if entry.reversible else "[red]No[/]",
         )
 

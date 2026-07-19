@@ -20,7 +20,7 @@ def test_setup_persists_selected_provider() -> None:
         patch("popctl.cli.commands.setup.command_exists", return_value=True),
         patch("popctl.cli.commands.setup.manifest_exists", return_value=True),
     ):
-        result = runner.invoke(app, ["setup"], input="gemini\n1\ny\nn\nn\n")
+        result = runner.invoke(app, ["setup"], input="gemini\n1\ny\nn\nn\nn\n")
 
     assert result.exit_code == 0
     assert load_advisor_config().provider == "gemini"
@@ -38,7 +38,7 @@ def test_setup_saves_hidden_api_key() -> None:
         patch("popctl.cli.commands.setup.command_exists", return_value=True),
         patch("popctl.cli.commands.setup.manifest_exists", return_value=True),
     ):
-        result = runner.invoke(app, ["setup"], input=f"codex\n2\n{api_key}\ny\nn\nn\n")
+        result = runner.invoke(app, ["setup"], input=f"codex\n2\n{api_key}\ny\nn\nn\nn\n")
 
     assert result.exit_code == 0
     config_path = get_config_dir() / "advisor.toml"
@@ -59,7 +59,7 @@ def test_setup_saves_advisor_config_once_after_confirmation() -> None:
         patch("popctl.cli.commands.setup.manifest_exists", return_value=True),
         patch("popctl.cli.commands.setup.save_advisor_config") as save_advisor_config,
     ):
-        result = runner.invoke(app, ["setup"], input="\n\ny\nn\nn\n")
+        result = runner.invoke(app, ["setup"], input="\n\ny\nn\nn\nn\n")
 
     assert result.exit_code == 0
     save_advisor_config.assert_called_once()
@@ -151,6 +151,7 @@ def test_setup_prints_static_guide_without_a_tty() -> None:
     assert "interactive terminal" in result.stdout
     assert "1. Check your system: popctl doctor" in result.stdout
     assert "3. Create a manifest: popctl init" in result.stdout
+    assert "7. Set up private dotfiles: popctl dotfiles init" in result.stdout
     command_exists.assert_not_called()
 
 
@@ -165,7 +166,7 @@ def test_setup_offers_manifest_creation_when_missing() -> None:
         patch("popctl.cli.commands.setup.manifest_exists", return_value=False),
         patch("popctl.cli.commands.setup.init_manifest") as init_manifest,
     ):
-        result = runner.invoke(app, ["setup"], input="\n\ny\ny\nn\nn\n")
+        result = runner.invoke(app, ["setup"], input="\n\ny\ny\nn\nn\nn\n")
 
     assert result.exit_code == 0
     init_manifest.assert_called_once_with()
@@ -182,7 +183,7 @@ def test_setup_skips_manifest_creation_when_present() -> None:
         patch("popctl.cli.commands.setup.manifest_exists", return_value=True),
         patch("popctl.cli.commands.setup.init_manifest") as init_manifest,
     ):
-        result = runner.invoke(app, ["setup"], input="\n\ny\nn\nn\n")
+        result = runner.invoke(app, ["setup"], input="\n\ny\nn\nn\nn\n")
 
     assert result.exit_code == 0
     init_manifest.assert_not_called()
@@ -199,7 +200,7 @@ def test_setup_skips_advisor_without_creating_config() -> None:
         patch("popctl.cli.commands.setup.command_exists", return_value=True),
         patch("popctl.cli.commands.setup.manifest_exists", return_value=True),
     ):
-        result = runner.invoke(app, ["setup"], input="skip\nn\nn\n")
+        result = runner.invoke(app, ["setup"], input="skip\nn\nn\nn\n")
 
     assert result.exit_code == 0
     assert "AI advisor: skipped" in result.output
@@ -232,9 +233,45 @@ def test_setup_recommends_manifest_before_sync_when_manifest_is_skipped() -> Non
         patch("popctl.cli.commands.setup.command_exists", return_value=True),
         patch("popctl.cli.commands.setup.manifest_exists", return_value=False),
     ):
-        result = runner.invoke(app, ["setup"], input="\n\ny\nn\nn\nn\n")
+        result = runner.invoke(app, ["setup"], input="\n\ny\nn\nn\nn\nn\n")
 
     assert result.exit_code == 0
     assert "run popctl init first" in result.output
     assert "popctl sync can also create a manifest" in result.output
     assert "on its first" in result.output
+
+
+def test_setup_offers_dotfiles_initialization_when_accepted() -> None:
+    with (
+        patch("popctl.cli.commands.setup._is_interactive", return_value=True),
+        patch(
+            "popctl.cli.commands.setup.platform.freedesktop_os_release",
+            return_value=_UBUNTU_OS_RELEASE,
+        ),
+        patch("popctl.cli.commands.setup.command_exists", return_value=True),
+        patch("popctl.cli.commands.setup.manifest_exists", return_value=True),
+        patch("popctl.cli.commands.setup.init_dotfiles") as init_dotfiles,
+    ):
+        result = runner.invoke(app, ["setup"], input="\n\ny\nn\nn\ny\n")
+
+    assert result.exit_code == 0
+    assert "Private dotfiles: initialized" in result.output
+    init_dotfiles.assert_called_once_with()
+
+
+def test_setup_skips_dotfiles_initialization_when_declined() -> None:
+    with (
+        patch("popctl.cli.commands.setup._is_interactive", return_value=True),
+        patch(
+            "popctl.cli.commands.setup.platform.freedesktop_os_release",
+            return_value=_UBUNTU_OS_RELEASE,
+        ),
+        patch("popctl.cli.commands.setup.command_exists", return_value=True),
+        patch("popctl.cli.commands.setup.manifest_exists", return_value=True),
+        patch("popctl.cli.commands.setup.init_dotfiles") as init_dotfiles,
+    ):
+        result = runner.invoke(app, ["setup"], input="\n\ny\nn\nn\nn\n")
+
+    assert result.exit_code == 0
+    assert "Private dotfiles: skipped" in result.output
+    init_dotfiles.assert_not_called()

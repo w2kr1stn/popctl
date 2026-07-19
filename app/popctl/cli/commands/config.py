@@ -42,6 +42,7 @@ _CONFIG_CREATION_COMMANDS = {
     "advisor": "popctl setup",
     "alerts": "popctl alerts init-config",
     "backup": "popctl backup init",
+    "dotfiles": "popctl dotfiles init",
     "theme": "popctl config edit theme",
 }
 type TomlValue = (
@@ -63,6 +64,7 @@ def _config_locations() -> dict[str, Path]:
         "advisor": config_dir / "advisor.toml",
         "alerts": get_alerts_config_path(),
         "backup": config_dir / "backup.toml",
+        "dotfiles": config_dir / "dotfiles.toml",
         "theme": config_dir / "theme.toml",
     }
 
@@ -112,7 +114,9 @@ def path() -> None:
 def show(
     name: Annotated[
         str | None,
-        typer.Argument(help="Config to show: manifest, advisor, alerts, backup, or theme."),
+        typer.Argument(
+            help="Config to show: manifest, advisor, alerts, backup, dotfiles, or theme."
+        ),
     ] = None,
 ) -> None:
     """Print one configuration file, redacting the advisor API key."""
@@ -158,11 +162,19 @@ def show(
 def edit(
     name: Annotated[
         str,
-        typer.Argument(help="Config to edit: manifest, advisor, alerts, backup, or theme."),
+        typer.Argument(
+            help="Config to edit: manifest, advisor, alerts, backup, dotfiles, or theme."
+        ),
     ],
 ) -> None:
     """Open one configuration file in the configured editor."""
     config_path = _get_config_path(name)
+    if name == "dotfiles" and not config_path.exists():
+        command = _CONFIG_CREATION_COMMANDS[name]
+        typer.echo(
+            f"The {name} config has not been created yet. Create it with `{command}`."
+        )
+        return
     if not sys.stdin.isatty():
         typer.echo(
             f"Cannot open an editor without an interactive terminal. Config path: {config_path}",

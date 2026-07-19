@@ -15,9 +15,10 @@ This document provides a comprehensive technical reference for the popctl implem
 7. [AI Advisor System](#ai-advisor-system)
 8. [The Sync Pipeline](#the-sync-pipeline)
 9. [CLI Commands](#cli-commands)
-10. [Desktop Alerts](#desktop-alerts)
-11. [Data Flow Examples](#data-flow-examples)
-12. [Design Decisions](#design-decisions)
+10. [Dotfiles](#dotfiles)
+11. [Desktop Alerts](#desktop-alerts)
+12. [Data Flow Examples](#data-flow-examples)
+13. [Design Decisions](#design-decisions)
 
 ---
 
@@ -110,6 +111,7 @@ popctl follows a **Modular Monolith** architecture with strict layer separation 
 | `setup.py` | `popctl setup` |
 | `advisor.py` | `popctl advisor {classify,session,apply}` |
 | `alerts.py` | `popctl alerts {watch,init-config,install-service,test}` |
+| `dotfiles.py` | `popctl dotfiles {init,status,sync,apply}` |
 | `fs.py` | `popctl fs {scan,clean}` |
 | `config.py` | `popctl config {path,show,edit,scan,clean}` |
 | `backup.py` | `popctl backup {init,create,restore,list,info}` |
@@ -139,7 +141,7 @@ popctl follows a **Modular Monolith** architecture with strict layer separation 
 
 | File | Responsibility |
 |------|----------------|
-| `paths.py` | XDG path resolution (`get_config_dir()`, `get_state_dir()`, `get_manifest_path()`, `ensure_dir()`) |
+| `paths.py` | XDG path resolution (`get_config_dir()`, `get_data_dir()`, `get_state_dir()`, `get_manifest_path()`, `ensure_dir()`) |
 | `manifest.py` | `load_manifest()`, `save_manifest()`, `manifest_exists()`, `scan_and_create_manifest()` |
 | `baseline.py` | `PROTECTED_PACKAGE_PATTERNS`, `PROTECTED_PACKAGES`, `is_package_protected()` |
 | `theme.py` | Color theme loading from TOML |
@@ -160,11 +162,22 @@ popctl follows a **Modular Monolith** architecture with strict layer separation 
 | `config.py` | `load_backup_config()` — reads `~/.config/popctl/backup.toml` (target, recipients, identity, max_backups) |
 | `restore.py` | `restore_backup()` — decrypt, decompress, restore files + packages; `read_backup_metadata()`, `list_backups()` |
 
+### Dotfiles (`dotfiles/`)
+
+| File | Responsibility |
+|------|----------------|
+| `config.py` | Strict `DotfilesConfig` TOML loading and atomic saving; defaults the bare store from `get_data_dir()` |
+| `state.py` | Process lock, immutable apply/inbound-sync plans, completed-paths journals, and init finalization recovery |
+| `secret_filter.py` | Fail-closed path and content admission filter for every candidate, commit, remote tree, and apply source |
+| `discovery.py` | Bounded, deterministic exact-file candidate discovery under the supported `$HOME` roots |
+| `repo.py` | The only controlled Git interface: validation, private-index commits, refs, and isolated transport |
+| `materialize.py` | Ref-tree preflight and fd-anchored, atomic per-file writes into `$HOME` |
+
 ### Infrastructure (`utils/`)
 
 | File | Responsibility |
 |------|----------------|
-| `shell.py` | `run_command()` subprocess wrapper with timeout, `CommandResult` |
+| `shell.py` | Text `run_command()` and byte-preserving `run_command_bytes()` subprocess wrappers with typed results and timeouts |
 | `formatting.py` | Rich console helpers (`print_info`, `print_error`, `print_warning`, `print_success`, `console`) |
 
 ---
@@ -231,6 +244,9 @@ class HistoryActionType(Enum):
     ADVISOR_APPLY = "advisor_apply"
     FS_DELETE = "fs_delete"
     CONFIG_DELETE = "config_delete"
+    DOTFILES_INIT = "dotfiles_init"
+    DOTFILES_SYNC = "dotfiles_sync"
+    DOTFILES_APPLY = "dotfiles_apply"
 
 @dataclass(frozen=True, slots=True)
 class HistoryItem:
@@ -250,6 +266,8 @@ class HistoryEntry:
 **JSONL serialization:** `to_json_line()` / `from_json_line()` for append-only storage.
 
 **Factory function:** `create_history_entry()` auto-generates ID (UUID hex[:12]) and timestamp.
+Dotfiles entries hold home-relative paths and ref metadata and are always non-reversible; the CLI
+therefore labels the shared table as Action History / Items rather than package-specific terms.
 
 ### Manifest Models (`models/manifest.py`)
 
@@ -326,6 +344,7 @@ class DomainActionResult:
 
 ```python
 get_config_dir()    # ~/.config/popctl/
+get_data_dir()      # ~/.local/share/popctl/
 get_state_dir()     # ~/.local/state/popctl/
 get_manifest_path() # ~/.config/popctl/manifest.toml
 ensure_dir(path, name) -> Path  # mkdir -p with error handling
@@ -687,8 +706,9 @@ The main orchestrator. See [The Sync Pipeline](#the-sync-pipeline) for details.
 ### setup (`cli/commands/setup.py`)
 
 Guides first-time users through core-tool checks, advisor provider and authentication selection,
-optional manifest creation, and desktop-alert and encrypted-backup delegation. When stdin is not a
-TTY, it prints a static numbered guide instead of prompting.
+optional manifest creation, desktop-alert and encrypted-backup delegation, and optional interactive
+dotfiles initialization. When stdin is not a TTY, it prints a static numbered guide instead of
+prompting.
 
 ### init (`cli/commands/init.py`)
 
@@ -748,14 +768,18 @@ Note: Domain orphan advising (filesystem/configs) is only available through `pop
 
 **`popctl config clean`** — Delete orphaned config files (with backup + confirmation).
 
-**`popctl config path`** — List the manifest, advisor, alerts, backup, and theme configuration
-locations with their current existence status.
+**`popctl config path`** — List the manifest, advisor, alerts, backup, dotfiles, and theme
+configuration locations with their current existence status.
 
 **`popctl config show [name]`** — Print one of those files; the advisor `api_key` value is
 structurally redacted, and an unparseable file is reported instead of dumped raw.
 
 **`popctl config edit [name]`** — Open the named file in `$EDITOR` (falls back to `$VISUAL`,
 then `nano`); refuses without an interactive terminal.
+
+The absent `dotfiles.toml` case is deliberately read-only: `popctl config edit dotfiles` prints
+the `popctl dotfiles init` hint and does not create a partial configuration. Once initialization has
+created the file, it follows the ordinary editor path.
 
 Note: when the optional djinn session backend is active AND an `api_key` is configured, the
 advisor warns and runs on the host instead — the session interface cannot yet receive a
@@ -787,6 +811,29 @@ skip confirmation.
 
 **`popctl backup info <source>`** — Show backup metadata without restoring.
 
+### dotfiles (`cli/commands/dotfiles.py`)
+
+**`popctl dotfiles init [--remote URL]`** — Discover safe exact files, obtain reviewed
+track/ignore/ask decisions, create a checked initial commit in a new bare store, and connect it to
+a private GitHub repository. `--remote` and `--from` are mutually exclusive.
+
+**`popctl dotfiles init --from URL`** — Bootstrap a fresh machine from an existing popctl-format
+repository after the same privacy gate, marker validation, and full-tree validation. It does not
+run a curation pass; `apply` materializes the validated source and establishes local `main`.
+
+**`popctl dotfiles status`** — Fetch only remote refs with `--no-write-fetch-head`, then report
+branch relation, tracked-path state, new candidates, and blocked candidates without modifying
+`$HOME`, the local branch, `HEAD`, configuration, or history.
+
+**`popctl dotfiles sync`** — Fetch and classify before any local mutation. It refuses diverged
+histories, both-changed paths, and remote deletion of a tracked path; compatible inbound changes are
+materialized without a checkout, eligible local changes are checked into one commit, then an
+automatic push is attempted. Offline sync can use cached refs and preserves pending work.
+
+**`popctl dotfiles apply [--dry-run]`** — Enforces package-first ordering, fetches or uses a
+cached validated source, emits the deterministic no-clobber plan for `--dry-run`, and otherwise
+materializes directly from that ref. It never executes repository content or deletes a target.
+
 ### manifest (`cli/commands/manifest.py`)
 
 **`popctl manifest keep <name>`** — Add a package to the manifest keep list.
@@ -812,7 +859,113 @@ Finds last reversible entry, computes inverse actions (INSTALL ↔ REMOVE), chec
 
 ### doctor (`cli/commands/doctor.py`)
 
-Reports readiness of core package management and optional features; only missing core package-management tools cause exit status 1.
+Reports readiness of core package management and optional features; only missing core
+package-management tools cause exit status 1. Its dotfiles section checks Git, configuration, bare
+repository, remote validity, and a five-second controlled `ls-remote` probe. Offline,
+authentication, timeout, and other reachability results remain distinct warnings. It also explains
+that absent `gh` means automatic pushes cannot recheck GitHub visibility and recommends installing
+it for per-push privacy verification.
+
+---
+
+## Dotfiles
+
+`popctl dotfiles` is a separate, private user-configuration subsystem. Its Git work tree is always
+the user's `$HOME`, but it has no checkout workflow: the only persistent Git store is the bare
+repository at `get_data_dir() / "dotfiles.git"`. Tracked names are canonical, home-relative,
+regular text files. The subsystem does not manage `/etc`, symlinks, binaries, templating, or merge
+resolution.
+
+### Configuration and repository contract
+
+`dotfiles/config.py` owns the strict, atomic `dotfiles.toml` format. Its `DotfilesConfig` records
+the bare repository path, canonical GitHub remote URL, exact-path ambiguous-content allowlist,
+ignored paths, and a remote-privacy record. There are no credential fields. The privacy record is
+either `verified` by `gh repo view --json isPrivate` or `acknowledged` after the user explicitly
+accepts an unverified-private exact URL. The latter is standing consent only for that canonical URL;
+a remote change invalidates it. With `gh`, initialization and every automatic push fail closed unless
+the repository is currently private.
+
+`dotfiles/repo.py` owns every Git operation. It permits canonical GitHub HTTPS and GitHub SSH URLs
+only, uses explicit `main` and format-marker refspecs, and verifies the
+`popctl-dotfiles-format-v1` marker before treating a remote as a compatible popctl repository. The
+marker is format compatibility, not cryptographic provenance.
+
+### Checked-commit gateway and secret filtering
+
+The checked-commit gateway is the only path that creates local dotfiles commits. It reads each
+approved home file through fd-anchored regular-file checks, snapshots immutable bytes, hashes those
+bytes into a private temporary index, validates the resulting tree, creates a commit, and
+conditionally advances `refs/heads/main`. It does not stage a live `$HOME` work tree, so a change
+after the snapshot cannot silently become part of the commit.
+
+`dotfiles/secret_filter.py` is defense in depth, not advisor policy. It runs before candidate
+exposure, before staging, over complete committed and fetched trees, and before apply. The pipeline:
+
+1. Rejects canonical paths matching hard deny globs (keys, credential stores, browser login data,
+   popctl state, and similar secret-bearing locations), non-regular files, oversized files, binary
+   data, and unreadable paths.
+2. Normalizes line endings, examines raw assignment pairs, and applies hard recognizers for private
+   key blocks, AGE keys, known tokens, authorization and Git extra headers, proxy credentials,
+   curl credentials, and URL userinfo.
+3. Parses JSON, YAML, TOML, dotenv, and selected INI files fail closed. Parsed scalars and key/value
+   pairs re-enter the hard recognizers, including YAML's semantic scalars. Duplicate
+   credential-shaped fields are a hard rejection rather than a last-value-wins ambiguity.
+4. Recursively decodes canonical base64 candidates to depth two and rejects a further decodable
+   layer, so encoded hard findings cannot bypass the scan.
+5. Returns ambiguous findings only for an explicit canonical-path allowlist acknowledgement. An
+   allowlist can never override a hard finding, malformed structured content, or an unsafe path.
+
+### Transport isolation
+
+Network Git calls are deliberately narrower than ordinary user Git. The repository builds a positive
+environment allowlist, supplies owned global Git configuration with hooks disabled, disables terminal
+prompts, and invokes SSH with an owned `ssh -F` configuration plus batch mode. Before each connection
+it validates the bare repository's local configuration against the small owned-key set, rejecting
+unexpected hooks, URL rewrites, proxy/SSH overrides, or local configuration injection. Existing user
+credential helpers are carried into the owned network configuration; popctl neither stores nor prints
+tokens. `ls_remote`, fetch, and push return typed success, offline, authentication, timeout, or other
+transport outcomes.
+
+### Ref materialization and recovery
+
+Remote content is never merged or checked out into `$HOME`. The inbound path is:
+
+```
+fetch ref → validate marker/tree/secrets → classify refs and paths → preflight targets
+          → materialize exact blobs → conditionally advance local ref
+```
+
+`materialize.py` first creates an immutable per-path plan from the validated ref. A target may be
+created, left as a matching no-op, or replaced only when it still equals the tracked base; an
+untracked or locally changed differing target is refused. Writes traverse `$HOME` through directory
+file descriptors with `O_NOFOLLOW`, recheck the target fingerprint immediately before `os.replace`,
+write an atomic per-file temporary replacement, and preserve the tracked executable mode. A source
+tree that drops a tracked path is refused rather than deleting a home file.
+
+`state.py` serializes mutations with an OS-released `flock`. Apply and inbound-sync plans include
+the source ref/tree and exact path/OID/mode/action/fingerprint entries, with completed-paths journals
+written beside them. Recovery resumes a matching immutable plan or refuses changed targets; it never
+rolls back already-completed safe files. Initialization has a separate finalization journal that
+records only popctl-owned temporary/final stores and configuration transition, so interrupted setup
+cleans unfinished owned artifacts and can reuse a created remote without touching foreign state.
+
+### Sync and apply state machines
+
+`sync` first fetches the explicit remote ref. Online, it validates the complete remote tree, refuses
+diverged history, conflicts, or tracked-file deletions, materializes a compatible behind ref through
+the plan flow above, discovers safe new candidates, and accepts only explicitly reviewed additions.
+It then checked-commits all eligible local changes, persists reviewed ignores/allowlist changes, and
+pushes if local `main` is ahead. A push failure leaves the checked local commit as `pending-push` for
+the next online sync. Offline, it uses only cached refs: it never materializes remote content or
+pushes, and it skips a local commit if the cached remote is ahead.
+
+`apply` enforces the package manifest gate before reading dotfiles. It fetches or uses the cached
+remote source, accepts only equal/behind (including bootstrap-behind) ref relations, validates the
+full source tree and tracked-path continuity, and builds the same plan. `--dry-run` renders that
+deterministic plan with zero writes. A real apply materializes every safe entry, journals progress,
+then conditionally advances local `main` only after materialization succeeds. Both sync and apply
+record non-reversible action history only after their successful mutations.
 
 ---
 
@@ -950,8 +1103,8 @@ undo.py
 
 ## On-Disk Format Stability
 
-popctl persists five user-owned files (see the file-locations table): the manifest, three
-feature configs (advisor, alerts, backup) and the append-only `history.jsonl`. Their
+popctl persists the manifest, four feature configs (advisor, alerts, backup, dotfiles), and the
+append-only `history.jsonl` (see the file-locations table). Their
 compatibility contract:
 
 - **Stable within a major version.** Fields are only added, never renamed or removed.
@@ -966,8 +1119,8 @@ compatibility contract:
   format has needed one (deliberate YAGNI — popctl has no database and all formats are
   human-readable TOML/JSONL).
 - **Round-trip guarantee.** Save/load round-trips are covered by tests
-  (`tests/unit/core/test_manifest.py`), and `backup.toml` produced by `popctl backup init`
-  is verified to load through `load_backup_config`.
+  (`tests/unit/core/test_manifest.py`); `backup.toml` produced by `popctl backup init` is verified
+  through `load_backup_config`, and `dotfiles.toml` through `load_dotfiles_config`.
 - **Escape hatch.** Every file is plain text under the XDG paths — export/import is a
   file copy; encrypted backups additionally capture them via `popctl backup create`.
 
@@ -1048,6 +1201,9 @@ current baseline are documented above; Pyright and Ruff results are not recorded
 | System backups | `~/.local/state/popctl/backups/` (default local target) |
 | Backup config | `~/.config/popctl/backup.toml` |
 | Backup recipients | `~/.config/popctl/backup.age-recipients` (fallback) |
+| Dotfiles config | `~/.config/popctl/dotfiles.toml` |
+| Dotfiles bare repository | `~/.local/share/popctl/dotfiles.git` |
+| Dotfiles state | `~/.local/state/popctl/dotfiles/` (lock, plans, journals, owned Git transport assets) |
 | Advisor sessions | `~/.local/state/popctl/sessions/<timestamp>/` (`~/.djinn/sessions/popctl/` when the djinn backend is active) |
 | Advisor memory | `~/.local/state/popctl/advisor/memory.md` |
 | Default theme | `app/popctl/data/theme.toml` |

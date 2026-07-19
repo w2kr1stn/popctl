@@ -281,11 +281,13 @@ class DotfilesRepo:
         args = ["push", canonical_url, MAIN_PUSH_REFSPEC, MARKER_PUSH_REFSPEC]
         return _transport_result(self._network_git(args, canonical_url))
 
-    def ls_remote(self, url: str) -> LsRemoteResult:
+    def ls_remote(self, url: str, *, timeout_seconds: float = 30.0) -> LsRemoteResult:
         canonical_url = validate_remote_url(url)
-        result = self._network_git(
-            ["ls-remote", "--refs", canonical_url, MAIN_REF, MARKER_REF], canonical_url
-        )
+        args = ["ls-remote", "--refs", canonical_url, MAIN_REF, MARKER_REF]
+        if timeout_seconds == 30.0:
+            result = self._network_git(args, canonical_url)
+        else:
+            result = self._network_git(args, canonical_url, timeout_seconds=timeout_seconds)
         return self._parse_ls_remote_result(result)
 
     def ls_remote_all_refs(self, url: str) -> LsRemoteResult:
@@ -567,12 +569,18 @@ class DotfilesRepo:
         result = self._network_git(args, canonical_url)
         return _transport_result(result)
 
-    def _network_git(self, args: list[str], canonical_url: str) -> BytesCommandResult:
+    def _network_git(
+        self,
+        args: list[str],
+        canonical_url: str,
+        *,
+        timeout_seconds: float = 30.0,
+    ) -> BytesCommandResult:
         self._validate_owned_local_config(canonical_url)
         return run_command_bytes(
             self._git_args(args),
             env=self._network_environment(),
-            timeout=30.0,
+            timeout=timeout_seconds,
         )
 
     def _content_git(

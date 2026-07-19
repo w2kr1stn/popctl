@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import typer
@@ -13,6 +14,15 @@ from popctl.advisor.config import (
 )
 from popctl.alerts.config import get_alerts_config_path, load_alerts_config
 from popctl.core.paths import get_config_dir
+from popctl.dotfiles.config import DotfilesConfigError, load_dotfiles_config
+from popctl.dotfiles.repo import (
+    DotfilesRepo,
+    DotfilesRepoError,
+    RemoteUrlError,
+    TransportOutcome,
+    validate_remote_url,
+)
+from popctl.dotfiles.state import get_dotfiles_state_dir
 from popctl.utils.formatting import console
 from popctl.utils.shell import command_exists
 
@@ -33,8 +43,10 @@ _INSTALL_HINTS: dict[str, str] = {
     "zstd": "sudo apt install zstd",
     "tar": "sudo apt install tar",
     "rclone": "sudo apt install rclone",
+    "git": "sudo apt install git",
 }
 _ADVISOR_CONFIG_FIELDS = frozenset({"provider", "model", "api_key", "timeout_seconds"})
+_DOTFILES_REACHABILITY_TIMEOUT_SECONDS = 5.0
 
 @dataclass(frozen=True, slots=True)
 class DoctorCheck:
@@ -235,6 +247,152 @@ def _backup_checks() -> list[DoctorCheck]:
     return checks
 
 
+def _dotfiles_skipped_checks(detail: str) -> list[DoctorCheck]:
+    return [
+        DoctorCheck("Repository", "skipped", detail),
+        DoctorCheck("Remote", "skipped", detail),
+        DoctorCheck("Reachability", "skipped", detail),
+        DoctorCheck("GitHub privacy recheck", "skipped", detail),
+    ]
+
+
+def _dotfiles_reachability_check(repo: DotfilesRepo, remote_url: str) -> DoctorCheck:
+    try:
+        result = repo.ls_remote(
+            remote_url,
+            timeout_seconds=_DOTFILES_REACHABILITY_TIMEOUT_SECONDS,
+        )
+    except (DotfilesRepoError, OSError):
+        return DoctorCheck(
+            "Reachability",
+            "warning",
+            "Could not run the controlled remote reachability probe",
+        )
+
+    details: dict[TransportOutcome, tuple[CheckStatus, str]] = {
+        TransportOutcome.SUCCESS: ("ready", "Remote is reachable"),
+        TransportOutcome.OFFLINE: (
+            "warning",
+            "Remote is offline or unreachable; dotfiles commands can use cached refs",
+        ),
+        TransportOutcome.AUTH: (
+            "warning",
+            "Remote authentication failed; check Git or SSH credentials",
+        ),
+        TransportOutcome.TIMEOUT: (
+            "warning",
+            "Remote reachability probe timed out",
+        ),
+        TransportOutcome.OTHER: (
+            "warning",
+            "Remote reachability probe failed; inspect the remote and network",
+        ),
+    }
+    status, detail = details[result.transport.outcome]
+    return DoctorCheck("Reachability", status, detail)
+
+
+def _dotfiles_privacy_check() -> DoctorCheck:
+    if command_exists("gh"):
+        return DoctorCheck(
+            "GitHub privacy recheck",
+            "ready",
+            "Available — automatic pushes recheck GitHub repository visibility",
+        )
+    return DoctorCheck(
+        "GitHub privacy recheck",
+        "warning",
+        "gh is not installed, so automatic pushes cannot recheck repository visibility. "
+        "Install gh for per-push privacy verification.",
+    )
+
+
+def _dotfiles_checks() -> list[DoctorCheck]:
+    git_check = _binary_check("git")
+    config_path = get_config_dir() / "dotfiles.toml"
+    checks = [git_check]
+    if not config_path.exists():
+        checks.append(
+            DoctorCheck(
+                "Configuration",
+                "warning",
+                f"Setup required — config absent: {config_path}. Run popctl dotfiles init.",
+            )
+        )
+        checks.extend(_dotfiles_skipped_checks("Skipped until dotfiles are initialized"))
+        return checks
+
+    try:
+        config = load_dotfiles_config(config_path)
+    except DotfilesConfigError:
+        checks.append(
+            DoctorCheck(
+                "Configuration",
+                "warning",
+                "Cannot load dotfiles.toml; fix it or rerun popctl dotfiles init",
+            )
+        )
+        checks.extend(_dotfiles_skipped_checks("Skipped until dotfiles configuration is valid"))
+        return checks
+
+    checks.append(DoctorCheck("Configuration", "ready", f"Loaded: {config_path}"))
+    repo_present = config.bare_repo.is_dir()
+    checks.append(
+        DoctorCheck(
+            "Repository",
+            "ready" if repo_present else "warning",
+            (
+                f"Present: {config.bare_repo}"
+                if repo_present
+                else (
+                    f"Missing: {config.bare_repo}. Restore it or run "
+                    "popctl dotfiles init --from <url>."
+                )
+            ),
+        )
+    )
+    try:
+        remote_url = validate_remote_url(config.remote_url)
+    except RemoteUrlError:
+        checks.append(DoctorCheck("Remote", "warning", "Configured remote is missing or invalid"))
+        checks.append(
+            DoctorCheck("Reachability", "skipped", "Skipped until a valid remote is configured")
+        )
+        checks.append(_dotfiles_privacy_check())
+        return checks
+
+    checks.append(DoctorCheck("Remote", "ready", "Configured"))
+    if git_check.status != "ready":
+        checks.append(DoctorCheck("Reachability", "skipped", "Skipped until git is installed"))
+    elif not repo_present:
+        checks.append(
+            DoctorCheck(
+                "Reachability",
+                "skipped",
+                "Skipped until the bare repository exists",
+            )
+        )
+    else:
+        try:
+            repo = DotfilesRepo(
+                config.bare_repo,
+                home=Path.home(),
+                state_dir=get_dotfiles_state_dir(),
+            )
+        except (DotfilesRepoError, OSError):
+            checks.append(
+                DoctorCheck(
+                    "Reachability",
+                    "warning",
+                    "Could not prepare the controlled remote reachability probe",
+                )
+            )
+        else:
+            checks.append(_dotfiles_reachability_check(repo, remote_url))
+    checks.append(_dotfiles_privacy_check())
+    return checks
+
+
 def doctor() -> None:
     package_checks = [
         _binary_check(command) for command in ("dpkg-query", "apt-mark", "apt-get", "sudo")
@@ -283,6 +441,8 @@ def doctor() -> None:
     )
 
     _print_section("Backup (optional)", _backup_checks())
+
+    _print_section("Dotfiles (optional)", _dotfiles_checks())
 
     if not package_ready:
         console.print(

@@ -19,6 +19,7 @@ from popctl.domain.models import (
     PathType,
     ScannedEntry,
 )
+from popctl.dotfiles.config import DotfilesConfig, save_dotfiles_config
 from popctl.models.manifest import DomainConfig, DomainEntry
 from typer.testing import CliRunner
 
@@ -465,6 +466,7 @@ class TestConfigPath:
         assert f"advisor: {config_dir / 'advisor.toml'} (missing)" in result.output
         assert f"alerts: {alerts_path} (exists)" in result.output
         assert f"backup: {config_dir / 'backup.toml'} (missing)" in result.output
+        assert f"dotfiles: {config_dir / 'dotfiles.toml'} (missing)" in result.output
         assert f"theme: {theme_path} (exists)" in result.output
 
 
@@ -582,6 +584,7 @@ class TestConfigShow:
             ("advisor", "popctl setup"),
             ("alerts", "popctl alerts init-config"),
             ("backup", "popctl backup init"),
+            ("dotfiles", "popctl dotfiles init"),
             ("theme", "popctl config edit theme"),
         ],
     )
@@ -667,3 +670,45 @@ class TestConfigEdit:
         assert exc_info.value.exit_code == 1
         assert str(advisor_path) in capsys.readouterr().err
         mock_run.assert_not_called()
+
+    def test_missing_dotfiles_config_prints_init_hint_without_writing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        config_dir = tmp_path / "nested" / "popctl"
+        dotfiles_path = config_dir / "dotfiles.toml"
+
+        with (
+            patch("popctl.cli.commands.config.get_config_dir", return_value=config_dir),
+            patch("popctl.cli.commands.config.run_interactive") as mock_run,
+        ):
+            config.edit("dotfiles")
+
+        assert "popctl dotfiles init" in capsys.readouterr().out
+        assert not config_dir.exists()
+        assert not dotfiles_path.exists()
+        mock_run.assert_not_called()
+
+    def test_post_init_dotfiles_config_uses_normal_editor_path(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "popctl"
+        dotfiles_path = config_dir / "dotfiles.toml"
+        bare_repo = tmp_path / "dotfiles.git"
+        config_dir.mkdir()
+        bare_repo.mkdir()
+        save_dotfiles_config(
+            DotfilesConfig(
+                bare_repo=bare_repo,
+                remote_url="https://github.com/example/dotfiles.git",
+            ),
+            dotfiles_path,
+        )
+
+        with (
+            patch("popctl.cli.commands.config.get_config_dir", return_value=config_dir),
+            patch("popctl.cli.commands.config.run_interactive", return_value=0) as mock_run,
+            patch("popctl.cli.commands.config.sys.stdin") as mock_stdin,
+            patch.dict("popctl.cli.commands.config.os.environ", {"EDITOR": "test-editor"}),
+        ):
+            mock_stdin.isatty.return_value = True
+            config.edit("dotfiles")
+
+        mock_run.assert_called_once_with(["test-editor", str(dotfiles_path)])

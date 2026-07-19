@@ -36,8 +36,8 @@ popctl setup
 ```
 
 It checks core package-management tools, configures an optional AI advisor, and offers to set up a
-manifest, desktop alerts, and encrypted backups. In a non-interactive shell, it prints a static
-numbered guide instead.
+manifest, desktop alerts, encrypted backups, and private dotfiles. In a non-interactive shell, it
+prints a static numbered guide instead.
 
 ## Workflow
 
@@ -110,6 +110,11 @@ Each phase can also be run independently:
 | `popctl backup restore` | Restore from encrypted backup |
 | `popctl backup list` | List available backups |
 | `popctl backup info` | Show backup metadata |
+| `popctl dotfiles init [--remote URL]` | Create a private dotfiles repository |
+| `popctl dotfiles init --from URL` | Bootstrap dotfiles from an existing popctl repository |
+| `popctl dotfiles status` | Report tracked-file and remote state without changing local files |
+| `popctl dotfiles sync` | Safely synchronize and automatically push private dotfiles |
+| `popctl dotfiles apply [--dry-run]` | Restore validated tracked files after packages are ready |
 | `popctl manifest keep` | Move package to keep list |
 | `popctl manifest remove` | Move package to remove list |
 | `popctl history` | View action history |
@@ -124,9 +129,10 @@ popctl doctor
 
 `popctl doctor` checks core package-management tools, optional package sources, advisor
 configuration and CLI availability, desktop-alert configuration/notification/sound support, and
-backup dependencies. It exits with status 1 only when core package-management tools are missing.
-Optional-feature findings are nonfatal, and advisor configuration or CLI issues are reported as a
-warning because `popctl sync --no-advisor` remains available.
+backup and dotfiles readiness. It exits with status 1 only when core package-management tools are
+missing. Optional-feature findings are nonfatal, and advisor configuration or CLI issues are
+reported as a warning because `popctl sync --no-advisor` remains available. The dotfiles check also
+distinguishes an offline remote, authentication failure, timeout, and other reachability failure.
 
 ## Diff Categories
 
@@ -222,6 +228,58 @@ popctl backup restore backup.tar.zst.age # Restore from backup
 popctl backup list                       # List local backups
 popctl backup info backup.tar.zst.age    # Show backup metadata
 ```
+
+### Private Dotfiles
+
+`popctl dotfiles` versions a reviewed, leaf-file subset of your personal configuration in a
+private GitHub repository. It is deliberately not a general backup or a safe-to-publish dotfiles
+tool: the repository is private by definition, and plaintext secrets are refused before they can
+be offered to the advisor or committed.
+
+```bash
+# Create a new private repository, or select one interactively.
+popctl dotfiles init
+popctl dotfiles init --remote https://github.com/you/dotfiles.git
+
+# Bootstrap a fresh machine from a popctl-format repository.
+popctl dotfiles init --from https://github.com/you/dotfiles.git
+
+# Inspect, synchronize, or restore the reviewed files.
+popctl dotfiles status
+popctl dotfiles sync
+popctl dotfiles apply --dry-run
+popctl dotfiles apply
+```
+
+When `gh` is installed, popctl uses it to verify that the GitHub destination is private before
+initialization and immediately before every automatic push. Without `gh`, initialization requires
+an explicit acknowledgement that the exact displayed URL is private. That standing acknowledgement
+is bound to the canonical remote URL; changing the URL requires a fresh interactive acknowledgement
+and non-interactive sync refuses. Install `gh` for per-push privacy verification.
+
+For a fresh machine, install popctl, run the setup wizard, make the package manifest available and
+apply its packages, then bootstrap and materialize dotfiles:
+
+```bash
+popctl setup
+popctl apply
+popctl dotfiles init --from https://github.com/you/dotfiles.git
+popctl dotfiles apply
+```
+
+On later days, use `popctl dotfiles status` to inspect local and remote state and `popctl dotfiles
+sync` to fetch, safely materialize compatible remote changes, commit reviewed local changes, and
+automatically push them. A failed initial or later push leaves a valid local `pending-push` commit;
+the next online sync retries it. If a tracked path changed both locally and remotely, or histories
+diverge, sync refuses rather than merging into `$HOME`. Resolve that situation with plain Git using
+the configured bare-repository path, for example:
+
+```bash
+git --git-dir="<bare-repo>" --work-tree="$HOME" merge origin/main
+git --git-dir="<bare-repo>" --work-tree="$HOME" log --left-right main...origin/main
+```
+
+Resolve the conflict, then rerun `popctl dotfiles sync`.
 
 ### Manifest Management
 
@@ -342,6 +400,29 @@ uv sync --extra agent
 Run this from a checkout. It enables `djinn-in-a-box` integration, running AI sessions inside
 the Djinn container.
 
+### Dotfiles Configuration
+
+`~/.config/popctl/dotfiles.toml` is written by `popctl dotfiles init`; until then,
+`popctl config edit dotfiles` prints the initialization hint instead of creating a partial config.
+The normal default bare repository is `~/.local/share/popctl/dotfiles.git` (both locations follow
+their XDG overrides).
+
+```toml
+bare_repo = "/home/you/.local/share/popctl/dotfiles.git"
+remote_url = "https://github.com/you/dotfiles.git"
+ambiguous_content_allowlist = [".config/example/settings.toml"]
+ignored = [".config/example/generated-cache"]
+
+[remote_privacy]
+canonical_remote_url = "https://github.com/you/dotfiles.git"
+method = "verified" # or "acknowledged" when gh was unavailable
+```
+
+`ambiguous_content_allowlist` contains only explicit path acknowledgements for ambiguous content;
+it cannot allow hard secret findings. `ignored` records reviewed files that should not be proposed
+again. The file has no token, password, SSH-key, or other credential field: Git and SSH use your
+existing user authentication.
+
 ### File Locations
 
 | File | Path | Purpose |
@@ -351,12 +432,15 @@ the Djinn container.
 | Alerts Config | `~/.config/popctl/alerts.toml` | WebSocket alert sink settings |
 | Theme | `~/.config/popctl/theme.toml` | Color theme overrides |
 | Backup Config | `~/.config/popctl/backup.toml` | Backup encryption and target settings |
+| Dotfiles Config | `~/.config/popctl/dotfiles.toml` | Dotfiles repository, remote, allowlist, and ignored paths |
 | Backup Age Identity | `~/.config/age/key.txt` | Private age identity generated by `popctl backup init` |
 | History | `~/.local/state/popctl/history.jsonl` | Action log for undo |
 | Config Backups | `~/.local/state/popctl/config-backups/` | Backed up configs before deletion |
 | Backups | `~/.local/state/popctl/backups/` | Local backup archive storage |
 | Advisor Sessions | `~/.local/state/popctl/sessions/` | Workspace dirs for AI sessions (uses `~/.djinn/sessions/popctl/` only with the optional Djinn session backend) |
 | Advisor Memory | `~/.local/state/popctl/advisor/memory.md` | Persistent cross-session memory |
+| Dotfiles Bare Repository | `~/.local/share/popctl/dotfiles.git` | Versioned private dotfiles Git store |
+| Dotfiles State | `~/.local/state/popctl/dotfiles/` | Lock, materialization plans, journals, and owned Git transport assets |
 
 ## Development
 
@@ -394,6 +478,7 @@ app/popctl/
 │       ├── doctor.py        # popctl doctor
 │       ├── advisor.py       # popctl advisor {classify,session,apply}
 │       ├── alerts.py        # popctl alerts {watch,init-config,install-service,test}
+│       ├── dotfiles.py      # popctl dotfiles {init,status,sync,apply}
 │       ├── fs.py            # popctl fs {scan,clean}
 │       ├── config.py        # popctl config {path,show,edit,scan,clean}
 │       ├── backup.py        # popctl backup {init,create,restore,list,info}
@@ -439,6 +524,13 @@ app/popctl/
 │   ├── backup.py            # Encrypted backup creation (tar|zstd|age)
 │   ├── config.py            # BackupConfig
 │   └── restore.py           # Backup restoration
+├── dotfiles/
+│   ├── config.py            # DotfilesConfig TOML I/O
+│   ├── state.py             # Locks, plans, journals, and recovery
+│   ├── secret_filter.py     # Fail-closed content and path checks
+│   ├── discovery.py         # Bounded candidate discovery
+│   ├── repo.py              # Controlled bare-repository Git operations
+│   └── materialize.py       # No-clobber file materialization
 ├── filesystem/
 │   ├── scanner.py           # FilesystemScanner (orphan detection)
 │   └── operator.py          # FilesystemOperator (deletion, sudo for /etc)
