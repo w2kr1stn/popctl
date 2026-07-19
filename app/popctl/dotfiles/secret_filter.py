@@ -19,6 +19,7 @@ from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 
 MAX_CANDIDATE_BYTES = 1_048_576
 MAX_BASE64_DEPTH = 2
+MIN_BASE64_RUN_LENGTH = 8
 
 PATH_DENY_PATTERNS: tuple[str, ...] = (
     ".ssh/**",
@@ -90,14 +91,11 @@ _URL_USERINFO_PATTERN = re.compile(
     rb"\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@",
     re.IGNORECASE,
 )
-_BASE64_CANDIDATE_PATTERN = re.compile(
-    rb"(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{8,}={0,2}(?![A-Za-z0-9+/_=-])"
+_BASE64_RUN_PATTERN = re.compile(
+    rb"[A-Za-z0-9+/_=-](?:[A-Za-z0-9+/_=-]|[ \t\r\n\v\f]+(?=[A-Za-z0-9+/_=-]))*"
 )
-_BASE64_WRAPPED_CANDIDATE_PATTERN = re.compile(
-    rb"(?<![A-Za-z0-9+/_=-])"
-    rb"[A-Za-z0-9+/_-]{2,}={0,2}(?:[ \t\r\n]+[A-Za-z0-9+/_-]+={0,2})+"
-    rb"(?![A-Za-z0-9+/_=-])"
-)
+_ASCII_WHITESPACE_PATTERN = re.compile(rb"[ \t\r\n\v\f]+")
+_SHELL_LINE_CONTINUATION_PATTERN = re.compile(r"\\\n")
 _FIELD_NORMALIZATION_PATTERN = re.compile(r"[^a-z0-9]+")
 _CREDENTIAL_SHAPED_FIELD_PATTERN = re.compile(
     r"(?:pass(?:word)?|secret|token|key|credential|auth)",
@@ -331,10 +329,10 @@ def _expand_base64_forms(initial_forms: Iterable[bytes]) -> tuple[tuple[bytes, .
 
 def _canonical_base64_candidates(value: bytes) -> Iterable[bytes]:
     candidates: set[bytes] = set()
-    for match in _BASE64_CANDIDATE_PATTERN.finditer(value):
-        candidates.add(match.group(0))
-    for match in _BASE64_WRAPPED_CANDIDATE_PATTERN.finditer(value):
-        candidates.add(re.sub(rb"[ \t\r\n]+", b"", match.group(0)))
+    for match in _BASE64_RUN_PATTERN.finditer(value):
+        candidate = _ASCII_WHITESPACE_PATTERN.sub(b"", match.group(0))
+        if len(candidate) >= MIN_BASE64_RUN_LENGTH:
+            candidates.add(candidate)
     for candidate in sorted(candidates):
         if (
             len(candidate) <= MAX_CANDIDATE_BYTES
@@ -405,7 +403,10 @@ def _hard_category_from_pairs(pairs: Iterable[bytes]) -> str | None:
 
 
 def _has_curl_credentials(value: bytes) -> bool:
-    for line in value.decode("utf-8", errors="replace").splitlines():
+    logical_value = _SHELL_LINE_CONTINUATION_PATTERN.sub(
+        "", value.decode("utf-8", errors="replace")
+    )
+    for line in logical_value.splitlines():
         arguments = _shell_arguments(line)
         for index, argument in enumerate(arguments):
             if argument.rsplit("/", 1)[-1] != "curl":
@@ -416,6 +417,8 @@ def _has_curl_credentials(value: bytes) -> bool:
 
 
 def _shell_arguments(line: str) -> tuple[str, ...]:
+    # Python shlex does not implement ANSI-C $'...' quoting; those exotic shell
+    # embeddings remain a documented best-effort defense-in-depth residual.
     try:
         return tuple(shlex.split(line, posix=True))
     except ValueError:
@@ -427,31 +430,54 @@ def _shell_arguments(line: str) -> tuple[str, ...]:
 
 def _curl_arguments_have_credentials(arguments: tuple[str, ...]) -> bool:
     for index, argument in enumerate(arguments):
-        attached: str | None = None
-        if argument in {"-u", "--user", "--proxy-user"}:
-            if index + 1 < len(arguments):
-                attached = arguments[index + 1]
-                if index + 2 < len(arguments) and arguments[index + 2].startswith(":"):
-                    attached += arguments[index + 2]
-        elif argument.startswith("-u"):
-            attached = argument[2:].removeprefix("=")
-        elif argument.startswith("--user="):
-            attached = argument.removeprefix("--user=")
-        elif argument.startswith("--proxy-user="):
-            attached = argument.removeprefix("--proxy-user=")
-        if attached is not None and _is_user_password(attached):
+        credential = _curl_credential_option_value(arguments, index, argument)
+        if credential is not None and _is_user_password(credential):
             return True
     return False
 
 
+def _curl_credential_option_value(
+    arguments: tuple[str, ...], index: int, argument: str
+) -> str | None:
+    if argument in {"-u", "-U", "--user", "--proxy-user"}:
+        return _curl_next_option_value(arguments, index)
+    if argument.startswith("--user="):
+        return argument.removeprefix("--user=")
+    if argument.startswith("--proxy-user="):
+        return argument.removeprefix("--proxy-user=")
+    if argument.startswith("-") and not argument.startswith("--"):
+        short_options = argument[1:]
+        for option_index, option in enumerate(short_options):
+            if option in {"u", "U"}:
+                attached = short_options[option_index + 1 :].removeprefix("=")
+                return attached or _curl_next_option_value(arguments, index)
+    return None
+
+
+def _curl_next_option_value(arguments: tuple[str, ...], index: int) -> str | None:
+    if index + 1 >= len(arguments):
+        return None
+    value = arguments[index + 1]
+    if index + 2 < len(arguments) and arguments[index + 2].startswith(":"):
+        value += arguments[index + 2]
+    return value
+
+
 def _is_user_password(value: str) -> bool:
     normalized = value.replace("'", "").replace('"', "")
-    user, separator, password = normalized.partition(":")
-    return bool(separator and user and password)
+    _, separator, password = normalized.partition(":")
+    return bool(separator and password)
 
 
 def _has_auth_scheme(value: bytes) -> bool:
-    normalized = value.strip().strip(b"'\"").lower()
+    normalized = value.strip(b" \t")
+    if (
+        len(normalized) >= 2
+        and normalized[:1] == normalized[-1:]
+        and normalized[:1] in {b"'", b'"'}
+    ):
+        normalized = normalized[1:-1]
+    normalized = normalized.strip(b" \t").lower()
     return normalized.startswith((b"bearer ", b"basic "))
 
 

@@ -515,8 +515,11 @@ def _remote_tree_or_refuse(
     allowlist: Collection[str],
     *,
     source_ref: str = REMOTE_MAIN_REF,
+    require_tracked_paths: bool = True,
 ) -> TreeRead:
     tree = repo.validate_tree(source_ref, ambiguous_content_allowlist=allowlist)
+    if not require_tracked_paths:
+        return tree
     source_paths = {entry.path for entry in tree.entries}
     dropped = sorted(set(tracked) - source_paths)
     if dropped:
@@ -903,7 +906,10 @@ def sync() -> None:
             if fetch.success:
                 _sync_online(repo, config, interactive=interactive)
             elif _is_missing_remote_main_ref(fetch.stderr):
-                _push_pending_empty_remote(repo, config, interactive=interactive)
+                _refuse(
+                    "Remote dotfiles main ref is absent but the remote is not proven empty; "
+                    "restore its main ref or use a genuinely empty remote before retrying sync."
+                )
             elif fetch.outcome is TransportOutcome.OFFLINE:
                 _sync_offline(repo, config)
             else:
@@ -935,13 +941,14 @@ def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: boo
         )
     base_entries = _tracked_entries(repo)
     tracked = _tracked_paths(base_entries)
+    relation = repo.merge_base_relation(remote_ref=source_oid)
     remote_tree = _remote_tree_or_refuse(
         repo,
         tracked,
         config.ambiguous_content_allowlist,
         source_ref=source_oid,
+        require_tracked_paths=relation in {RefRelation.EQUAL, RefRelation.BEHIND},
     )
-    relation = repo.merge_base_relation(remote_ref=source_oid)
     classifications = repo.classify_paths(tracked, remote_ref=source_oid) if base_entries else ()
     _refuse_sync_conflicts(repo, relation, classifications)
     if relation in {RefRelation.EQUAL, RefRelation.AHEAD}:
@@ -1041,8 +1048,13 @@ def _sync_offline(repo: DotfilesRepo, config: DotfilesConfig) -> None:
         _refuse("No cached remote dotfiles ref is available.")
     base_entries = _tracked_entries(repo)
     tracked = _tracked_paths(base_entries)
-    _remote_tree_or_refuse(repo, tracked, config.ambiguous_content_allowlist)
     relation = repo.merge_base_relation()
+    _remote_tree_or_refuse(
+        repo,
+        tracked,
+        config.ambiguous_content_allowlist,
+        require_tracked_paths=relation in {RefRelation.EQUAL, RefRelation.BEHIND},
+    )
     classifications = repo.classify_paths(tracked) if base_entries else ()
     _refuse_sync_conflicts(repo, relation, classifications)
     if relation is RefRelation.BEHIND or relation is RefRelation.BOOTSTRAP_BEHIND:
@@ -1143,9 +1155,16 @@ def _apply_source(
         tracked,
         config.ambiguous_content_allowlist,
         source_ref=source_oid,
+        require_tracked_paths=relation in {RefRelation.EQUAL, RefRelation.BEHIND},
     )
     sources = _sources(repo, source_tree.entries)
     expected = repo.ref_oid(MAIN_REF)
+    if not dry_run and expected is not None:
+        complete_plan_only_materialization_state_for_local_ref(
+            PlanOperation.APPLY,
+            local_source_ref=expected,
+            state_dir=_state_dir(),
+        )
     plan = _preflight_or_resume_materialization(
         operation=PlanOperation.APPLY,
         source_ref=source_oid,

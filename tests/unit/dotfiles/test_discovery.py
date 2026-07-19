@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import pytest
@@ -170,6 +171,74 @@ def test_discovery_blocks_shell_curl_credential_flags(tmp_path: Path, content: b
     assert [(blocked.path, blocked.category) for blocked in result.blocked] == [
         (".zshrc", "curl-user-password"),
     ]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"curl -u alice:password https://example.invalid\n",
+        b"curl -Ualice:password https://example.invalid\n",
+        b"curl -U alice:password https://example.invalid\n",
+        b"curl -su alice:password https://example.invalid\n",
+        b"curl -sualice:password https://example.invalid\n",
+        b"curl -sU alice:password https://example.invalid\n",
+        b"curl --user=alice:password https://example.invalid\n",
+        b"curl --proxy-user=alice:password https://example.invalid\n",
+        b"curl --user :password https://example.invalid\n",
+        b"curl --proxy-user :password https://example.invalid\n",
+        b"curl --user alice\\\n:password https://example.invalid\n",
+    ],
+)
+def test_discovery_blocks_structural_curl_credential_flags(tmp_path: Path, content: bytes) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    _write(home, ".zshrc", content)
+
+    result = discover_dotfiles(home)
+
+    assert result.candidates == ()
+    assert [(blocked.path, blocked.category) for blocked in result.blocked] == [
+        (".zshrc", "curl-user-password"),
+    ]
+
+
+def _one_character_groups(value: bytes, separator: bytes) -> bytes:
+    return separator.join(bytes((character,)) for character in value)
+
+
+@pytest.mark.parametrize(
+    ("path", "content", "category"),
+    [
+        (
+            ".config/tool/config",
+            _one_character_groups(base64.b64encode(b"Authorization: Bearer opaque-value"), b"\v"),
+            "authorization",
+        ),
+        (
+            ".config/tool/config",
+            _one_character_groups(
+                base64.urlsafe_b64encode(b"\xff\xffAGE-SECRET-KEY-1ABCDEFG"), b"\t"
+            ),
+            "age-secret-key",
+        ),
+        (
+            ".config/tool/config.ini",
+            b'[network]\nProxy-Authorization = " Bearer opaque"\n',
+            "proxy-auth",
+        ),
+    ],
+)
+def test_discovery_blocks_structural_content_secret_classes(
+    tmp_path: Path, path: str, content: bytes, category: str
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    _write(home, path, content)
+
+    result = discover_dotfiles(home)
+
+    assert result.candidates == ()
+    assert [(blocked.path, blocked.category) for blocked in result.blocked] == [(path, category)]
 
 
 def test_binary_and_oversize_leaves_are_not_candidates(

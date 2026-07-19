@@ -54,6 +54,10 @@ def _set_remote_ref(repository: DotfilesRepo, oid: str, expected: str | None) ->
     assert repository.conditional_advance_ref(REMOTE_MAIN_REF, oid, expected)
 
 
+def _one_character_groups(value: bytes, separator: bytes) -> bytes:
+    return separator.join(bytes((character,)) for character in value)
+
+
 def _raw_git(
     repository: DotfilesRepo,
     *args: str,
@@ -69,16 +73,20 @@ def _raw_git(
 def _literal_tree(repository: DotfilesRepo, mode: str, path: bytes, blob: bytes) -> str:
     blob_oid = _raw_git(repository, "hash-object", "-w", "--stdin", input_data=blob).stdout.strip()
     raw_tree = mode.encode("ascii") + b" " + path + b"\0" + bytes.fromhex(blob_oid.decode("ascii"))
-    return _raw_git(
-        repository,
-        "hash-object",
-        "--literally",
-        "-t",
-        "tree",
-        "-w",
-        "--stdin",
-        input_data=raw_tree,
-    ).stdout.strip().decode("ascii")
+    return (
+        _raw_git(
+            repository,
+            "hash-object",
+            "--literally",
+            "-t",
+            "tree",
+            "-w",
+            "--stdin",
+            input_data=raw_tree,
+        )
+        .stdout.strip()
+        .decode("ascii")
+    )
 
 
 @pytest.mark.real_git
@@ -223,13 +231,90 @@ def test_checked_gateway_and_inbound_tree_reject_hard_secret_content(
 
 @pytest.mark.real_git
 @pytest.mark.parametrize(
-    ("content", "category"),
+    ("path", "content", "category"),
     [
-        (b"curl -ualice:password https://example.invalid\n", "curl-user-password"),
-        (b"curl -u'alice:password' https://example.invalid\n", "curl-user-password"),
-        (b'curl --user alice:"password" https://example.invalid\n', "curl-user-password"),
-        (b"curl --proxy-user alice:password https://example.invalid\n", "curl-user-password"),
         (
+            ".config/tool/config",
+            b"curl -u alice:password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl -ualice:password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl -u'alice:password' https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b'curl --user alice:"password" https://example.invalid\n',
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl --proxy-user alice:password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl --proxy-user=alice:password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl --user=alice:password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl -U alice:password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl -Ualice:password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl -U=alice:password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl -su alice:password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl -sualice:password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl -sU alice:password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl --user :password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl --proxy-user :password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
+            b"curl --user alice\\\n:password https://example.invalid\n",
+            "curl-user-password",
+        ),
+        (
+            ".config/tool/config",
             b" ".join(
                 base64.b64encode(b"Authorization: Bearer opaque-value")[offset : offset + 2]
                 for offset in range(
@@ -239,36 +324,86 @@ def test_checked_gateway_and_inbound_tree_reject_hard_secret_content(
             "authorization",
         ),
         (
+            ".config/tool/config",
             b" ".join(
                 base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG")[offset : offset + 2]
-                for offset in range(
-                    0, len(base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG")), 2
-                )
+                for offset in range(0, len(base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG")), 2)
             ),
             "age-secret-key",
         ),
         (
-            b"encoded:"
-            + base64.urlsafe_b64encode(b"\xff\xffAuthorization: Bearer opaque-value"),
+            ".config/tool/config",
+            b"encoded:" + base64.urlsafe_b64encode(b"\xff\xffAuthorization: Bearer opaque-value"),
             "authorization",
         ),
         (
+            ".config/tool/config",
             b"encoded:" + base64.urlsafe_b64encode(b"\xff\xffAGE-SECRET-KEY-1ABCDEFG"),
             "age-secret-key",
+        ),
+        (
+            ".config/tool/config",
+            _one_character_groups(base64.b64encode(b"Authorization: Bearer opaque-value"), b" "),
+            "authorization",
+        ),
+        (
+            ".config/tool/config",
+            _one_character_groups(base64.b64encode(b"Authorization: Bearer opaque-value"), b"\t"),
+            "authorization",
+        ),
+        (
+            ".config/tool/config",
+            _one_character_groups(base64.b64encode(b"Authorization: Bearer opaque-value"), b"\v"),
+            "authorization",
+        ),
+        (
+            ".config/tool/config",
+            _one_character_groups(base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG"), b" "),
+            "age-secret-key",
+        ),
+        (
+            ".config/tool/config",
+            _one_character_groups(base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG"), b"\t"),
+            "age-secret-key",
+        ),
+        (
+            ".config/tool/config",
+            _one_character_groups(base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG"), b"\v"),
+            "age-secret-key",
+        ),
+        (
+            ".config/tool/config",
+            _one_character_groups(
+                base64.urlsafe_b64encode(b"\xff\xffAuthorization: Bearer opaque-value"), b"\t"
+            ),
+            "authorization",
+        ),
+        (
+            ".config/tool/config",
+            _one_character_groups(
+                base64.urlsafe_b64encode(b"\xff\xffAGE-SECRET-KEY-1ABCDEFG"), b"\v"
+            ),
+            "age-secret-key",
+        ),
+        (
+            ".config/tool/config.ini",
+            b'[network]\nProxy-Authorization = " Bearer opaque"\n',
+            "proxy-auth",
         ),
     ],
 )
 def test_checked_gateway_rejects_structural_curl_and_base64_secret_variants(
     real_git: RealGitEnvironment,
     tmp_path: Path,
+    path: str,
     content: bytes,
     category: str,
 ) -> None:
     repository = _repository(real_git, tmp_path)
-    _write(real_git.home, ".config/tool/config", content)
+    _write(real_git.home, path, content)
 
     with pytest.raises(TreeValidationError, match=category):
-        repository.checked_commit([".config/tool/config"], "blocked")
+        repository.checked_commit([path], "blocked")
 
     assert repository.ref_oid(MAIN_REF) is None
 
@@ -519,7 +654,7 @@ def test_network_builder_only_admits_owned_values_and_retains_credential_helpers
     assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
     assert " -F " in environment["GIT_SSH_COMMAND"]
     assert "hooksPath = /dev/null" in owned_config
-    assert "helper = \"cache --timeout=1\"" in owned_config
+    assert 'helper = "cache --timeout=1"' in owned_config
     assert "insteadOf" not in owned_config
     assert "pushurl" not in owned_config
     assert "sshCommand" not in owned_config
@@ -585,7 +720,7 @@ def test_network_transport_never_contacts_hostile_global_or_pushurl_sentinels(
         file.write(
             "[core]\n"
             f"\tsshCommand = {sentinel}\n"
-            "[url \"ssh://127.0.0.1:9/\"]\n"
+            '[url "ssh://127.0.0.1:9/"]\n'
             "\tinsteadOf = file://\n"
             "[http]\n"
             "\tproxy = http://127.0.0.1:9\n"
@@ -609,7 +744,7 @@ def test_network_transport_never_contacts_hostile_global_or_pushurl_sentinels(
     assert remote_store.ref_oid(MAIN_REF) == commit
     assert not contacted.exists()
     with (source.bare_repo / "config").open("a", encoding="utf-8") as file:
-        file.write(f"\n[remote \"origin\"]\n\tpushurl = ext::{sentinel}\n")
+        file.write(f'\n[remote "origin"]\n\tpushurl = ext::{sentinel}\n')
     with pytest.raises(DotfilesRepoError, match="Unexpected dotfiles local Git config key"):
         source._network_git(["push", remote_url, f"{MAIN_REF}:{MAIN_REF}"], remote_url)
     assert not contacted.exists()

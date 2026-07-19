@@ -867,6 +867,110 @@ def test_sync_pushes_a_pending_initial_commit_to_an_empty_remote(
 
 
 @pytest.mark.real_git
+def test_sync_refuses_a_nonempty_remote_without_main(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_dir = real_git.state_home / "popctl" / "dotfiles"
+    remote_store = DotfilesRepo(
+        tmp_path / "remote.git",
+        home=real_git.home,
+        state_dir=real_git.state_home / "popctl" / "remote",
+    )
+    remote_store.initialize_bare()
+    _route_network_to_local_remote(monkeypatch, remote_store)
+    repository = DotfilesRepo(tmp_path / "dotfiles.git", home=real_git.home, state_dir=state_dir)
+    repository.initialize_bare()
+    repository.setup_remote(_REMOTE)
+    _write(real_git.home, b"initial\n")
+    local_oid = repository.checked_commit((_PATH,), "initial").commit_oid
+    repository.create_marker(local_oid)
+    assert repository.push(_REMOTE).success
+    remote_store._content_git(["update-ref", "-d", MAIN_REF])
+    assert remote_store.ref_oid(MAIN_REF) is None
+    assert remote_store.verify_marker()
+    save_dotfiles_config(
+        DotfilesConfig(
+            bare_repo=repository.bare_repo,
+            remote_url=_REMOTE,
+            remote_privacy=RemotePrivacyRecord(
+                canonical_remote_url=_REMOTE,
+                method="acknowledged",
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        dotfiles,
+        "_pre_push_privacy",
+        lambda *_args, **_kwargs: pytest.fail("sync must not push to a nonempty remote"),
+    )
+
+    result = runner.invoke(app, ["dotfiles", "sync"])
+
+    assert result.exit_code == 1
+    assert "not proven empty" in result.output
+    assert remote_store.ref_oid(MAIN_REF) is None
+    assert remote_store.verify_marker()
+
+
+@pytest.mark.real_git
+def test_sync_pushes_a_local_ahead_tracked_path_addition(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_dir = real_git.state_home / "popctl" / "dotfiles"
+    remote_store = DotfilesRepo(
+        tmp_path / "remote.git",
+        home=real_git.home,
+        state_dir=real_git.state_home / "popctl" / "remote",
+    )
+    remote_store.initialize_bare()
+    _route_network_to_local_remote(monkeypatch, remote_store)
+    repository = DotfilesRepo(tmp_path / "dotfiles.git", home=real_git.home, state_dir=state_dir)
+    repository.initialize_bare()
+    repository.setup_remote(_REMOTE)
+    _write(real_git.home, b"base\n")
+    base_oid = repository.checked_commit((_PATH,), "base").commit_oid
+    repository.create_marker(base_oid)
+    assert repository.push(_REMOTE).success
+    assert repository.conditional_advance_ref(REMOTE_MAIN_REF, base_oid, None)
+    added_path = real_git.home / _NEW_PATH
+    added_path.parent.mkdir(parents=True, exist_ok=True)
+    added_path.write_bytes(b"local addition\n")
+    local_oid = repository.checked_commit((_NEW_PATH,), "add tracked path").commit_oid
+    config = DotfilesConfig(
+        bare_repo=repository.bare_repo,
+        remote_url=_REMOTE,
+        remote_privacy=RemotePrivacyRecord(canonical_remote_url=_REMOTE, method="acknowledged"),
+    )
+    save_dotfiles_config(config)
+    monkeypatch.setattr(
+        dotfiles,
+        "discover_dotfiles",
+        lambda *_args, **_kwargs: dotfiles.DiscoveryResult((), ()),
+    )
+    monkeypatch.setattr(
+        dotfiles,
+        "_review_candidates",
+        lambda *_args, **_kwargs: dotfiles.ReviewResult(
+            DotfilesReviewFinalization((), (), ()), config
+        ),
+    )
+    monkeypatch.setattr(dotfiles, "_pre_push_privacy", lambda config, **_kwargs: config)
+
+    result = runner.invoke(app, ["dotfiles", "sync"])
+
+    assert result.exit_code == 0, result.output
+    assert remote_store.ref_oid(MAIN_REF) == local_oid
+    assert {entry.path for entry in remote_store.read_tree(MAIN_REF).entries} == {
+        _PATH,
+        _NEW_PATH,
+    }
+
+
+@pytest.mark.real_git
 def test_sync_recovers_plan_only_state_after_the_remote_advances_again(
     real_git: RealGitEnvironment,
     tmp_path: Path,
@@ -917,6 +1021,45 @@ def test_sync_recovers_plan_only_state_after_the_remote_advances_again(
     assert (real_git.home / _PATH).read_bytes() == b"newer remote\n"
     assert not get_plan_path(PlanOperation.INBOUND_SYNC, state_dir).exists()
     assert not get_completed_paths_journal_path(PlanOperation.INBOUND_SYNC, state_dir).exists()
+
+
+@pytest.mark.real_git
+def test_apply_retires_plan_only_state_before_preflighting_new_source(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, config, base_oid, source_oid = _configured_source_repo(real_git, tmp_path)
+    state_dir = real_git.state_home / "popctl" / "dotfiles"
+    original_clear = state.clear_materialization_state
+
+    def crash_after_retiring_the_journal(
+        operation: PlanOperation, state_dir: Path | None = None
+    ) -> None:
+        get_completed_paths_journal_path(operation, state_dir).unlink()
+        raise DotfilesStateError("injected journal-retirement crash")
+
+    monkeypatch.setattr(state, "clear_materialization_state", crash_after_retiring_the_journal)
+    with pytest.raises(DotfilesStateError, match="journal-retirement"):
+        dotfiles._apply_source(repository, config, dry_run=False)
+
+    assert repository.ref_oid(MAIN_REF) == source_oid
+    assert get_plan_path(PlanOperation.APPLY, state_dir).exists()
+    assert not get_completed_paths_journal_path(PlanOperation.APPLY, state_dir).exists()
+    _write(real_git.home, b"newer remote\n")
+    newer_oid = repository.checked_commit((_PATH,), "newer remote").commit_oid
+    assert repository.conditional_advance_ref(REMOTE_MAIN_REF, newer_oid, source_oid)
+    assert repository.conditional_advance_ref(MAIN_REF, source_oid, newer_oid)
+    _write(real_git.home, b"remote\n")
+    monkeypatch.setattr(state, "clear_materialization_state", original_clear)
+
+    dotfiles._apply_source(repository, config, dry_run=False)
+
+    assert repository.ref_oid(MAIN_REF) == newer_oid
+    assert (real_git.home / _PATH).read_bytes() == b"newer remote\n"
+    assert not get_plan_path(PlanOperation.APPLY, state_dir).exists()
+    assert not get_completed_paths_journal_path(PlanOperation.APPLY, state_dir).exists()
+    assert base_oid != newer_oid
 
 
 @pytest.mark.real_git

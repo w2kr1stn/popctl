@@ -907,14 +907,24 @@ exposure, before staging, over complete committed and fetched trees, and before 
    data, and unreadable paths.
 2. Normalizes line endings, examines raw assignment pairs, and applies hard recognizers for private
    key blocks, AGE keys, known tokens, authorization and Git extra headers, proxy credentials,
-   curl credentials, and URL userinfo.
+   curl credentials, and URL userinfo. Authorization and proxy-auth values remove enclosing quotes
+   and leading/trailing HTTP optional whitespace before Bearer/Basic recognition, so those findings
+   remain terminal and non-allowlistable.
 3. Parses JSON, YAML, TOML, dotenv, and selected INI files fail closed. Parsed scalars and key/value
    pairs re-enter the hard recognizers, including YAML's semantic scalars. Duplicate
    credential-shaped fields are a hard rejection rather than a last-value-wins ambiguity.
-4. Recursively decodes canonical base64 candidates to depth two and rejects a further decodable
-   layer, so encoded hard findings cannot bypass the scan.
+4. Finds maximal standard or URL-safe base64-alphabet runs, collapses every interior ASCII whitespace
+   form, canonically decodes sufficiently long runs with recovered padding, and recursively scans to
+   depth two; a further decodable layer is rejected. This closes whitespace-grouped base64 without
+   per-group-size grammar variants.
 5. Returns ambiguous findings only for an explicit canonical-path allowlist acknowledgement. An
    allowlist can never override a hard finding, malformed structured content, or an unsafe path.
+
+Curl command credentials are tokenized with POSIX shlex after backslash-newline continuation
+normalization, with the existing non-POSIX fallback. The parser covers user and proxy-user short,
+attached, clustered, and long option forms, including empty-user passwords. ANSI-C shell quoting
+is an intentionally documented best-effort defense-in-depth residual because Python shlex does not
+model that shell extension.
 
 ### Transport isolation
 

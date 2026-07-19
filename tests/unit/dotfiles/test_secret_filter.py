@@ -350,6 +350,10 @@ def test_mime_wrapped_and_unpadded_base64_hard_content_is_denied() -> None:
     _assert_hard(".config/tool/config", unpadded_age, "age-secret-key")
 
 
+def _one_character_groups(value: bytes, separator: bytes) -> bytes:
+    return separator.join(bytes((character,)) for character in value)
+
+
 @pytest.mark.parametrize(
     ("content", "category"),
     [
@@ -365,20 +369,16 @@ def test_mime_wrapped_and_unpadded_base64_hard_content_is_denied() -> None:
         (
             b" ".join(
                 base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG")[offset : offset + 2]
-                for offset in range(
-                    0, len(base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG")), 2
-                )
+                for offset in range(0, len(base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG")), 2)
             ),
             "age-secret-key",
         ),
         (
-            b"encoded:"
-            + base64.urlsafe_b64encode(b"\xff\xffAuthorization: Bearer opaque-value"),
+            b"encoded:" + base64.urlsafe_b64encode(b"\xff\xffAuthorization: Bearer opaque-value"),
             "authorization",
         ),
         (
-            b"encoded:"
-            + base64.urlsafe_b64encode(b"\xff\xffAGE-SECRET-KEY-1ABCDEFG"),
+            b"encoded:" + base64.urlsafe_b64encode(b"\xff\xffAGE-SECRET-KEY-1ABCDEFG"),
             "age-secret-key",
         ),
     ],
@@ -390,15 +390,62 @@ def test_whitespace_split_and_urlsafe_prefixed_base64_hard_content_is_denied(
 
 
 @pytest.mark.parametrize(
+    ("encoded", "separator", "category"),
+    [
+        (base64.b64encode(b"Authorization: Bearer opaque-value"), b" ", "authorization"),
+        (base64.b64encode(b"Authorization: Bearer opaque-value"), b"\t", "authorization"),
+        (base64.b64encode(b"Authorization: Bearer opaque-value"), b"\v", "authorization"),
+        (base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG"), b" ", "age-secret-key"),
+        (base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG"), b"\t", "age-secret-key"),
+        (base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG"), b"\v", "age-secret-key"),
+        (
+            base64.urlsafe_b64encode(b"\xff\xffAuthorization: Bearer opaque-value"),
+            b"\t",
+            "authorization",
+        ),
+        (
+            base64.urlsafe_b64encode(b"\xff\xffAGE-SECRET-KEY-1ABCDEFG"),
+            b"\v",
+            "age-secret-key",
+        ),
+    ],
+)
+def test_one_character_grouped_base64_hard_content_is_not_allowlistable(
+    encoded: bytes, separator: bytes, category: str
+) -> None:
+    verdict = _scan(
+        ".config/tool/config",
+        _one_character_groups(encoded, separator),
+        (".config/tool/config",),
+    )
+
+    assert verdict.kind is SecretVerdictKind.DENIED_UNAMBIGUOUS_CONTENT
+    assert verdict.category == category
+
+
+@pytest.mark.parametrize(
     "content",
     [
+        b"curl -u alice:password https://example.invalid",
         b"curl -ualice:password https://example.invalid",
         b"curl -u=alice:password https://example.invalid",
         b"curl -u'alice:password' https://example.invalid",
+        b"curl -U alice:password https://example.invalid",
+        b"curl -Ualice:password https://example.invalid",
+        b"curl -U=alice:password https://example.invalid",
+        b"curl -su alice:password https://example.invalid",
+        b"curl -sualice:password https://example.invalid",
+        b"curl -sUalice:password https://example.invalid",
+        b"curl -sU alice:password https://example.invalid",
+        b"curl --user alice:password https://example.invalid",
         b'curl --user alice:"password" https://example.invalid',
         b"curl --user=alice:password https://example.invalid",
+        b"curl --user :password https://example.invalid",
+        b"curl --user \\\n alice:password https://example.invalid",
+        b"curl --user alice\\\n:password https://example.invalid",
         b"curl --proxy-user alice:password https://example.invalid",
         b"curl --proxy-user=alice:password https://example.invalid",
+        b"curl --proxy-user :password https://example.invalid",
         b"curl -u alice :password https://example.invalid",
     ],
 )
@@ -412,14 +459,12 @@ def test_structural_curl_credential_options_are_not_allowlistable(content: bytes
 @pytest.mark.parametrize(
     ("key", "value", "category"),
     [
-        ("Proxy-Authorization", "Bearer opaque", "proxy-auth"),
-        ("Proxy-Auth", "Basic opaque", "proxy-auth"),
-        ("Authorization", "Bearer opaque", "authorization"),
+        ("Proxy-Authorization", " Bearer opaque", "proxy-auth"),
+        ("Proxy-Auth", " Basic opaque\t", "proxy-auth"),
+        ("Authorization", " Bearer opaque\t", "authorization"),
     ],
 )
-def test_quoted_ini_auth_headers_are_not_allowlistable(
-    key: str, value: str, category: str
-) -> None:
+def test_quoted_ini_auth_headers_are_not_allowlistable(key: str, value: str, category: str) -> None:
     path = ".config/tool/config.ini"
     content = f'[network]\n{key} = "{value}"\n'.encode()
 
