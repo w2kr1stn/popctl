@@ -69,6 +69,7 @@ from popctl.dotfiles.state import (
     clear_init_finalization_journal,
     complete_materialization_state,
     complete_materialization_state_for_source,
+    complete_plan_only_materialization_state_for_local_ref,
     dotfiles_lock,
     get_dotfiles_state_dir,
     get_plan_path,
@@ -608,6 +609,23 @@ def _push_or_refuse(
     return updated
 
 
+def _push_pending_empty_remote(
+    repo: DotfilesRepo,
+    config: DotfilesConfig,
+    *,
+    interactive: bool,
+) -> None:
+    if repo.ref_oid(MAIN_REF) is None:
+        _refuse("Remote dotfiles main ref is absent and no local commit is available to push.")
+    _push_or_refuse(repo, config, interactive=interactive)
+    print_success("Pushed pending dotfiles commit to the empty remote.")
+
+
+def _is_missing_remote_main_ref(transport_stderr: str) -> bool:
+    lowered = transport_stderr.lower()
+    return "couldn't find remote ref" in lowered or "could not find remote ref" in lowered
+
+
 @app.command()
 def init(
     remote: Annotated[
@@ -877,9 +895,15 @@ def sync() -> None:
         with dotfiles_lock(_state_dir()):
             config = _load_initialized()
             repo = DotfilesRepo(config.bare_repo, home=Path.home(), state_dir=_state_dir())
+            listing = repo.ls_remote_all_refs(config.remote_url)
+            if listing.transport.success and not listing.refs:
+                _push_pending_empty_remote(repo, config, interactive=interactive)
+                return
             fetch = repo.fetch(config.remote_url)
             if fetch.success:
                 _sync_online(repo, config, interactive=interactive)
+            elif _is_missing_remote_main_ref(fetch.stderr):
+                _push_pending_empty_remote(repo, config, interactive=interactive)
             elif fetch.outcome is TransportOutcome.OFFLINE:
                 _sync_offline(repo, config)
             else:
@@ -902,6 +926,13 @@ def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: boo
     source_oid = repo.ref_oid(REMOTE_MAIN_REF)
     if source_oid is None:
         _refuse("Remote dotfiles main ref is absent.")
+    local_oid = repo.ref_oid(MAIN_REF)
+    if local_oid is not None:
+        complete_plan_only_materialization_state_for_local_ref(
+            PlanOperation.INBOUND_SYNC,
+            local_source_ref=local_oid,
+            state_dir=_state_dir(),
+        )
     base_entries = _tracked_entries(repo)
     tracked = _tracked_paths(base_entries)
     remote_tree = _remote_tree_or_refuse(
@@ -1075,16 +1106,28 @@ def _run_apply(*, dry_run: bool) -> None:
         state_dir=_state_dir(),
         read_only=dry_run,
     )
-    fetch = repo.fetch(config.remote_url, status=dry_run)
+    source_oid: str | None = None
+    if dry_run:
+        temporary_fetch = repo.fetch_temporary_main(config.remote_url)
+        fetch = temporary_fetch.transport
+        source_oid = temporary_fetch.source_oid
+    else:
+        fetch = repo.fetch(config.remote_url)
     if not fetch.success:
         if fetch.outcome is not TransportOutcome.OFFLINE:
             _refuse(f"Apply fetch {_transport_detail(fetch.outcome)}.")
         print_warning("Offline: applying from cached origin/main.")
-    _apply_source(repo, config, dry_run=dry_run)
+    _apply_source(repo, config, dry_run=dry_run, source_oid=source_oid)
 
 
-def _apply_source(repo: DotfilesRepo, config: DotfilesConfig, *, dry_run: bool) -> None:
-    source_oid = repo.ref_oid(REMOTE_MAIN_REF)
+def _apply_source(
+    repo: DotfilesRepo,
+    config: DotfilesConfig,
+    *,
+    dry_run: bool,
+    source_oid: str | None = None,
+) -> None:
+    source_oid = source_oid or repo.ref_oid(REMOTE_MAIN_REF)
     if source_oid is None:
         _refuse("No fetched or cached remote dotfiles ref is available.")
     base_entries = _tracked_entries(repo)

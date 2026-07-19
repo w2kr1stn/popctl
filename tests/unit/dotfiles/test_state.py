@@ -15,6 +15,7 @@ from popctl.dotfiles.state import (
     PlanOperation,
     clear_materialization_state,
     complete_materialization_state_for_source,
+    complete_plan_only_materialization_state_for_local_ref,
     dotfiles_lock,
     get_completed_paths_journal_path,
     get_plan_path,
@@ -147,6 +148,40 @@ class TestMaterializationState:
 
         assert not get_plan_path(operation, tmp_path).exists()
         assert not get_completed_paths_journal_path(operation, tmp_path).exists()
+
+    def test_recovers_plan_only_state_by_the_advanced_local_ref(
+        self, tmp_path: Path, operation: PlanOperation
+    ) -> None:
+        plan = replace(_plan(operation), source_ref="b" * 40)
+        prepare_materialization_plan(plan, tmp_path)
+        for entry in plan.entries:
+            record_completed_path(plan, entry.path, tmp_path)
+        get_completed_paths_journal_path(operation, tmp_path).unlink()
+
+        recovered = complete_plan_only_materialization_state_for_local_ref(
+            operation,
+            local_source_ref=plan.source_ref,
+            state_dir=tmp_path,
+        )
+
+        assert recovered
+        assert not get_plan_path(operation, tmp_path).exists()
+
+    def test_preserves_plan_only_state_when_the_local_ref_is_not_its_source(
+        self, tmp_path: Path, operation: PlanOperation
+    ) -> None:
+        plan = replace(_plan(operation), source_ref="b" * 40)
+        prepare_materialization_plan(plan, tmp_path)
+        get_completed_paths_journal_path(operation, tmp_path).unlink()
+
+        recovered = complete_plan_only_materialization_state_for_local_ref(
+            operation,
+            local_source_ref="c" * 40,
+            state_dir=tmp_path,
+        )
+
+        assert not recovered
+        assert get_plan_path(operation, tmp_path).exists()
 
 
 class TestInitFinalizationRecovery:

@@ -5,6 +5,7 @@ import fnmatch
 import json
 import os
 import re
+import shlex
 import stat
 import tomllib
 from collections.abc import Collection, Iterable
@@ -85,22 +86,17 @@ _CURL_USER_PATTERN = re.compile(
     rb"^\s*(?:user|proxy-user)\s*=\s*['\"]?[^:\s'\"]+:[^\s'\"]+",
     re.IGNORECASE | re.MULTILINE,
 )
-_CURL_CREDENTIAL_FLAG_PATTERN = re.compile(
-    rb"\bcurl\b[^\r\n]*?"
-    rb"(?:--user|--proxy-user|-u)(?:\s+|=)\s*['\"]?[^:\s'\"]+:[^\s'\"]+",
-    re.IGNORECASE,
-)
 _URL_USERINFO_PATTERN = re.compile(
     rb"\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@",
     re.IGNORECASE,
 )
 _BASE64_CANDIDATE_PATTERN = re.compile(
-    rb"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{8,}={0,2}(?![A-Za-z0-9+/=])"
+    rb"(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{8,}={0,2}(?![A-Za-z0-9+/_=-])"
 )
 _BASE64_WRAPPED_CANDIDATE_PATTERN = re.compile(
-    rb"(?<![A-Za-z0-9+/=])"
-    rb"[A-Za-z0-9+/=]{4,}(?:[ \t\r\n]+[A-Za-z0-9+/=]{2,})+"
-    rb"(?![A-Za-z0-9+/=])"
+    rb"(?<![A-Za-z0-9+/_=-])"
+    rb"[A-Za-z0-9+/_-]{2,}={0,2}(?:[ \t\r\n]+[A-Za-z0-9+/_-]+={0,2})+"
+    rb"(?![A-Za-z0-9+/_=-])"
 )
 _FIELD_NORMALIZATION_PATTERN = re.compile(r"[^a-z0-9]+")
 _CREDENTIAL_SHAPED_FIELD_PATTERN = re.compile(
@@ -123,7 +119,6 @@ _HARD_RECOGNIZERS: tuple[tuple[str, re.Pattern[bytes]], ...] = (
     ("proxy-auth", _PROXY_AUTH_PATTERN),
     ("credentialed-proxy", _CREDENTIALED_PROXY_PATTERN),
     ("curl-user-password", _CURL_USER_PATTERN),
-    ("curl-user-password", _CURL_CREDENTIAL_FLAG_PATTERN),
     ("authorization", _AUTHORIZATION_PATTERN),
 )
 
@@ -352,15 +347,18 @@ def _decode_canonical_base64(candidate: bytes) -> bytes | None:
     if not candidate or b"=" in candidate.rstrip(b"="):
         return None
     unpadded = candidate.rstrip(b"=")
+    if (b"-" in unpadded or b"_" in unpadded) and (b"+" in unpadded or b"/" in unpadded):
+        return None
     remainder = len(unpadded) % 4
     if remainder == 1:
         return None
     padded = unpadded + b"=" * (-len(unpadded) % 4)
+    urlsafe = b"-" in unpadded or b"_" in unpadded
     try:
-        decoded = base64.b64decode(padded, validate=True)
+        decoded = base64.b64decode(padded, altchars=b"-_" if urlsafe else None, validate=True)
     except ValueError:
         return None
-    encoded = base64.b64encode(decoded)
+    encoded = base64.urlsafe_b64encode(decoded) if urlsafe else base64.b64encode(decoded)
     if encoded.rstrip(b"=") != unpadded:
         return None
     if b"=" in candidate and encoded != candidate:
@@ -370,6 +368,8 @@ def _decode_canonical_base64(candidate: bytes) -> bytes | None:
 
 def _first_hard_category(forms: Iterable[bytes]) -> str | None:
     for value in forms:
+        if _has_curl_credentials(value):
+            return "curl-user-password"
         for category, pattern in _HARD_RECOGNIZERS:
             if pattern.search(value) is not None:
                 return category
@@ -389,6 +389,11 @@ def _hard_category_from_pairs(pairs: Iterable[bytes]) -> str | None:
         field_name = _normalize_field_name(key.decode("utf-8", errors="ignore"))
         if field_name == "authorization":
             return "authorization"
+        if field_name in {"proxy_authorization", "proxy_auth"} and _has_auth_scheme(value):
+            return "proxy-auth"
+        hard_category = _first_hard_category((pair,))
+        if hard_category is not None:
+            return hard_category
         for category, pattern in _HARD_RECOGNIZERS:
             if pattern.search(pair) is not None:
                 return category
@@ -397,6 +402,57 @@ def _hard_category_from_pairs(pairs: Iterable[bytes]) -> str | None:
             if pattern.search(alternate_pair) is not None:
                 return category
     return None
+
+
+def _has_curl_credentials(value: bytes) -> bool:
+    for line in value.decode("utf-8", errors="replace").splitlines():
+        arguments = _shell_arguments(line)
+        for index, argument in enumerate(arguments):
+            if argument.rsplit("/", 1)[-1] != "curl":
+                continue
+            if _curl_arguments_have_credentials(arguments[index + 1 :]):
+                return True
+    return False
+
+
+def _shell_arguments(line: str) -> tuple[str, ...]:
+    try:
+        return tuple(shlex.split(line, posix=True))
+    except ValueError:
+        try:
+            return tuple(shlex.split(line, posix=False))
+        except ValueError:
+            return tuple(line.split())
+
+
+def _curl_arguments_have_credentials(arguments: tuple[str, ...]) -> bool:
+    for index, argument in enumerate(arguments):
+        attached: str | None = None
+        if argument in {"-u", "--user", "--proxy-user"}:
+            if index + 1 < len(arguments):
+                attached = arguments[index + 1]
+                if index + 2 < len(arguments) and arguments[index + 2].startswith(":"):
+                    attached += arguments[index + 2]
+        elif argument.startswith("-u"):
+            attached = argument[2:].removeprefix("=")
+        elif argument.startswith("--user="):
+            attached = argument.removeprefix("--user=")
+        elif argument.startswith("--proxy-user="):
+            attached = argument.removeprefix("--proxy-user=")
+        if attached is not None and _is_user_password(attached):
+            return True
+    return False
+
+
+def _is_user_password(value: str) -> bool:
+    normalized = value.replace("'", "").replace('"', "")
+    user, separator, password = normalized.partition(":")
+    return bool(separator and user and password)
+
+
+def _has_auth_scheme(value: bytes) -> bool:
+    normalized = value.strip().strip(b"'\"").lower()
+    return normalized.startswith((b"bearer ", b"basic "))
 
 
 def _inspect_named_parser(path: str, text: str) -> _ParserInspection:

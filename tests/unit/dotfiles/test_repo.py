@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -218,6 +219,58 @@ def test_checked_gateway_and_inbound_tree_reject_hard_secret_content(
     tree_oid = _literal_tree(repository, "100644", b".config/tool/config", content)
     with pytest.raises(TreeValidationError, match=category):
         repository.validate_tree(tree_oid)
+
+
+@pytest.mark.real_git
+@pytest.mark.parametrize(
+    ("content", "category"),
+    [
+        (b"curl -ualice:password https://example.invalid\n", "curl-user-password"),
+        (b"curl -u'alice:password' https://example.invalid\n", "curl-user-password"),
+        (b'curl --user alice:"password" https://example.invalid\n', "curl-user-password"),
+        (b"curl --proxy-user alice:password https://example.invalid\n", "curl-user-password"),
+        (
+            b" ".join(
+                base64.b64encode(b"Authorization: Bearer opaque-value")[offset : offset + 2]
+                for offset in range(
+                    0, len(base64.b64encode(b"Authorization: Bearer opaque-value")), 2
+                )
+            ),
+            "authorization",
+        ),
+        (
+            b" ".join(
+                base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG")[offset : offset + 2]
+                for offset in range(
+                    0, len(base64.b64encode(b"AGE-SECRET-KEY-1ABCDEFG")), 2
+                )
+            ),
+            "age-secret-key",
+        ),
+        (
+            b"encoded:"
+            + base64.urlsafe_b64encode(b"\xff\xffAuthorization: Bearer opaque-value"),
+            "authorization",
+        ),
+        (
+            b"encoded:" + base64.urlsafe_b64encode(b"\xff\xffAGE-SECRET-KEY-1ABCDEFG"),
+            "age-secret-key",
+        ),
+    ],
+)
+def test_checked_gateway_rejects_structural_curl_and_base64_secret_variants(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    content: bytes,
+    category: str,
+) -> None:
+    repository = _repository(real_git, tmp_path)
+    _write(real_git.home, ".config/tool/config", content)
+
+    with pytest.raises(TreeValidationError, match=category):
+        repository.checked_commit([".config/tool/config"], "blocked")
+
+    assert repository.ref_oid(MAIN_REF) is None
 
 
 @pytest.mark.real_git

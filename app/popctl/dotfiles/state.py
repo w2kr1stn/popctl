@@ -458,6 +458,28 @@ def complete_materialization_state_for_source(
     clear_materialization_state(operation, state_dir)
 
 
+def complete_plan_only_materialization_state_for_local_ref(
+    operation: PlanOperation,
+    *,
+    local_source_ref: str,
+    state_dir: Path | None = None,
+) -> bool:
+    plan_path = get_plan_path(operation, state_dir)
+    journal_path = get_completed_paths_journal_path(operation, state_dir)
+    if not plan_path.exists() or journal_path.exists():
+        return False
+    plan = load_materialization_plan(operation, state_dir)
+    if plan.source_ref != local_source_ref:
+        return False
+    try:
+        plan_path.unlink()
+    except OSError as e:
+        raise DotfilesStateError(
+            f"Failed to clear completed {operation.value} materialization state: {e}"
+        ) from e
+    return True
+
+
 def resume_completed_path(
     plan: MaterializationPlan,
     entry: PlannedPath,

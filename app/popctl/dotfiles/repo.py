@@ -4,6 +4,7 @@ import os
 import re
 import shlex
 import tempfile
+import uuid
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from enum import Enum
@@ -158,6 +159,12 @@ class LsRemoteResult:
 
 
 @dataclass(frozen=True, slots=True)
+class TemporaryFetchResult:
+    transport: TransportResult
+    source_oid: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class TreeEntry:
     mode: str
     path: str
@@ -269,6 +276,25 @@ class DotfilesRepo:
     def fetch(self, url: str, *, status: bool = False) -> TransportResult:
         canonical_url = validate_remote_url(url)
         return self._fetch(canonical_url, MAIN_FETCH_REFSPEC, status=status)
+
+    def fetch_temporary_main(self, url: str) -> TemporaryFetchResult:
+        canonical_url = validate_remote_url(url)
+        temporary_ref = f"refs/popctl-dotfiles/dry-run/{uuid.uuid4().hex}"
+        result = self._network_git(
+            ["fetch", "--no-write-fetch-head", canonical_url, f"{MAIN_REF}:{temporary_ref}"],
+            canonical_url,
+        )
+        transport = _transport_result(result)
+        try:
+            if not transport.success:
+                return TemporaryFetchResult(transport)
+            source_oid = self.ref_oid(temporary_ref)
+            if source_oid is None:
+                raise GitCommandError("Temporary dry-run fetch did not create a main ref")
+            return TemporaryFetchResult(transport, source_oid)
+        finally:
+            cleanup = self._content_git(["update-ref", "-d", temporary_ref])
+            self._require_success(cleanup, "discard temporary dry-run fetch ref")
 
     def fetch_marker(self, url: str) -> TransportResult:
         canonical_url = validate_remote_url(url)
