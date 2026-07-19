@@ -11,6 +11,7 @@ from popctl.cli.commands import (
     config,
     diff,
     doctor,
+    dotfiles,
     fs,
     history,
     init,
@@ -74,6 +75,7 @@ app.add_typer(config.app, name="config")
 app.add_typer(backup.app, name="backup")
 app.add_typer(manifest.app, name="manifest")
 app.add_typer(alerts.app, name="alerts")
+app.add_typer(dotfiles.app, name="dotfiles")
 app.command(
     name="doctor",
     help="Check whether popctl features are ready to use.",

@@ -388,6 +388,64 @@ def record_completed_path(
     )
 
 
+def clear_materialization_state(
+    operation: PlanOperation,
+    state_dir: Path | None = None,
+) -> None:
+    for path in (
+        get_completed_paths_journal_path(operation, state_dir),
+        get_plan_path(operation, state_dir),
+    ):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            raise DotfilesStateError(
+                f"Failed to clear completed {operation.value} materialization state: {e}"
+            ) from e
+
+
+def complete_materialization_state(
+    plan: MaterializationPlan,
+    state_dir: Path | None = None,
+) -> None:
+    plan_path = get_plan_path(plan.operation, state_dir)
+    if plan_path.exists() and load_materialization_plan(plan.operation, state_dir) != plan:
+        raise DotfilesPlanMismatchError("Materialization state does not match the validated source")
+    complete_materialization_state_for_source(
+        plan.operation,
+        source_ref=plan.source_ref,
+        source_tree_oid=plan.source_tree_oid,
+        state_dir=state_dir,
+    )
+
+
+def complete_materialization_state_for_source(
+    operation: PlanOperation,
+    *,
+    source_ref: str,
+    source_tree_oid: str,
+    state_dir: Path | None = None,
+) -> None:
+    plan_path = get_plan_path(operation, state_dir)
+    journal_path = get_completed_paths_journal_path(operation, state_dir)
+    if not plan_path.exists() and not journal_path.exists():
+        return
+    if not plan_path.exists() or not journal_path.exists():
+        raise DotfilesStateError("Dotfiles materialization state is incomplete")
+    existing_plan = load_materialization_plan(operation, state_dir)
+    if existing_plan.source_ref != source_ref or existing_plan.source_tree_oid != source_tree_oid:
+        raise DotfilesPlanMismatchError("Materialization state does not match the validated source")
+    journal = load_completed_paths_journal(operation, state_dir)
+    _verify_journal_for_plan(journal, existing_plan)
+    if set(journal.completed_paths) != {entry.path for entry in existing_plan.entries}:
+        raise DotfilesRecoveryError(
+            "Dotfiles materialization is incomplete; retry against the original source."
+        )
+    clear_materialization_state(operation, state_dir)
+
+
 def resume_completed_path(
     plan: MaterializationPlan,
     entry: PlannedPath,

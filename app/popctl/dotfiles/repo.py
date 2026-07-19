@@ -209,18 +209,21 @@ class DotfilesRepo:
         *,
         home: Path | None = None,
         state_dir: Path | None = None,
+        read_only: bool = False,
     ) -> None:
         self.bare_repo = bare_repo
         self.home = home or Path.home()
         self.state_dir = state_dir or get_state_dir() / "dotfiles"
         self._assets_dir = self.state_dir / "git"
-        self._assets_dir.mkdir(parents=True, exist_ok=True)
+        if not read_only:
+            self._assets_dir.mkdir(parents=True, exist_ok=True)
         self._identity = _capture_identity()
         self._credential_helpers = _capture_credential_helpers()
         self._content_config = self._assets_dir / "content.gitconfig"
         self._network_config = self._assets_dir / "network.gitconfig"
         self._ssh_config = self._assets_dir / "ssh_config"
-        self._write_owned_assets()
+        if not read_only:
+            self._write_owned_assets()
 
     @property
     def identity(self) -> GitIdentity:
@@ -283,6 +286,15 @@ class DotfilesRepo:
         result = self._network_git(
             ["ls-remote", "--refs", canonical_url, MAIN_REF, MARKER_REF], canonical_url
         )
+        return self._parse_ls_remote_result(result)
+
+    def ls_remote_all_refs(self, url: str) -> LsRemoteResult:
+        canonical_url = validate_remote_url(url)
+        result = self._network_git(["ls-remote", "--refs", canonical_url], canonical_url)
+        return self._parse_ls_remote_result(result)
+
+    @staticmethod
+    def _parse_ls_remote_result(result: BytesCommandResult) -> LsRemoteResult:
         transport = _transport_result(result)
         if not transport.success:
             return LsRemoteResult(transport)
@@ -626,9 +638,8 @@ class DotfilesRepo:
     def _network_environment(self) -> dict[str, str]:
         environment: dict[str, str] = {}
         for key, value in os.environ.items():
-            if (
-                key in {"PATH", "HOME", "LANG", "LANGUAGE", "SSH_AUTH_SOCK"}
-                or key.startswith("LC_")
+            if key in {"PATH", "HOME", "LANG", "LANGUAGE", "SSH_AUTH_SOCK"} or key.startswith(
+                "LC_"
             ):
                 environment[key] = value
         environment["HOME"] = str(self.home)

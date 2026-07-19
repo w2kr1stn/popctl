@@ -13,12 +13,15 @@ from popctl.dotfiles.state import (
     MaterializationPlan,
     PlannedPath,
     PlanOperation,
+    clear_materialization_state,
+    complete_materialization_state_for_source,
     dotfiles_lock,
     get_completed_paths_journal_path,
     get_plan_path,
     load_completed_paths_journal,
     load_materialization_plan,
     prepare_materialization_plan,
+    record_completed_path,
     recover_init_finalization,
     resume_completed_path,
     save_init_finalization_journal,
@@ -96,6 +99,34 @@ class TestMaterializationState:
 
         with pytest.raises(DotfilesPlanMismatchError, match="incomplete dotfiles"):
             prepare_materialization_plan(replace(plan, source_tree_oid="e" * 40), tmp_path)
+
+    def test_clears_completed_state_after_ref_advance(
+        self, tmp_path: Path, operation: PlanOperation
+    ) -> None:
+        prepare_materialization_plan(_plan(operation), tmp_path)
+
+        clear_materialization_state(operation, tmp_path)
+
+        assert not get_plan_path(operation, tmp_path).exists()
+        assert not get_completed_paths_journal_path(operation, tmp_path).exists()
+
+    def test_clears_a_completed_state_by_validated_source(
+        self, tmp_path: Path, operation: PlanOperation
+    ) -> None:
+        plan = _plan(operation)
+        prepare_materialization_plan(plan, tmp_path)
+        for entry in plan.entries:
+            record_completed_path(plan, entry.path, tmp_path)
+
+        complete_materialization_state_for_source(
+            operation,
+            source_ref=plan.source_ref,
+            source_tree_oid=plan.source_tree_oid,
+            state_dir=tmp_path,
+        )
+
+        assert not get_plan_path(operation, tmp_path).exists()
+        assert not get_completed_paths_journal_path(operation, tmp_path).exists()
 
 
 class TestInitFinalizationRecovery:
