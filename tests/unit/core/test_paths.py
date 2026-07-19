@@ -11,6 +11,7 @@ import pytest
 from popctl.core.paths import (
     APP_NAME,
     get_config_dir,
+    get_data_dir,
     get_manifest_path,
     get_state_dir,
 )
@@ -52,6 +53,17 @@ class TestGetStateDir:
             result = get_state_dir()
 
         assert result == tmp_path / APP_NAME
+
+
+class TestGetDataDir:
+    def test_default_data_dir(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+
+        assert get_data_dir() == Path(os.environ["HOME"]) / ".local" / "share" / APP_NAME
+
+    def test_respects_xdg_data_home(self, tmp_path: Path) -> None:
+        with patch.dict(os.environ, {"XDG_DATA_HOME": str(tmp_path)}):
+            assert get_data_dir() == tmp_path / APP_NAME
 
 
 class TestConveniencePaths:

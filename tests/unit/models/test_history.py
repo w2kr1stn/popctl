@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from popctl.core.state import INVERSE_ACTION_TYPES
 from popctl.models.history import (
     HistoryActionType,
     HistoryEntry,
@@ -91,6 +92,27 @@ class TestHistoryItem:
         data = {"name": "/home/user/.config/old-app"}
         item = HistoryItem.from_dict(data)
         assert item.source is None
+
+
+@pytest.mark.parametrize(
+    "action_type",
+    [
+        HistoryActionType.DOTFILES_INIT,
+        HistoryActionType.DOTFILES_SYNC,
+        HistoryActionType.DOTFILES_APPLY,
+    ],
+)
+def test_dotfiles_history_types_are_non_reversible(action_type: HistoryActionType) -> None:
+    assert action_type not in INVERSE_ACTION_TYPES
+    entry = create_history_entry(action_type, [HistoryItem(name=".config/example/config.toml")])
+    assert not entry.reversible
+    with pytest.raises(ValueError, match="not reversible"):
+        HistoryEntry(
+            id="dotfiles",
+            timestamp="2026-01-25T14:30:00+00:00",
+            action_type=action_type,
+            items=(HistoryItem(name=".config/example/config.toml"),),
+        )
 
 
 class TestHistoryEntry:

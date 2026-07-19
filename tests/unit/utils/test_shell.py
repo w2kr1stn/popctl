@@ -1,9 +1,10 @@
 """Unit tests for shell execution utilities."""
 
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
-from popctl.utils.shell import run_interactive
+from popctl.utils.shell import run_command, run_command_bytes, run_interactive
 
 
 class TestRunInteractive:
@@ -77,3 +78,46 @@ class TestRunInteractive:
         """run_interactive raises FileNotFoundError for missing commands."""
         with pytest.raises(FileNotFoundError):
             run_interactive(["nonexistent_command_xyz_12345"])
+
+
+class TestRunCommandBytes:
+    @patch("popctl.utils.shell.subprocess.run")
+    def test_preserves_crlf_and_non_utf8_output(self, mock_run: MagicMock) -> None:
+        stdout = b"first\r\nsecond\r\n\xff"
+        stderr = b"warning\r\n\xfe"
+        mock_run.return_value = MagicMock(stdout=stdout, stderr=stderr, returncode=0)
+
+        result = run_command_bytes(["git", "cat-file", "blob"])
+
+        assert result.stdout == stdout
+        assert result.stderr == stderr
+        assert result.success
+        assert mock_run.call_args.kwargs["text"] is False
+
+    @patch("popctl.utils.shell.subprocess.run")
+    def test_passes_bytes_stdin_and_replaces_environment(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(stdout=b"", stderr=b"", returncode=0)
+
+        run_command_bytes(["git", "hash-object", "--stdin"], input=b"a\r\n\xff", env={"PATH": "/x"})
+
+        assert mock_run.call_args.kwargs["input"] == b"a\r\n\xff"
+        assert mock_run.call_args.kwargs["env"] == {"PATH": "/x"}
+
+    @patch("popctl.utils.shell.subprocess.run")
+    def test_text_api_keeps_merging_environment(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+
+        run_command(["git", "status"], env={"POPCTL_TEST": "1"})
+
+        env = mock_run.call_args.kwargs["env"]
+        assert env["POPCTL_TEST"] == "1"
+        assert "PATH" in env
+
+    @patch("popctl.utils.shell.subprocess.run", side_effect=subprocess.TimeoutExpired("git", 3))
+    def test_timeout_keeps_byte_result(self, mock_run: MagicMock) -> None:
+        result = run_command_bytes(["git", "cat-file"], timeout=3)
+
+        assert result.stdout == b""
+        assert result.stderr == b"Command timed out after 3s: git cat-file"
+        assert result.returncode == -1
+        mock_run.assert_called_once()

@@ -15,6 +15,18 @@ class HistoryActionType(Enum):
     ADVISOR_APPLY = "advisor_apply"
     FS_DELETE = "fs_delete"
     CONFIG_DELETE = "config_delete"
+    DOTFILES_INIT = "dotfiles_init"
+    DOTFILES_SYNC = "dotfiles_sync"
+    DOTFILES_APPLY = "dotfiles_apply"
+
+
+_DOTFILES_ACTION_TYPES = frozenset(
+    {
+        HistoryActionType.DOTFILES_INIT,
+        HistoryActionType.DOTFILES_SYNC,
+        HistoryActionType.DOTFILES_APPLY,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +73,9 @@ class HistoryEntry:
         if not self.items:
             msg = "History entry must have at least one item"
             raise ValueError(msg)
+        if self.action_type in _DOTFILES_ACTION_TYPES and self.reversible:
+            msg = "Dotfiles history entries are not reversible"
+            raise ValueError(msg)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -104,6 +119,6 @@ def create_history_entry(
         timestamp=datetime.now(UTC).isoformat(),
         action_type=action_type,
         items=tuple(items),
-        reversible=reversible,
+        reversible=reversible and action_type not in _DOTFILES_ACTION_TYPES,
         metadata=dict(metadata) if metadata else {},
     )

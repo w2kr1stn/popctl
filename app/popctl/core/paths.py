@@ -20,6 +20,10 @@ def get_state_dir() -> Path:
     return _get_xdg_dir("XDG_STATE_HOME", ".local/state")
 
 
+def get_data_dir() -> Path:
+    return _get_xdg_dir("XDG_DATA_HOME", ".local/share")
+
+
 def get_backups_dir() -> Path:
     return get_state_dir() / "backups"
 
