@@ -42,6 +42,7 @@ from popctl.dotfiles.state import (
     get_dotfiles_lock_path,
     get_init_finalization_journal_path,
     get_plan_path,
+    load_completed_paths_journal,
     recover_init_finalization,
 )
 from popctl.models.history import HistoryActionType
@@ -1432,3 +1433,52 @@ def test_cli_apply_recovers_after_replace_before_journal_record(
     assert not get_plan_path(PlanOperation.APPLY, state_dir).exists()
     assert not get_completed_paths_journal_path(PlanOperation.APPLY, state_dir).exists()
     assert get_history()[0][0].action_type is HistoryActionType.DOTFILES_APPLY
+
+
+@pytest.mark.real_git
+@pytest.mark.parametrize(
+    ("command", "operation"),
+    [("apply", PlanOperation.APPLY), ("sync", PlanOperation.INBOUND_SYNC)],
+)
+def test_cli_materialization_refuses_parent_swap_after_replace_before_journal(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    operation: PlanOperation,
+) -> None:
+    repository, _config, base_oid, source_oid = _configured_source_repo(real_git, tmp_path)
+    state_dir = real_git.state_home / "popctl" / "dotfiles"
+    original_verify = materialize._verify_visible_target
+    monkeypatch.setattr(DotfilesRepo, "fetch", lambda *_args, **_kwargs: _success_transport())
+    monkeypatch.setattr(
+        DotfilesRepo,
+        "ls_remote_all_refs",
+        lambda *_args: LsRemoteResult(_success_transport(), (RemoteRef(source_oid, MAIN_REF),)),
+    )
+    monkeypatch.setattr(
+        dotfiles,
+        "compute_system_diff",
+        lambda *_args, **_kwargs: SimpleNamespace(missing=[]),
+    )
+
+    def swap_parent_then_verify(
+        home: Path, path: str, written_identity: tuple[int, int]
+    ) -> None:
+        parent = home / ".config"
+        parent.rename(home / ".config-moved")
+        redirected_parent = tmp_path / "redirected-config"
+        redirected_parent.mkdir()
+        parent.symlink_to(redirected_parent)
+        original_verify(home, path, written_identity)
+
+    monkeypatch.setattr(materialize, "_verify_visible_target", swap_parent_then_verify)
+    result = runner.invoke(app, ["dotfiles", command])
+
+    assert result.exit_code == 1
+    assert "visible target changed" in result.output
+    assert repository.ref_oid(MAIN_REF) == base_oid
+    assert repository.ref_oid(REMOTE_MAIN_REF) == source_oid
+    assert not (real_git.home / _PATH).exists()
+    assert load_completed_paths_journal(operation, state_dir).completed_paths == ()
+    assert get_history()[0] == []

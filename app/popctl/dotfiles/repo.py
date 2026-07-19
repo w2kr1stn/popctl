@@ -221,16 +221,22 @@ class DotfilesRepo:
         self.bare_repo = bare_repo
         self.home = home or Path.home()
         self.state_dir = state_dir or get_state_dir() / "dotfiles"
-        self._assets_dir = self.state_dir / "git"
-        if not read_only:
+        self._temporary_assets = (
+            tempfile.TemporaryDirectory(prefix="popctl-dotfiles-git-") if read_only else None
+        )
+        self._assets_dir = (
+            Path(self._temporary_assets.name)
+            if self._temporary_assets is not None
+            else self.state_dir / "git"
+        )
+        if self._temporary_assets is None:
             self._assets_dir.mkdir(parents=True, exist_ok=True)
         self._identity = _capture_identity()
         self._credential_helpers = _capture_credential_helpers()
         self._content_config = self._assets_dir / "content.gitconfig"
         self._network_config = self._assets_dir / "network.gitconfig"
         self._ssh_config = self._assets_dir / "ssh_config"
-        if not read_only:
-            self._write_owned_assets()
+        self._write_owned_assets()
 
     @property
     def identity(self) -> GitIdentity:

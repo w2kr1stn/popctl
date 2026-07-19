@@ -267,6 +267,7 @@ def _replace_target(home: Path, entry: PlannedPath, content: bytes) -> None:
             _write_all(descriptor, content)
             os.fchmod(descriptor, int(entry.mode[-3:], 8))
             os.fsync(descriptor)
+            written_identity = (os.fstat(descriptor).st_dev, os.fstat(descriptor).st_ino)
             os.close(descriptor)
             descriptor = None
             current = _read_target_in_parent(parent_descriptor, name, entry.path)
@@ -283,6 +284,7 @@ def _replace_target(home: Path, entry: PlannedPath, content: bytes) -> None:
                 dst_dir_fd=parent_descriptor,
             )
             os.fsync(parent_descriptor)
+            _verify_visible_target(home, entry.path, written_identity)
         except OSError as e:
             raise MaterializationError(f"Could not materialize {entry.path}: {e}") from e
         finally:
@@ -319,6 +321,29 @@ def _read_target_in_parent(parent_descriptor: int, name: str, path: str) -> Home
         content=b"".join(chunks),
         mode="100755" if target_stat.st_mode & stat.S_IXUSR else "100644",
     )
+
+
+def _verify_visible_target(home: Path, path: str, written_identity: tuple[int, int]) -> None:
+    try:
+        with open_home_parent(home, path) as (parent_descriptor, name):
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_descriptor)
+            try:
+                target_stat = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+    except (HomePathError, OSError) as e:
+        raise DotfilesRecoveryError(
+            f"Refusing to complete materialization because visible target changed: {path}; "
+            "recover the target manually, then retry."
+        ) from e
+    if not stat.S_ISREG(target_stat.st_mode) or (
+        target_stat.st_dev,
+        target_stat.st_ino,
+    ) != written_identity:
+        raise DotfilesRecoveryError(
+            f"Refusing to complete materialization because visible target changed: {path}; "
+            "recover the target manually, then retry."
+        )
 
 
 def _write_all(descriptor: int, content: bytes) -> None:

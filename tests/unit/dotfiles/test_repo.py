@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import shutil
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -807,6 +808,67 @@ def test_network_transport_never_contacts_hostile_global_or_pushurl_sentinels(
     with pytest.raises(DotfilesRepoError, match="Unexpected dotfiles local Git config key"):
         source._network_git(["push", remote_url, f"{MAIN_REF}:{MAIN_REF}"], remote_url)
     assert not contacted.exists()
+
+
+@pytest.mark.real_git
+def test_read_only_status_and_dry_run_transport_use_private_owned_assets(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote_store = _repository(real_git, tmp_path, "remote")
+    repository = _repository(real_git, tmp_path, "source")
+    ssh_url = "git@github.com:example/dotfiles.git"
+    repository.setup_remote(ssh_url)
+    _write(real_git.home, ".config/tool/config", b"safe\n")
+    commit = _commit(repository, [".config/tool/config"], "safe")
+    repository.create_marker(commit)
+    local_url = f"file://{remote_store.bare_repo}"
+    original_network_git = DotfilesRepo._network_git
+    environments: list[dict[str, str]] = []
+
+    def local_network_git(
+        self: DotfilesRepo,
+        args: list[str],
+        canonical_url: str,
+        *,
+        timeout_seconds: float = 30.0,
+    ) -> BytesCommandResult:
+        environment = self._network_environment()
+        environments.append(environment)
+        assert Path(self._ssh_config).exists()
+        assert Path(self._network_config).exists()
+        assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert environment["GIT_TERMINAL_PROMPT"] == "0"
+        assert str(self._ssh_config) in environment["GIT_SSH_COMMAND"]
+        local_args = [local_url if argument == canonical_url else argument for argument in args]
+        return original_network_git(
+            self,
+            local_args,
+            canonical_url,
+            timeout_seconds=timeout_seconds,
+        )
+
+    monkeypatch.setattr(DotfilesRepo, "_network_git", local_network_git)
+    assert repository._network_git(
+        ["push", local_url, f"{MAIN_REF}:{MAIN_REF}", f"{MARKER_REF}:{MARKER_REF}"],
+        ssh_url,
+    ).success
+    shutil.rmtree(repository.state_dir)
+    read_only = DotfilesRepo(
+        repository.bare_repo,
+        home=real_git.home,
+        state_dir=repository.state_dir,
+        read_only=True,
+    )
+
+    assert read_only.fetch(ssh_url, status=True).success
+    temporary = read_only.fetch_temporary_main(ssh_url)
+
+    assert temporary.transport.success
+    assert temporary.source_oid == commit
+    assert environments
+    assert not (repository.state_dir / "git").exists()
 
 
 @pytest.mark.real_git
