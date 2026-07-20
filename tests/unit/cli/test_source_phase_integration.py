@@ -142,9 +142,9 @@ def test_sync_missing_manifest_dry_run_never_saves_the_ephemeral_manifest() -> N
         patch("popctl.cli.commands.sync.manifest_exists", return_value=False),
         patch("popctl.cli.commands.sync.get_available_scanners", return_value=[scanner]),
         patch(
-            "popctl.cli.commands.sync.scan_and_create_manifest",
+            "popctl.cli.commands.sync.capture_manifest",
             return_value=(manifest, {"vim": PackageEntry(source="apt")}, []),
-        ),
+        ) as capture,
         patch("popctl.cli.commands.sync.save_manifest") as save,
         patch(
             "popctl.cli.commands.sync.run_source_phase",
@@ -158,5 +158,7 @@ def test_sync_missing_manifest_dry_run_never_saves_the_ephemeral_manifest() -> N
         )
 
     assert result.exit_code == 0
+    assert capture.call_args.args[1].value == "all"
+    assert capture.call_args.kwargs["dry_run"] is True
     save.assert_not_called()
     assert "ephemeral" in result.stdout.lower()

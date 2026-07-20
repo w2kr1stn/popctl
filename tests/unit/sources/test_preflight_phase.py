@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 from popctl.cli.types import SourceChoice
 from popctl.models.manifest import Manifest, ManifestMeta, PackageConfig, SystemConfig
 from popctl.models.package import PackageSource
+from popctl.sources.capture import SourceCaptureError
 from popctl.sources.diff import SourceDiffType
 from popctl.sources.keytrust import KeyTrustError, VerifiedPublicKey
 from popctl.sources.models import (
@@ -12,6 +13,7 @@ from popctl.sources.models import (
     AptSourceFormat,
     AptSources,
     FlatpakApp,
+    FlatpakRemote,
     FlatpakScope,
     FlatpakSources,
     ReplayMode,
@@ -23,6 +25,7 @@ from popctl.sources.models import (
 )
 from popctl.sources.phase import (
     SourceInteractionPolicy,
+    capture_and_trust_sources,
     refresh_manifest_sources,
     run_source_phase,
 )
@@ -387,6 +390,123 @@ def test_source_phase_keeps_provision_failure_and_retained_artifacts() -> None:
     assert result.error == "strict update failed"
 
 
+def test_capture_and_trust_filters_bootstrap_and_shows_fingerprint_before_prompt() -> None:
+    sources = _apt_sources().model_copy(
+        update={
+            "flatpak": FlatpakSources(
+                remotes=(
+                    FlatpakRemote(
+                        name="vendor",
+                        scope=FlatpakScope.USER,
+                        url="https://vendor.example/flatpak",
+                        gpg_verify=True,
+                        gpg_key_armor="vendor-key",
+                        gpg_fingerprints=(FINGERPRINT,),
+                        replay_mode=ReplayMode.REPLAY,
+                    ),
+                ),
+            ),
+            "snap": _snap_sources(
+                SnapChannel(name="hello", channel="latest/edge", replay_mode=ReplayMode.REPLAY)
+            ).snap,
+        }
+    )
+    events: list[str] = []
+
+    def confirm_source(*_args: object, **_kwargs: object) -> bool:
+        events.append("confirm")
+        return True
+
+    with (
+        patch("popctl.sources.phase.capture_sources", return_value=sources) as capture,
+        patch("popctl.sources.phase.print_info", side_effect=events.append),
+        patch("popctl.sources.phase.typer.confirm", side_effect=confirm_source) as confirm,
+    ):
+        result = capture_and_trust_sources(
+            SourceChoice.APT,
+            dry_run=False,
+            interaction=SourceInteractionPolicy(interactive=True),
+    )
+
+    assert result.success is True
+    assert result.sources is not None
+    assert result.sources.apt == sources.apt
+    assert result.sources.flatpak == FlatpakSources()
+    assert result.sources.snap == SnapSources()
+    assert capture.call_args.kwargs["managers"] == (PackageSource.APT,)
+    assert confirm.call_count == 1
+    assert any("Third-party APT source: https://vendor.example/apt" in event for event in events)
+    assert any(FINGERPRINT in event for event in events)
+    assert events.index("confirm") > next(
+        index for index, event in enumerate(events) if FINGERPRINT in event
+    )
+
+
+def test_capture_and_trust_rejects_blocked_sources_before_persisting() -> None:
+    sources = _apt_sources()
+    blocked = sources.apt.entries[0].model_copy(update={"replay_mode": ReplayMode.BLOCKED})
+    sources = sources.model_copy(
+        update={"apt": sources.apt.model_copy(update={"entries": (blocked,)})}
+    )
+
+    with (
+        patch("popctl.sources.phase.capture_sources", return_value=sources),
+        patch("popctl.sources.phase.typer.confirm") as confirm,
+    ):
+        result = capture_and_trust_sources(
+            SourceChoice.APT,
+            dry_run=False,
+            interaction=SourceInteractionPolicy(interactive=True),
+        )
+
+    assert result.success is False
+    assert result.sources is None
+    assert "blocked" in (result.error or "")
+    confirm.assert_not_called()
+
+
+def test_capture_and_trust_refuses_rejected_authenticated_and_noninteractive_sources() -> None:
+    sources = _apt_sources()
+    with (
+        patch("popctl.sources.phase.capture_sources", return_value=sources),
+        patch("popctl.sources.phase.typer.confirm", return_value=False) as confirm,
+    ):
+        rejected = capture_and_trust_sources(
+            SourceChoice.APT,
+            dry_run=False,
+            interaction=SourceInteractionPolicy(interactive=True),
+        )
+
+    with (
+        patch("popctl.sources.phase.capture_sources", return_value=sources),
+        patch("popctl.sources.phase.typer.confirm") as noninteractive_confirm,
+    ):
+        noninteractive = capture_and_trust_sources(
+            SourceChoice.APT,
+            dry_run=False,
+            interaction=SourceInteractionPolicy(interactive=False),
+        )
+
+    with patch(
+        "popctl.sources.phase.capture_sources",
+        side_effect=SourceCaptureError("authenticated source"),
+    ):
+        authenticated = capture_and_trust_sources(
+            SourceChoice.APT,
+            dry_run=False,
+            interaction=SourceInteractionPolicy(interactive=True),
+        )
+
+    assert rejected.success is False
+    assert rejected.sources is None
+    assert noninteractive.success is False
+    assert noninteractive.sources is None
+    assert authenticated.success is False
+    assert authenticated.sources is None
+    confirm.assert_called_once()
+    noninteractive_confirm.assert_not_called()
+
+
 def test_refresh_merges_only_confirmed_additions_and_never_removes_extras() -> None:
     old = SnapChannel(name="old", channel="latest/stable", replay_mode=ReplayMode.REPLAY)
     added = SnapChannel(name="added", channel="latest/edge", replay_mode=ReplayMode.REPLAY)
@@ -426,13 +546,14 @@ def test_refresh_yes_refuses_a_new_source_without_mutating_manifest() -> None:
 
 
 def test_refresh_atomically_merges_only_the_individually_confirmed_sources() -> None:
-    manifest = _manifest(_snap_sources())
-    first = SnapChannel(name="first", channel="latest/stable", replay_mode=ReplayMode.REPLAY)
-    second = SnapChannel(name="second", channel="latest/edge", replay_mode=ReplayMode.REPLAY)
-    live = _snap_sources(first, second)
+    existing = SnapChannel(name="existing", channel="latest/stable", replay_mode=ReplayMode.REPLAY)
+    changed = SnapChannel(name="existing", channel="latest/edge", replay_mode=ReplayMode.REPLAY)
+    added = SnapChannel(name="added", channel="latest/stable", replay_mode=ReplayMode.REPLAY)
+    manifest = _manifest(_snap_sources(existing))
+    live = _snap_sources(changed, added)
     with (
         patch("popctl.sources.phase.capture_sources", return_value=live),
-        patch("popctl.sources.phase.typer.confirm", side_effect=(True, False)),
+        patch("popctl.sources.phase.typer.confirm", side_effect=(False, True)) as confirm,
     ):
         result = refresh_manifest_sources(
             manifest,
@@ -443,4 +564,22 @@ def test_refresh_atomically_merges_only_the_individually_confirmed_sources() -> 
     assert result.success is True
     assert result.changed is True
     assert result.manifest.sources is not None
-    assert {channel.name for channel in result.manifest.sources.snap.packages} == {"first"}
+    assert result.manifest.sources.snap.packages == (changed,)
+    assert confirm.call_count == 2
+
+
+def test_refresh_noninteractive_refuses_a_new_source_without_mutating_manifest() -> None:
+    manifest = _manifest(_snap_sources())
+    live = _snap_sources(
+        SnapChannel(name="added", channel="latest/edge", replay_mode=ReplayMode.REPLAY)
+    )
+    with patch("popctl.sources.phase.capture_sources", return_value=live):
+        result = refresh_manifest_sources(
+            manifest,
+            SourceChoice.SNAP,
+            interaction=SourceInteractionPolicy(interactive=False),
+        )
+
+    assert result.success is False
+    assert result.manifest is manifest
+    assert result.changed is False

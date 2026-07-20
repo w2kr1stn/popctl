@@ -97,7 +97,7 @@ def test_sync_auto_init(sample_manifest: Manifest, in_sync_result: DiffResult) -
         patch("popctl.cli.commands.sync.manifest_exists", return_value=False),
         patch("popctl.cli.commands.sync.get_available_scanners", return_value=[mock_scanner]),
         patch(
-            "popctl.cli.commands.sync.scan_and_create_manifest",
+            "popctl.cli.commands.sync.capture_manifest",
             return_value=(sample_manifest, {"firefox": PackageEntry(source="apt")}, []),
         ),
         patch("popctl.cli.commands.sync.save_manifest", return_value=Path("/tmp/manifest.toml")),

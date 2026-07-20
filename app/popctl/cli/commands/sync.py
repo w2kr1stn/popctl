@@ -25,6 +25,7 @@ from popctl.advisor.exchange import (
 from popctl.advisor.runner import MANUAL_MODE_SENTINEL
 from popctl.advisor.scanning import scan_system
 from popctl.advisor.workspace import create_session_workspace, ensure_advisor_sessions_dir
+from popctl.cli.commands.init import capture_manifest
 from popctl.cli.display import (
     create_actions_table,
     create_results_table,
@@ -47,7 +48,6 @@ from popctl.core.manifest import (
     load_manifest,
     manifest_exists,
     save_manifest,
-    scan_and_create_manifest,
 )
 from popctl.core.paths import get_manifest_path, get_state_dir
 from popctl.domain.models import ScannedEntry
@@ -78,7 +78,12 @@ app = typer.Typer(
 )
 
 
-def _ensure_manifest(*, dry_run: bool) -> tuple[Manifest | None, bool]:
+def _ensure_manifest(
+    source: SourceChoice,
+    *,
+    dry_run: bool,
+    interaction: SourceInteractionPolicy,
+) -> tuple[Manifest | None, bool]:
     if manifest_exists():
         try:
             return require_manifest(), False
@@ -96,7 +101,12 @@ def _ensure_manifest(*, dry_run: bool) -> tuple[Manifest | None, bool]:
     print_info(f"Scanning system packages: {', '.join(source_names)}")
 
     try:
-        manifest, packages, _ = scan_and_create_manifest(scanners)
+        manifest, packages, _ = capture_manifest(
+            scanners,
+            source,
+            dry_run=dry_run,
+            interaction=interaction,
+        )
     except RuntimeError as e:
         print_error(f"Scan failed: {e}")
         raise typer.Exit(code=1) from e
@@ -518,9 +528,8 @@ def sync(
         popctl sync --backup            # Create backup after sync
     """
     # Phase 1: Ensure manifest exists
-    manifest, was_missing = _ensure_manifest(dry_run=dry_run)
-
     interaction = SourceInteractionPolicy(yes=yes, interactive=sys.stdin.isatty())
+    manifest, was_missing = _ensure_manifest(source, dry_run=dry_run, interaction=interaction)
     if manifest is not None and not was_missing and not dry_run:
         refresh = refresh_manifest_sources(manifest, source, interaction=interaction)
         if not refresh.success:

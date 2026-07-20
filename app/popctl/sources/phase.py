@@ -23,6 +23,7 @@ from popctl.sources.models import (
     FlatpakApp,
     FlatpakRemote,
     FlatpakSources,
+    ReplayMode,
     SnapChannel,
     SnapSources,
     SourcesConfig,
@@ -64,6 +65,13 @@ class SourceRefreshResult:
     error: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class SourceCaptureTrustResult:
+    success: bool
+    sources: SourcesConfig | None = None
+    error: str | None = None
+
+
 def _source_filter(source: SourceChoice) -> PackageSource | None:
     return source.to_package_source()
 
@@ -78,6 +86,155 @@ def _source_diff(
 
 def _source_changes(source_diff: SourceDiffResult) -> tuple[SourceDiffEntry, ...]:
     return source_diff.changed
+
+
+def _capture_entries(
+    sources: SourcesConfig,
+    modes: frozenset[ReplayMode],
+) -> tuple[SourceDiffEntry, ...]:
+    entries: list[SourceDiffEntry] = []
+    entries.extend(
+        SourceDiffEntry(
+            locator=source.managed_target_locator,
+            kind=SourceRecordKind.APT,
+            diff_type=SourceDiffType.EXTRA,
+            live=source,
+        )
+        for source in sources.apt.entries
+        if source.replay_mode in modes
+    )
+    entries.extend(
+        SourceDiffEntry(
+            locator=remote.locator,
+            kind=SourceRecordKind.FLATPAK_REMOTE,
+            diff_type=SourceDiffType.EXTRA,
+            live=remote,
+        )
+        for remote in sources.flatpak.remotes
+        if remote.replay_mode in modes
+    )
+    entries.extend(
+        SourceDiffEntry(
+            locator=channel.locator,
+            kind=SourceRecordKind.SNAP,
+            diff_type=SourceDiffType.EXTRA,
+            live=channel,
+        )
+        for channel in sources.snap.packages
+        if channel.replay_mode in modes
+    )
+    return tuple(
+        sorted(
+            entries,
+            key=lambda entry: (
+                entry.locator.manager.value,
+                entry.kind.value,
+                entry.locator.parts,
+            ),
+        )
+    )
+
+
+def _selected_captured_sources(
+    sources: SourcesConfig,
+    source_filter: PackageSource | None,
+) -> SourcesConfig:
+    if source_filter is None:
+        return sources
+    return sources.model_copy(
+        update={
+            "apt": sources.apt if source_filter is PackageSource.APT else AptSources(),
+            "flatpak": (
+                sources.flatpak if source_filter is PackageSource.FLATPAK else FlatpakSources()
+            ),
+            "snap": sources.snap if source_filter is PackageSource.SNAP else SnapSources(),
+        }
+    )
+
+
+def _apt_identity(source: AptSource) -> str:
+    if source.ppa_display is not None:
+        return f"ppa:{source.ppa_display}"
+    for line in source.verbatim_stanza.splitlines():
+        name, separator, value = line.partition(":")
+        if separator and name.strip().lower() == "uris" and value.strip():
+            return value.strip().split()[0]
+    return next(
+        (
+            value
+            for value in source.verbatim_stanza.split()
+            if value.startswith(("http://", "https://", "file:"))
+        ),
+        source.managed_target,
+    )
+
+
+def _print_capture_trust_preview(
+    sources: SourcesConfig,
+    entries: tuple[SourceDiffEntry, ...],
+) -> None:
+    apt_keys = {key.id: key for key in sources.apt.keys}
+    for entry in entries:
+        record = entry.live
+        if isinstance(record, AptSource):
+            fingerprints = tuple(
+                fingerprint
+                for key_id in record.key_ids
+                for fingerprint in apt_keys[key_id].fingerprints
+            )
+            print_info(f"Third-party APT source: {_apt_identity(record)}")
+            print_info(f"  fingerprints: {', '.join(fingerprints)}")
+        elif isinstance(record, FlatpakRemote):
+            print_info(
+                f"Third-party Flatpak remote: {record.scope.value}:{record.name} ({record.url})"
+            )
+            print_info(f"  fingerprints: {', '.join(record.gpg_fingerprints)}")
+        elif isinstance(record, SnapChannel):
+            print_info(f"Third-party Snap channel: {record.name} ({record.channel})")
+        elif isinstance(record, FlatpakApp):
+            print_info(
+                "Flatpak application source: "
+                f"{record.scope.value}:{record.id}@{record.branch} ({record.origin})"
+            )
+
+
+def capture_and_trust_sources(
+    source: SourceChoice,
+    *,
+    dry_run: bool,
+    interaction: SourceInteractionPolicy,
+) -> SourceCaptureTrustResult:
+    source_filter = _source_filter(source)
+    managers = (source_filter,) if source_filter is not None else None
+    try:
+        sources = capture_sources(managers=managers)
+    except SourceCaptureError as error:
+        print_error(f"Source capture failed: {error}")
+        return SourceCaptureTrustResult(success=False, error=str(error))
+
+    sources = _selected_captured_sources(sources, source_filter)
+    blocked = _capture_entries(sources, frozenset({ReplayMode.BLOCKED}))
+    if blocked:
+        error = "blocked source cannot be recorded: " + ", ".join(
+            entry.label for entry in blocked
+        )
+        print_error(f"Source capture failed: {error}")
+        return SourceCaptureTrustResult(success=False, error=error)
+
+    trust_entries = _capture_entries(sources, frozenset({ReplayMode.REPLAY}))
+    _print_capture_trust_preview(sources, trust_entries)
+    if dry_run:
+        return SourceCaptureTrustResult(success=True, sources=sources)
+
+    approved, _, error = _confirm_changes(
+        trust_entries,
+        interaction,
+        action="Trust and record",
+    )
+    if not approved:
+        print_warning(f"Source capture stopped: {error}")
+        return SourceCaptureTrustResult(success=False, error=error)
+    return SourceCaptureTrustResult(success=True, sources=sources)
 
 
 def _confirm_changes(
@@ -364,6 +521,7 @@ def refresh_manifest_sources(
 
     source_diff = _source_diff(sources, live_sources, source_filter)
     candidates = (*source_diff.extra, *source_diff.changed)
+    _print_capture_trust_preview(live_sources, candidates)
     approved, confirmed, error = _confirm_changes(
         candidates,
         interaction,
