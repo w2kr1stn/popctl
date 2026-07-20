@@ -152,6 +152,46 @@ class TestBackupRestoreCommand:
         assert "testhost" in result.output
         assert "2026-03-06" in result.output
 
+    def test_restore_plumbs_source_and_dry_run(self) -> None:
+        from popctl.models.backup import BackupMetadata
+
+        meta = BackupMetadata(
+            created="2026-03-06T12:00:00+00:00",
+            hostname="testhost",
+            popctl_version="0.1.0",
+        )
+        counts = {
+            "popctl_state": 0,
+            "home_files": 0,
+            "packages_installed": 0,
+            "packages_failed": 0,
+        }
+
+        with (
+            patch("popctl.backup.restore.read_backup_metadata", return_value=meta),
+            patch("popctl.backup.restore.restore_backup", return_value=counts) as restore_backup,
+            patch("popctl.cli.commands.backup.typer.confirm") as confirm,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "backup",
+                    "restore",
+                    "/tmp/backup.tar.zst.age",
+                    "--source",
+                    "flatpak",
+                    "--dry-run",
+                ],
+            )
+
+        assert result.exit_code == 0
+        confirm.assert_not_called()
+        assert restore_backup.call_args.args == ("/tmp/backup.tar.zst.age", None)
+        assert restore_backup.call_args.kwargs["package_source"].value == "flatpak"
+        assert restore_backup.call_args.kwargs["dry_run"] is True
+        assert restore_backup.call_args.kwargs["interaction"].yes is False
+        assert "Dry-run mode" in result.output
+
 
 class TestBackupListCommand:
     """Tests for 'popctl backup list' command."""
