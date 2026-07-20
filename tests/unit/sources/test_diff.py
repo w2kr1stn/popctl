@@ -1,7 +1,9 @@
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from popctl.models.package import PackageSource
+from popctl.sources.capture import capture_apt_sources
 from popctl.sources.diff import SourceDiffType, compute_source_diff
 from popctl.sources.models import (
     AptKey,
@@ -19,10 +21,38 @@ from popctl.sources.models import (
     SourcePlatform,
     SourcesConfig,
 )
+from popctl.sources.provision import (
+    ProvisioningPaths,
+    SourceProvisionChange,
+    SourceProvisionStatus,
+    provision_sources,
+)
+from popctl.utils.shell import CommandResult, run_command
 from pydantic import ValidationError
 
 FINGERPRINT = "A" * 40
 CHANGED_FINGERPRINT = "B" * 40
+KEYTRUST_FIXTURE = (
+    Path(__file__).parents[2] / "fixtures" / "sources" / "keytrust-multi-key-public.asc"
+)
+
+
+def _dearmor_key_fixture(tmp_path: Path) -> bytes:
+    binary_path = tmp_path / "fixture.gpg"
+    result = run_command(
+        [
+            "gpg",
+            "--batch",
+            "--yes",
+            "--dearmor",
+            "--output",
+            str(binary_path),
+            str(KEYTRUST_FIXTURE),
+        ]
+    )
+
+    assert result.success, result.stderr
+    return binary_path.read_bytes()
 
 
 def _apt_key(identifier: str = "vendor", fingerprint: str = FINGERPRINT) -> AptKey:
@@ -197,67 +227,114 @@ def test_apt_attribute_changes_are_not_reclassified_as_missing_and_extra(change:
     assert result.changed[0].locator == source.managed_target_locator
 
 
-def test_restore_rescan_has_no_apt_drift_for_legacy_deb822_and_primary_inputs() -> None:
-    legacy_key = _apt_key("legacy")
-    deb822_key = _apt_key("deb822")
-    primary_key = _apt_key("primary")
-    legacy = _apt_source(
-        legacy_key,
-        identifier="legacy",
-        capture_path="/etc/apt/sources.list",
-        ordinal=3,
-        managed_target="popctl-legacy",
+def test_capture_provision_rescan_has_no_apt_drift_for_legacy_deb822_and_primary_inputs(
+    tmp_path: Path, real_gpg: None
+) -> None:
+    apt_root = tmp_path / "etc" / "apt"
+    keyrings = apt_root / "keyrings"
+    source_directory = apt_root / "sources.list.d"
+    keyrings.mkdir(parents=True)
+    source_directory.mkdir()
+    source_key = keyrings / "fixture.gpg"
+    source_key.write_bytes(_dearmor_key_fixture(tmp_path))
+    apt_root.joinpath("sources.list").write_text(
+        "deb [signed-by="
+        f"{source_key}] https://archive.ubuntu.com/ubuntu noble main\n",
+        encoding="utf-8",
     )
-    deb822 = _apt_source(
-        deb822_key,
-        identifier="deb822",
-        capture_path="/etc/apt/sources.list.d/vendor.sources",
-        ordinal=2,
-        managed_target="popctl-deb822",
-        source_format=AptSourceFormat.DEB822,
+    legacy_path = source_directory / "vendor.list"
+    legacy_path.write_text(
+        f"deb [signed-by={source_key}] https://legacy.vendor.example/apt stable main\n",
+        encoding="utf-8",
     )
-    primary = _apt_source(
-        primary_key,
-        identifier="primary",
-        capture_path="/etc/apt/sources.list",
-        ordinal=4,
-        managed_target="popctl-primary",
-        replay_mode=ReplayMode.REPORT_ONLY,
+    deb822_path = source_directory / "vendor.sources"
+    deb822_path.write_text(
+        "Types: deb\n"
+        "URIs: https://deb822.vendor.example/apt\n"
+        "Suites: stable\n"
+        "Components: main\n"
+        f"Signed-By: {source_key}\n",
+        encoding="utf-8",
     )
-    expected = _sources(
-        apt_entries=(legacy, deb822, primary),
-        apt_keys=(legacy_key, deb822_key, primary_key),
+    platform = SourcePlatform(distro_id="ubuntu", codename="noble")
+    policy = CommandResult(
+        stdout=(
+            " 500 https://archive.ubuntu.com/ubuntu noble/main amd64 Packages\n"
+            "     release o=Ubuntu,a=noble\n"
+        ),
+        stderr="",
+        returncode=0,
+    )
+    paths = ProvisioningPaths(apt_keyrings_dir=keyrings, apt_sources_dir=source_directory)
+
+    def command_recorder(args: list[str], *, timeout: float | None = None) -> CommandResult:
+        if args[:2] == ["sudo", "install"]:
+            target = Path(args[-1])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(Path(args[-2]).read_bytes())
+            return CommandResult(stdout="", stderr="", returncode=0)
+        if args[:2] == ["sudo", "cat"]:
+            return CommandResult(
+                stdout=Path(args[-1]).read_text(encoding="utf-8"), stderr="", returncode=0
+            )
+        if args == ["sudo", "apt-get", "update", "--error-on=any"]:
+            return CommandResult(stdout="", stderr="", returncode=0)
+        raise AssertionError(args)
+
+    with patch("popctl.sources.capture.run_command", return_value=policy):
+        captured = capture_apt_sources(apt_root, platform)
+
+    expected = SourcesConfig(
+        platform=platform,
+        apt=captured.model_copy(
+            update={
+                "keys": tuple(
+                    key.model_copy(
+                        update={"target_path": str(keyrings / Path(key.target_path).name)}
+                    )
+                    for key in captured.keys
+                )
+            }
+        ),
+    )
+    replay_entries = tuple(
+        entry for entry in expected.apt.entries if entry.replay_mode is ReplayMode.REPLAY
+    )
+    report_only_entry = next(
+        entry for entry in expected.apt.entries if entry.replay_mode is ReplayMode.REPORT_ONLY
     )
 
-    def rescan(source: AptSource, key: AptKey) -> tuple[AptSource, AptKey]:
-        installed_key = _apt_key(f"rescanned-{key.id}")
-        installed_stanza = source.verbatim_stanza.replace(
-            f"/etc/apt/keyrings/{source.id}.gpg", installed_key.target_path
-        )
-        return (
-            source.model_copy(
-                update={
-                    "id": f"rescanned-{source.id}",
-                    "capture_path": f"/etc/apt/sources.list.d/{source.managed_target}.list",
-                    "ordinal": 0,
-                    "verbatim_stanza": installed_stanza,
-                    "key_ids": (installed_key.id,),
-                    "signed_by": SignedByBinding(key_paths=(installed_key.target_path,)),
-                }
+    legacy_path.unlink()
+    deb822_path.unlink()
+    with patch("popctl.sources.provision.run_command", side_effect=command_recorder):
+        provisioned = provision_sources(
+            expected,
+            changes=tuple(
+                SourceProvisionChange(
+                    locator=entry.managed_target_locator,
+                    status=SourceProvisionStatus.MISSING,
+                )
+                for entry in replay_entries
             ),
-            installed_key,
+            selected_managers=(PackageSource.APT,),
+            paths=paths,
         )
 
-    rescanned = tuple(
-        rescan(source, key)
-        for source, key in zip(expected.apt.entries[:2], expected.apt.keys[:2], strict=True)
-    )
-    live = _sources(
-        apt_entries=tuple(source for source, _ in rescanned) + (primary,),
-        apt_keys=tuple(key for _, key in rescanned) + (primary_key,),
-    )
+    assert provisioned.success is True
+    with patch("popctl.sources.capture.run_command", return_value=policy):
+        rescanned = SourcesConfig(platform=platform, apt=capture_apt_sources(apt_root, platform))
 
-    assert compute_source_diff(expected, live).is_in_sync
+    assert compute_source_diff(expected, rescanned).is_in_sync
+    assert {entry.managed_target_locator for entry in expected.apt.entries} == {
+        entry.managed_target_locator for entry in rescanned.apt.entries
+    }
+    assert f"signed-by={expected.apt.keys[0].target_path}" in (
+        source_directory / f"{replay_entries[0].managed_target}.list"
+    ).read_text(encoding="utf-8")
+    assert f"Signed-By: {expected.apt.keys[0].target_path}" in (
+        source_directory / f"{replay_entries[1].managed_target}.sources"
+    ).read_text(encoding="utf-8")
+    assert not (source_directory / f"{report_only_entry.managed_target}.list").exists()
 
 
 def test_manager_discriminated_locators_do_not_collide() -> None:

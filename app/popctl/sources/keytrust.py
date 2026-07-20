@@ -99,16 +99,20 @@ def _fingerprints_from_listing(listing: str) -> tuple[str, ...]:
 
 
 def _normalize_selectors(selectors: tuple[str, ...]) -> tuple[str, ...]:
-    normalized = tuple(selector.rstrip("!").upper() for selector in selectors)
-    if any(not _FINGERPRINT_PATTERN.fullmatch(selector) for selector in normalized):
+    normalized = tuple(selector.upper() for selector in selectors)
+    fingerprints = tuple(selector.rstrip("!") for selector in normalized)
+    if any(not _FINGERPRINT_PATTERN.fullmatch(selector) for selector in fingerprints):
         raise KeyTrustError("Signed-By fingerprint selectors must be full fingerprints")
-    if len(set(normalized)) != len(normalized):
+    if len(set(fingerprints)) != len(fingerprints):
         raise KeyTrustError("Signed-By fingerprint selectors must be unique")
     return normalized
 
 
 def selectors_are_satisfied(selectors: tuple[str, ...], fingerprints: tuple[str, ...]) -> bool:
-    return set(_normalize_selectors(selectors)) <= set(fingerprints)
+    selected_fingerprints = {
+        selector.rstrip("!") for selector in _normalize_selectors(selectors)
+    }
+    return selected_fingerprints <= set(fingerprints)
 
 
 def _inspect_public_material(
@@ -137,16 +141,13 @@ def _inspect_public_material(
         fingerprints = _fingerprints_from_listing(listed.stdout)
         if not fingerprints:
             raise KeyTrustError("OpenPGP key material has no public fingerprints")
-        if selectors and not set(selectors) <= set(fingerprints):
+        selected_fingerprints = {selector.rstrip("!") for selector in selectors}
+        if selected_fingerprints and not selected_fingerprints <= set(fingerprints):
             raise KeyTrustError("Signed-By fingerprint selector is absent from key material")
         if not export:
             return fingerprints, None
 
-        selected = (
-            tuple(fingerprint for fingerprint in fingerprints if fingerprint in selectors)
-            if selectors
-            else fingerprints
-        )
+        selected = selectors if selectors else fingerprints
         exported = run_command(
             [
                 "gpg",
@@ -177,7 +178,9 @@ def verify_public_material(
     if armor is None:
         raise KeyTrustError("Unable to export minimal public OpenPGP key material")
     exported_fingerprints, _ = _inspect_public_material(armor.encode(), (), export=False)
-    if normalized_selectors and not set(normalized_selectors) <= set(exported_fingerprints):
+    if normalized_selectors and not {
+        selector.rstrip("!") for selector in normalized_selectors
+    } <= set(exported_fingerprints):
         raise KeyTrustError("Signed-By fingerprint selector is absent from exported key material")
     return VerifiedPublicKey(armor=armor, fingerprints=exported_fingerprints)
 
@@ -239,15 +242,17 @@ def capture_apt_keys(
     available_fingerprints = {
         fingerprint for _, _, verified in material for fingerprint in verified.fingerprints
     }
-    if normalized_selectors and not set(normalized_selectors) <= available_fingerprints:
+    if normalized_selectors and not {
+        selector.rstrip("!") for selector in normalized_selectors
+    } <= available_fingerprints:
         raise KeyTrustError("Signed-By fingerprint selector is absent from key material")
 
     for resolved, raw_material, full_verified in material:
         selected = (
             tuple(
-                fingerprint
-                for fingerprint in normalized_selectors
-                if fingerprint in full_verified.fingerprints
+                selector
+                for selector in normalized_selectors
+                if selector.rstrip("!") in full_verified.fingerprints
             )
             if normalized_selectors
             else ()
@@ -273,7 +278,12 @@ def capture_apt_keys(
             )
         )
 
-    resolved_binding = binding.model_copy(update={"key_paths": tuple(resolved_paths)})
+    resolved_binding = binding.model_copy(
+        update={
+            "key_paths": tuple(resolved_paths),
+            "fingerprint_selectors": normalized_selectors,
+        }
+    )
     return resolved_binding, tuple(keys)
 
 
