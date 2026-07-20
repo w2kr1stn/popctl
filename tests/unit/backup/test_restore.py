@@ -14,9 +14,7 @@ from popctl.backup.restore import (
     restore_backup,
 )
 from popctl.cli.types import SourceChoice
-from popctl.core.executor import ActionResult
 from popctl.core.manifest import load_manifest, save_manifest
-from popctl.models.action import Action
 from popctl.models.manifest import (
     Manifest,
     ManifestMeta,
@@ -502,7 +500,7 @@ class TestRestoreSourceIntegration:
         assert phase.called is (not files_only)
         assert install_packages.called is (not files_only)
 
-    def test_filtered_flatpak_dry_run_uses_no_other_manager_or_mutation(
+    def test_filtered_flatpak_dry_run_renders_preview_without_package_execution(
         self,
         tmp_path: Path,
     ) -> None:
@@ -510,16 +508,7 @@ class TestRestoreSourceIntegration:
         config_dir = tmp_path / "config"
         state_dir = tmp_path / "state"
         target_home = tmp_path / "home"
-        flatpak_operator = MagicMock()
-        flatpak_operator.source = PackageSource.FLATPAK
-        seen_actions: list[Action] = []
-
-        def install(items: list[Action]) -> list[ActionResult]:
-            seen_actions.extend(items)
-            return [ActionResult(action=item, success=True) for item in items]
-
-        flatpak_operator.install.side_effect = install
-        available = MagicMock(return_value=[flatpak_operator])
+        available = MagicMock()
 
         with (
             patch("popctl.backup.restore._fetch_backup", return_value=tmp_path / "backup.age"),
@@ -535,7 +524,7 @@ class TestRestoreSourceIntegration:
                 return_value=SourcePhaseResult(success=True),
             ) as phase,
             patch("popctl.operators.get_available_operators", available),
-            patch("popctl.core.executor.record_actions_to_history") as history,
+            patch("popctl.backup.restore.print_info") as print_info,
         ):
             counts = restore_backup(
                 "backup.age",
@@ -543,18 +532,48 @@ class TestRestoreSourceIntegration:
                 dry_run=True,
             )
 
-        assert counts["packages_installed"] == 1
+        assert counts["packages_installed"] == 0
         phase.assert_called_once()
         assert phase.call_args.args[1] is SourceChoice.FLATPAK
         assert phase.call_args.kwargs["dry_run"] is True
-        available.assert_called_once_with(PackageSource.FLATPAK, dry_run=True)
-        assert len(seen_actions) == 1
-        assert seen_actions[0].package == "org.example.App"
-        assert seen_actions[0].source_install_context is not None
-        flatpak_operator.remove.assert_not_called()
-        history.assert_not_called()
+        available.assert_not_called()
+        print_info.assert_any_call("Package restore preview:")
+        print_info.assert_any_call("  install: flatpak org.example.App")
         assert not state_dir.exists()
         assert not (target_home / ".config" / "restored").exists()
+
+    def test_apt_dry_run_does_not_construct_operator_or_run_subprocess(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        manifest = _manifest()
+
+        with (
+            patch("popctl.backup.restore._fetch_backup", return_value=tmp_path / "backup.age"),
+            patch(
+                "popctl.backup.restore._decrypt_and_decompress",
+                side_effect=_extract_manifest(manifest),
+            ),
+            patch(
+                "popctl.backup.restore.run_source_phase",
+                return_value=SourcePhaseResult(success=True),
+            ),
+            patch("popctl.operators.get_available_operators") as available,
+            patch("popctl.operators.apt.run_command") as run_command,
+            patch("popctl.backup.restore.print_info") as print_info,
+        ):
+            counts = restore_backup(
+                "backup.age",
+                package_source=SourceChoice.APT,
+                dry_run=True,
+            )
+
+        assert counts["packages_installed"] == 0
+        assert counts["packages_failed"] == 0
+        available.assert_not_called()
+        run_command.assert_not_called()
+        print_info.assert_any_call("Package restore preview:")
+        print_info.assert_any_call("  install: apt vim")
 
     @pytest.mark.parametrize(
         "case",

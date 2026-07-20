@@ -176,13 +176,17 @@ def default_flatpak_paths() -> FlatpakPaths:
 
 
 def _normalize_uri(uri: str) -> str:
-    parsed = urlsplit(uri)
-    host = parsed.hostname.lower() if parsed.hostname else ""
+    try:
+        parsed = urlsplit(uri)
+        host = parsed.hostname.lower() if parsed.hostname else ""
+        port = parsed.port
+    except ValueError as error:
+        raise AptSourceParseError("Malformed APT source URI") from error
     if not parsed.scheme or not host:
         return uri.rstrip("/").lower()
-    port = f":{parsed.port}" if parsed.port is not None else ""
+    normalized_port = f":{port}" if port is not None else ""
     path = parsed.path.rstrip("/") or "/"
-    return f"{parsed.scheme.lower()}://{host}{port}{path}"
+    return f"{parsed.scheme.lower()}://{host}{normalized_port}{path}"
 
 
 def _normalized_origin(origin: str) -> str:
@@ -348,11 +352,17 @@ def _parse_legacy_source(path: Path, ordinal: int, line: str) -> AptDescriptor |
         tokens = shlex.split(remainder, posix=True)
     except ValueError as error:
         raise AptSourceParseError("Malformed legacy APT source line") from error
-    if len(tokens) < 2 or (len(tokens) == 2 and not tokens[1].endswith("/")):
+    if len(tokens) < 2:
         raise AptSourceParseError("Legacy APT source requires URI, suite, and component")
 
     uri = tokens[0]
     suite = tokens[1]
+    components = tokens[2:]
+    if suite.endswith("/"):
+        if components:
+            raise AptSourceParseError("Exact-path legacy APT suites cannot have components")
+    elif not components:
+        raise AptSourceParseError("Legacy APT source requires URI, suite, and component")
     signed_by = _parse_signed_by(options["signed-by"]) if "signed-by" in options else None
     return AptDescriptor(
         path=path,
@@ -424,7 +434,13 @@ def _parse_deb822_source(path: Path, ordinal: int, paragraph: str) -> AptDescrip
     if not uris or not suites:
         raise AptSourceParseError("deb822 source requires URIs and Suites")
     components = tuple(fields.get("components", "").split())
-    if not components and not all(suite.endswith("/") for suite in suites):
+    exact_path_suites = tuple(suite.endswith("/") for suite in suites)
+    if any(exact_path_suites) and not all(exact_path_suites):
+        raise AptSourceParseError("deb822 source cannot mix exact-path and non-exact-path Suites")
+    if all(exact_path_suites):
+        if components:
+            raise AptSourceParseError("Exact-path deb822 Suites cannot have Components")
+    elif not components:
         raise AptSourceParseError("deb822 source requires Components for non-exact-path Suites")
     enabled = fields.get("enabled", "yes").lower() not in {"no", "false", "0"}
     signed_by = _parse_signed_by(fields["signed-by"]) if "signed-by" in fields else None
@@ -628,8 +644,9 @@ def _uri_matches_selector(uri: str, selector: AptAuthSelector) -> bool:
 def _assert_public_uri(uri: str, *, auth_selectors: tuple[AptAuthSelector, ...]) -> None:
     try:
         parsed = urlsplit(uri)
+        _ = parsed.port
     except ValueError as error:
-        raise CredentialedSourceError("Malformed source URI cannot be captured") from error
+        raise AptSourceParseError("Malformed APT source URI") from error
     if parsed.username is not None or parsed.password is not None or "?" in uri:
         raise CredentialedSourceError("Credential-bearing source URI cannot be captured")
     if any(_uri_matches_selector(uri, selector) for selector in auth_selectors):

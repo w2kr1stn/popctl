@@ -111,6 +111,23 @@ def test_legacy_exact_path_source_allows_omitted_component(tmp_path: Path) -> No
     assert descriptor.suites == ("./",)
 
 
+def test_legacy_exact_path_suite_with_component_fails_before_key_capture(
+    apt_root: Path, platform: SourcePlatform
+) -> None:
+    (apt_root / "sources.list").write_text(
+        "deb [signed-by=/etc/apt/keyrings/vendor.gpg] https://vendor.example/repo ./ main\n",
+        encoding="utf-8",
+    )
+
+    with (
+        patch("popctl.sources.capture.capture_apt_keys") as captured_keys,
+        pytest.raises(AptSourceParseError, match="Exact-path"),
+    ):
+        capture_apt_sources(apt_root, platform)
+
+    captured_keys.assert_not_called()
+
+
 def test_deb822_capture_classifies_base_and_replayable_sources_by_identity(
     apt_root: Path, platform: SourcePlatform
 ) -> None:
@@ -393,6 +410,48 @@ def test_deb822_exact_path_suite_allows_omitted_components(tmp_path: Path) -> No
     assert descriptor.suites == ("./",)
 
 
+def test_deb822_exact_path_suite_with_components_fails_before_key_capture(
+    apt_root: Path, platform: SourcePlatform
+) -> None:
+    (apt_root / "sources.list.d" / "vendor.sources").write_text(
+        "Types: deb\n"
+        "URIs: https://vendor.example/apt\n"
+        "Suites: ./\n"
+        "Components: main\n"
+        "Signed-By: /etc/apt/keyrings/vendor.gpg\n",
+        encoding="utf-8",
+    )
+
+    with (
+        patch("popctl.sources.capture.capture_apt_keys") as captured_keys,
+        pytest.raises(AptSourceParseError, match="Exact-path"),
+    ):
+        capture_apt_sources(apt_root, platform)
+
+    captured_keys.assert_not_called()
+
+
+def test_deb822_mixed_exact_path_suites_fail_before_key_capture(
+    apt_root: Path, platform: SourcePlatform
+) -> None:
+    (apt_root / "sources.list.d" / "vendor.sources").write_text(
+        "Types: deb\n"
+        "URIs: https://vendor.example/apt\n"
+        "Suites: ./ stable\n"
+        "Components: main\n"
+        "Signed-By: /etc/apt/keyrings/vendor.gpg\n",
+        encoding="utf-8",
+    )
+
+    with (
+        patch("popctl.sources.capture.capture_apt_keys") as captured_keys,
+        pytest.raises(AptSourceParseError, match="cannot mix"),
+    ):
+        capture_apt_sources(apt_root, platform)
+
+    captured_keys.assert_not_called()
+
+
 def test_apt_capture_derives_ppa_display_metadata_and_managed_target(
     apt_root: Path, platform: SourcePlatform
 ) -> None:
@@ -593,6 +652,24 @@ def test_malformed_apt_stanza_fails_closed(apt_root: Path, platform: SourcePlatf
 
     with pytest.raises(AptSourceParseError):
         capture_apt_sources(apt_root, platform)
+
+
+def test_invalid_apt_uri_port_fails_closed_before_key_capture(
+    apt_root: Path, platform: SourcePlatform
+) -> None:
+    (apt_root / "sources.list").write_text(
+        "deb [signed-by=/etc/apt/keyrings/vendor.gpg] "
+        "https://vendor.example:bad-port/repo stable main\n",
+        encoding="utf-8",
+    )
+
+    with (
+        patch("popctl.sources.capture.capture_apt_keys") as captured_keys,
+        pytest.raises(AptSourceParseError, match="Malformed APT source URI"),
+    ):
+        capture_apt_sources(apt_root, platform)
+
+    captured_keys.assert_not_called()
 
 
 def test_apt_candidate_provenance_maps_ambiguous_and_unknown() -> None:

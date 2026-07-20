@@ -270,6 +270,7 @@ def _install_packages(
         print_info("Package restore preview:")
         for action in actions:
             print_info(f"  {action.action_type.value}: {action.source.value} {action.package}")
+        return 0, 0
 
     operators = get_available_operators(source.to_package_source(), dry_run=dry_run)
     results = execute_actions(actions, operators)
