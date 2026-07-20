@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 from popctl.models.package import PackageSource
-from popctl.sources.diff import SourceDiffError, SourceDiffType, compute_source_diff
+from popctl.sources.diff import SourceDiffType, compute_source_diff
 from popctl.sources.models import (
     AptKey,
     AptSource,
@@ -19,6 +19,7 @@ from popctl.sources.models import (
     SourcePlatform,
     SourcesConfig,
 )
+from pydantic import ValidationError
 
 FINGERPRINT = "A" * 40
 CHANGED_FINGERPRINT = "B" * 40
@@ -274,20 +275,19 @@ def test_manager_discriminated_locators_do_not_collide() -> None:
     assert result.extra[0].locator.manager is PackageSource.SNAP
 
 
-def test_duplicate_locator_fails_loudly() -> None:
+def test_duplicate_apt_locator_fails_at_model_validation() -> None:
     key = _apt_key()
     first = _apt_source(key)
     second = _apt_source(key, identifier="second")
 
-    with pytest.raises(SourceDiffError, match="Duplicate source locator"):
-        compute_source_diff(_sources(apt_entries=(first, second), apt_keys=(key,)), _sources())
+    with pytest.raises(ValidationError, match="Duplicate source locator"):
+        _sources(apt_entries=(first, second), apt_keys=(key,))
 
 
 def test_extra_sources_are_report_only() -> None:
     result = compute_source_diff(_sources(), _sources(snaps=(_snap(),)))
 
     assert result.extra[0].diff_type is SourceDiffType.EXTRA
-    assert result.extra[0].requires_reconciliation is False
 
 
 def test_flatpak_apps_keep_same_scope_id_arch_distinct_by_branch() -> None:

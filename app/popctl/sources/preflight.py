@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-import re
-import shlex
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 from popctl.models.package import PackageSource
 from popctl.operators import get_available_operators
+from popctl.sources.capture import (
+    AptSourceParseError,
+    apt_source_has_insecure_options,
+    apt_source_identity,
+)
 from popctl.sources.keytrust import KeyTrustError, selectors_are_satisfied, verify_public_material
 from popctl.sources.models import (
     AptSource,
-    AptSourceFormat,
     FlatpakApp,
     FlatpakRemote,
     ReplayMode,
@@ -19,9 +21,12 @@ from popctl.sources.models import (
     SourcesConfig,
 )
 
-_INSECURE_APT_PATTERN = re.compile(
-    r"(?:trusted\s*(?:=|:)\s*(?:yes|true|1)|allow-insecure\s*(?:=|:)\s*(?:yes|true|1))",
-    re.IGNORECASE,
+RECOGNIZED_STABLE_VENDOR_URIS = frozenset(
+    {
+        "https://download.docker.com/linux/ubuntu",
+        "https://dl.google.com/linux/chrome/deb",
+        "https://packages.microsoft.com/repos/code",
+    }
 )
 
 
@@ -34,7 +39,6 @@ class SourcePreflightCheck:
 
 @dataclass(frozen=True, slots=True)
 class SourcePreflightResult:
-    selected_managers: tuple[PackageSource, ...]
     checks: tuple[SourcePreflightCheck, ...]
 
     @property
@@ -83,57 +87,28 @@ def preflight_manager_availability(
     return tuple(checks)
 
 
-def _legacy_apt_identity(stanza: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    line = stanza.split("#", 1)[0].strip()
-    try:
-        fields = shlex.split(line, posix=True)
-    except ValueError:
-        return (), ()
-    if not fields or fields[0] not in {"deb", "deb-src"}:
-        return (), ()
-    index = 1
-    if index < len(fields) and fields[index].startswith("["):
-        index += 1
-    if len(fields) <= index + 1:
-        return (), ()
-    return (fields[index],), (fields[index + 1],)
-
-
-def _deb822_apt_identity(stanza: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    fields: dict[str, str] = {}
-    active_field: str | None = None
-    for line in stanza.splitlines():
-        if line[:1].isspace() and active_field is not None:
-            fields[active_field] = f"{fields[active_field]} {line.strip()}"
-            continue
-        name, separator, value = line.partition(":")
-        if not separator:
-            active_field = None
-            continue
-        active_field = name.lower()
-        fields[active_field] = value.strip()
-    return tuple(fields.get("uris", "").split()), tuple(fields.get("suites", "").split())
-
-
-def apt_identity(source: AptSource) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    if source.format is AptSourceFormat.LEGACY:
-        return _legacy_apt_identity(source.verbatim_stanza)
-    return _deb822_apt_identity(source.verbatim_stanza)
-
-
 def _apt_compatible(
     source: AptSource,
     captured: SourcePlatform,
     target: SourcePlatform,
     live: AptSource | None,
 ) -> bool:
-    expected_uris, suites = apt_identity(source)
+    try:
+        expected_uris, suites = apt_source_identity(source)
+    except AptSourceParseError:
+        return False
     if not expected_uris or not suites:
         return False
     if all(suite.lower() == "stable" for suite in suites):
+        cross_codename = captured.codename.lower() != target.codename.lower()
+        if cross_codename and not set(expected_uris) <= RECOGNIZED_STABLE_VENDOR_URIS:
+            return False
         if live is None:
             return True
-        live_uris, _ = apt_identity(live)
+        try:
+            live_uris, _ = apt_source_identity(live)
+        except AptSourceParseError:
+            return False
         return live_uris == expected_uris
     return captured.codename.lower() == target.codename.lower() and all(
         suite.lower() == target.codename.lower()
@@ -145,7 +120,11 @@ def _apt_compatible(
 def _verify_apt_source(source: AptSource, sources: SourcesConfig) -> str | None:
     if source.replay_mode is ReplayMode.BLOCKED:
         return "blocked APT source cannot be replayed"
-    if _INSECURE_APT_PATTERN.search(source.verbatim_stanza):
+    try:
+        insecure = apt_source_has_insecure_options(source)
+    except AptSourceParseError:
+        return "APT source stanza cannot be parsed"
+    if insecure:
         return "insecure APT source cannot be replayed"
     keys = {key.id: key for key in sources.apt.keys}
     if not source.key_ids:
@@ -211,7 +190,7 @@ def preflight_sources(
     managers = selected_managers(sources, source_filter)
     checks = list(preflight_manager_availability(managers))
     if not managers:
-        return SourcePreflightResult(selected_managers=managers, checks=tuple(checks))
+        return SourcePreflightResult(checks=tuple(checks))
 
     platform_matches = sources.platform.distro_id.lower() == target_platform.distro_id.lower()
     checks.append(
@@ -278,4 +257,4 @@ def preflight_sources(
                 )
             )
 
-    return SourcePreflightResult(selected_managers=managers, checks=tuple(checks))
+    return SourcePreflightResult(checks=tuple(checks))

@@ -1,11 +1,29 @@
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Literal
 
 
 class PackageSource(Enum):
     APT = "apt"
     FLATPAK = "flatpak"
     SNAP = "snap"
+
+
+class SourceChoice(str, Enum):
+    APT = "apt"
+    FLATPAK = "flatpak"
+    SNAP = "snap"
+    ALL = "all"
+
+    def to_package_source(self) -> PackageSource | None:
+        if self is SourceChoice.ALL:
+            return None
+        return PackageSource(self.value)
+
+    def to_source_filter(self) -> Literal["apt", "flatpak", "snap"] | None:
+        if self is SourceChoice.ALL:
+            return None
+        return self.value
 
 
 # Derived constant: all source key strings for iteration.

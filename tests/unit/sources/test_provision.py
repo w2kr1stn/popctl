@@ -448,6 +448,29 @@ class TestAptProvisioning:
             assert result.success is False
             run_command.assert_not_called()
 
+    def test_allow_downgrade_to_insecure_is_refused_without_commands(self, tmp_path: Path) -> None:
+        paths = _paths(tmp_path)
+        key = _apt_key(paths)
+        source = _apt_source(key).model_copy(
+            update={
+                "verbatim_stanza": (
+                    f"{_apt_source(key).verbatim_stanza}Allow-Downgrade-To-Insecure: yes\n"
+                )
+            }
+        )
+
+        with patch("popctl.sources.provision.run_command") as run_command:
+            result = provision_sources(
+                _sources(key, source),
+                changes=(_missing(source),),
+                selected_managers=(PackageSource.APT,),
+                paths=paths,
+            )
+
+        assert result.success is False
+        assert "Insecure" in (result.error or "")
+        run_command.assert_not_called()
+
 
 class TestFlatpakProvisioning:
     def test_imports_exact_key_before_scoped_remote_add_without_apt(self) -> None:

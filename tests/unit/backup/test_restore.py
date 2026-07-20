@@ -41,6 +41,7 @@ from popctl.sources.models import (
     SourcesConfig,
 )
 from popctl.sources.phase import SourceInteractionPolicy, SourcePhaseResult
+from popctl.sources.provision import SourceProvisionResult
 
 FINGERPRINT = "A" * 40
 CHANGED_FINGERPRINT = "B" * 40
@@ -77,6 +78,20 @@ def _apt_sources(
         replay_mode=ReplayMode.REPLAY,
     )
     return SourcesConfig(platform=_platform(), apt=AptSources(entries=(entry,), keys=(key,)))
+
+
+def _base_sources(uri: str) -> SourcesConfig:
+    sources = _apt_sources()
+    entry = sources.apt.entries[0].model_copy(
+        update={
+            "verbatim_stanza": (
+                "deb [signed-by=/etc/apt/keyrings/vendor.asc] "
+                f"{uri} noble main\n"
+            ),
+            "replay_mode": ReplayMode.REPORT_ONLY,
+        }
+    )
+    return sources.model_copy(update={"apt": sources.apt.model_copy(update={"entries": (entry,)})})
 
 
 def _flatpak_sources() -> SourcesConfig:
@@ -309,6 +324,45 @@ class TestListBackups:
 
 
 class TestRestoreSourceIntegration:
+    def test_restore_yes_continues_to_packages_for_report_only_base_drift(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = _manifest(_base_sources("https://archive.ubuntu.com/ubuntu"))
+        live = _base_sources("http://archive.ubuntu.com/ubuntu")
+        operator = MagicMock()
+        operator.source = PackageSource.APT
+
+        with (
+            patch("popctl.backup.restore._fetch_backup", return_value=tmp_path / "backup.age"),
+            patch(
+                "popctl.backup.restore._decrypt_and_decompress",
+                side_effect=_extract_manifest(manifest),
+            ),
+            patch("popctl.backup.restore._restore_popctl_state", return_value=0),
+            patch("popctl.backup.restore._install_packages", return_value=(1, 0)) as packages,
+            patch("popctl.backup.restore._restore_home_files", return_value=0),
+            patch("popctl.backup.restore._fix_sensitive_permissions"),
+            patch("popctl.sources.preflight.get_available_operators", return_value=[operator]),
+            patch(
+                "popctl.sources.preflight.verify_public_material",
+                return_value=VerifiedPublicKey(armor="verified-key", fingerprints=(FINGERPRINT,)),
+            ),
+            patch("popctl.sources.phase.capture_platform", return_value=_platform()),
+            patch("popctl.sources.phase.capture_sources", return_value=live),
+            patch(
+                "popctl.sources.phase.provision_sources",
+                return_value=SourceProvisionResult(success=True, retained_artifacts=()),
+            ),
+        ):
+            counts = restore_backup(
+                "backup.age",
+                package_source=SourceChoice.APT,
+                interaction=SourceInteractionPolicy(yes=True),
+            )
+
+        assert counts["packages_installed"] == 1
+        packages.assert_called_once()
+
     @pytest.mark.parametrize("has_live_manifest", [False, True])
     def test_dry_run_uses_the_extracted_manifest_without_xdg_writes(
         self,

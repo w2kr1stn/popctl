@@ -1,11 +1,10 @@
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
-from popctl.cli.types import SourceChoice
 from popctl.models.manifest import Manifest, ManifestMeta, PackageConfig, SystemConfig
-from popctl.models.package import PackageSource
+from popctl.models.package import PackageSource, SourceChoice
 from popctl.sources.capture import SourceCaptureError
-from popctl.sources.diff import SourceDiffType
+from popctl.sources.diff import SourceDiffError, SourceDiffType
 from popctl.sources.keytrust import KeyTrustError, VerifiedPublicKey
 from popctl.sources.models import (
     AptKey,
@@ -29,7 +28,11 @@ from popctl.sources.phase import (
     refresh_manifest_sources,
     run_source_phase,
 )
-from popctl.sources.preflight import preflight_sources, selected_managers
+from popctl.sources.preflight import (
+    RECOGNIZED_STABLE_VENDOR_URIS,
+    preflight_sources,
+    selected_managers,
+)
 from popctl.sources.provision import SourceProvisionResult
 
 FINGERPRINT = "A" * 40
@@ -183,6 +186,92 @@ def test_preflight_rejects_unverified_key_material() -> None:
     assert "verified public material" in (result.error or "")
 
 
+def test_preflight_uses_capture_parser_for_multi_option_legacy_stanza() -> None:
+    sources = _apt_sources()
+    source = sources.apt.entries[0].model_copy(
+        update={
+            "format": AptSourceFormat.LEGACY,
+            "verbatim_stanza": (
+                "deb [arch=amd64 signed-by=/etc/apt/keyrings/vendor.asc] "
+                "https://vendor.example/apt noble main\n"
+            ),
+        }
+    )
+    sources = sources.model_copy(
+        update={"apt": sources.apt.model_copy(update={"entries": (source,)})}
+    )
+
+    with (
+        patch("popctl.sources.preflight.get_available_operators", side_effect=_available),
+        patch("popctl.sources.preflight.verify_public_material", return_value=_verified()),
+    ):
+        result = preflight_sources(
+            sources,
+            source_filter=PackageSource.APT,
+            target_platform=_platform(),
+        )
+
+    assert result.success is True
+
+
+def test_preflight_rejects_allow_downgrade_to_insecure_deb822_source() -> None:
+    sources = _apt_sources()
+    source = sources.apt.entries[0].model_copy(
+        update={
+            "verbatim_stanza": (
+                f"{sources.apt.entries[0].verbatim_stanza}Allow-Downgrade-To-Insecure: yes\n"
+            )
+        }
+    )
+    sources = sources.model_copy(
+        update={"apt": sources.apt.model_copy(update={"entries": (source,)})}
+    )
+
+    with patch("popctl.sources.preflight.get_available_operators", side_effect=_available):
+        result = preflight_sources(
+            sources,
+            source_filter=PackageSource.APT,
+            target_platform=_platform(),
+        )
+
+    assert result.success is False
+    assert "insecure" in (result.error or "")
+
+
+def test_preflight_rejects_unrecognized_stable_vendor_across_codenames() -> None:
+    sources = _apt_sources(uri="https://unrecognized.example/apt")
+
+    with (
+        patch("popctl.sources.preflight.get_available_operators", side_effect=_available),
+        patch("popctl.sources.preflight.verify_public_material", return_value=_verified()),
+    ):
+        result = preflight_sources(
+            sources,
+            source_filter=PackageSource.APT,
+            target_platform=_platform("oracular"),
+        )
+
+    assert result.success is False
+    assert "incompatible" in (result.error or "")
+
+
+def test_preflight_allows_recognized_stable_vendor_across_codenames() -> None:
+    uri = next(iter(RECOGNIZED_STABLE_VENDOR_URIS))
+    sources = _apt_sources(uri=uri)
+
+    with (
+        patch("popctl.sources.preflight.get_available_operators", side_effect=_available),
+        patch("popctl.sources.preflight.verify_public_material", return_value=_verified()),
+    ):
+        result = preflight_sources(
+            sources,
+            source_filter=PackageSource.APT,
+            target_platform=_platform("oracular"),
+        )
+
+    assert result.success is True
+
+
 def test_source_phase_is_a_legacy_noop_without_sources() -> None:
     with patch("popctl.sources.phase.capture_sources") as capture:
         result = run_source_phase(
@@ -193,7 +282,6 @@ def test_source_phase_is_a_legacy_noop_without_sources() -> None:
         )
 
     assert result.success is True
-    assert result.selected_managers == ()
     capture.assert_not_called()
 
 
@@ -239,6 +327,76 @@ def test_source_phase_fails_closed_for_changed_trust_with_yes() -> None:
     assert result.success is False
     assert result.source_diff.changed[0].diff_type is SourceDiffType.CHANGED
     assert "--yes" in (result.error or "")
+    provision.assert_not_called()
+
+
+def test_source_phase_report_only_base_drift_skips_trust_and_write_preview() -> None:
+    expected = _apt_sources(uri="https://archive.ubuntu.com/ubuntu")
+    source = expected.apt.entries[0].model_copy(
+        update={
+            "verbatim_stanza": expected.apt.entries[0].verbatim_stanza.replace("stable", "noble"),
+            "replay_mode": ReplayMode.REPORT_ONLY,
+        }
+    )
+    expected = expected.model_copy(
+        update={"apt": expected.apt.model_copy(update={"entries": (source,)})}
+    )
+    live_source = source.model_copy(
+        update={"verbatim_stanza": source.verbatim_stanza.replace("https://", "http://")}
+    )
+    live = expected.model_copy(
+        update={"apt": expected.apt.model_copy(update={"entries": (live_source,)})}
+    )
+    lines: list[str] = []
+
+    with (
+        patch("popctl.sources.preflight.get_available_operators", side_effect=_available),
+        patch("popctl.sources.preflight.verify_public_material", return_value=_verified()),
+        patch("popctl.sources.phase.capture_platform", return_value=_platform()),
+        patch("popctl.sources.phase.capture_sources", return_value=live),
+        patch("popctl.sources.phase.print_info", side_effect=lines.append),
+        patch("popctl.sources.phase.typer.confirm") as confirm,
+        patch("popctl.sources.phase.provision_sources") as provision,
+    ):
+        provision.return_value = SourceProvisionResult(success=True, retained_artifacts=())
+        result = run_source_phase(
+            _manifest(expected),
+            SourceChoice.APT,
+            dry_run=False,
+            interaction=SourceInteractionPolicy(yes=True),
+        )
+
+    assert result.success is True
+    assert result.source_diff.changed[0].expected is source
+    assert any("changed: apt popctl-vendor" in line for line in lines)
+    assert not any("popctl-vendor" in line and "command:" in line for line in lines)
+    confirm.assert_not_called()
+    assert provision.call_args.kwargs["changes"] == ()
+
+
+def test_source_phase_returns_structured_failure_for_residual_diff_error() -> None:
+    sources = _snap_sources(
+        SnapChannel(name="hello", channel="latest/edge", replay_mode=ReplayMode.REPLAY)
+    )
+    with (
+        patch("popctl.sources.preflight.get_available_operators", side_effect=_available),
+        patch("popctl.sources.phase.capture_platform", return_value=_platform()),
+        patch("popctl.sources.phase.capture_sources", return_value=sources),
+        patch(
+            "popctl.sources.phase.compute_source_diff",
+            side_effect=SourceDiffError("Duplicate source locator: injected"),
+        ),
+        patch("popctl.sources.phase.provision_sources") as provision,
+    ):
+        result = run_source_phase(
+            _manifest(sources),
+            SourceChoice.SNAP,
+            dry_run=False,
+            interaction=SourceInteractionPolicy(yes=True),
+        )
+
+    assert result.success is False
+    assert result.error == "Duplicate source locator: injected"
     provision.assert_not_called()
 
 
@@ -543,6 +701,38 @@ def test_refresh_yes_refuses_a_new_source_without_mutating_manifest() -> None:
     assert result.success is False
     assert result.manifest is manifest
     assert result.changed is False
+
+
+def test_refresh_rejects_blocked_live_source_before_preview_or_merge() -> None:
+    manifest = _manifest(_apt_sources())
+    live = _apt_sources()
+    blocked = live.apt.entries[0].model_copy(
+        update={
+            "replay_mode": ReplayMode.BLOCKED,
+            "verbatim_stanza": live.apt.entries[0].verbatim_stanza.replace(
+                "Signed-By:", "Trusted: yes\nSigned-By:"
+            ),
+        }
+    )
+    live = live.model_copy(update={"apt": live.apt.model_copy(update={"entries": (blocked,)})})
+
+    with (
+        patch("popctl.sources.phase.capture_sources", return_value=live),
+        patch("popctl.sources.phase._print_capture_trust_preview") as preview,
+        patch("popctl.sources.phase.typer.confirm") as confirm,
+    ):
+        result = refresh_manifest_sources(
+            manifest,
+            SourceChoice.APT,
+            interaction=SourceInteractionPolicy(interactive=True),
+        )
+
+    assert result.success is False
+    assert result.manifest is manifest
+    assert result.changed is False
+    assert "blocked" in (result.error or "")
+    preview.assert_not_called()
+    confirm.assert_not_called()
 
 
 def test_refresh_atomically_merges_only_the_individually_confirmed_sources() -> None:

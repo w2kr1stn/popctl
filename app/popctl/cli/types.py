@@ -16,8 +16,8 @@ from popctl.core.paths import get_manifest_path
 from popctl.core.state import record_domain_deletions
 from popctl.domain.models import DomainActionResult, OrphanStatus, ScannedEntry
 from popctl.filesystem import FilesystemScanner
-from popctl.models.manifest import Manifest, PackageSourceType
-from popctl.models.package import PackageSource
+from popctl.models.manifest import Manifest
+from popctl.models.package import PackageSource, SourceChoice
 from popctl.scanners import get_scanners
 from popctl.scanners.base import Scanner
 from popctl.sources.capture import capture_sources
@@ -34,25 +34,6 @@ __all__ = [
     "post_clean_update",
     "require_manifest",
 ]
-
-
-class SourceChoice(str, Enum):
-
-    APT = "apt"
-    FLATPAK = "flatpak"
-    SNAP = "snap"
-    ALL = "all"
-
-    def to_package_source(self) -> PackageSource | None:
-        if self == SourceChoice.ALL:
-            return None
-        return PackageSource(self.value)
-
-    def to_source_filter(self) -> PackageSourceType | None:
-        ps = self.to_package_source()
-        if ps is None:
-            return None
-        return ps.value  # type: ignore[return-value]
 
 
 class OutputFormat(str, Enum):

@@ -5,11 +5,11 @@ import tempfile
 from pathlib import Path
 
 from popctl.backup.backup import BackupError, is_rclone_remote
-from popctl.cli.types import SourceChoice
 from popctl.core.manifest import ManifestError, load_manifest
 from popctl.core.paths import get_backups_dir, get_config_dir, get_state_dir
 from popctl.models.backup import BackupMetadata
 from popctl.models.manifest import Manifest
+from popctl.models.package import SourceChoice
 from popctl.sources.phase import SourceInteractionPolicy, run_source_phase
 from popctl.utils.formatting import print_info
 from popctl.utils.shell import command_exists, run_command

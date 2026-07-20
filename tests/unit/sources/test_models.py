@@ -4,9 +4,10 @@ from unittest.mock import patch
 
 import pytest
 from popctl.backup.backup import collect_backup_files
+from popctl.cli.types import SourceChoice as CliSourceChoice
 from popctl.core.manifest import load_manifest, save_manifest
 from popctl.models.manifest import Manifest, ManifestMeta, PackageConfig, SystemConfig
-from popctl.models.package import PackageSource
+from popctl.models.package import PackageSource, SourceChoice
 from popctl.sources.models import (
     AptKey,
     AptSource,
@@ -148,6 +149,11 @@ def test_apt_source_capture_and_managed_target_locators(sources_config: SourcesC
     )
 
 
+def test_cli_reexports_the_shared_source_choice() -> None:
+    assert CliSourceChoice is SourceChoice
+    assert SourceChoice.FLATPAK.to_package_source() is PackageSource.FLATPAK
+
+
 def test_flatpak_app_locator_keeps_duplicate_id_contexts_distinct() -> None:
     stable = FlatpakApp(
         id="org.example.App",
@@ -192,6 +198,14 @@ def test_sources_reject_unknown_structural_fields(sources_config: SourcesConfig)
 
     with pytest.raises(ValidationError):
         SourcesConfig.model_validate(nested_data)
+
+
+def test_sources_reject_duplicate_flatpak_remote_locator(sources_config: SourcesConfig) -> None:
+    data = sources_config.model_dump(mode="json")
+    data["flatpak"]["remotes"].append(data["flatpak"]["remotes"][0].copy())
+
+    with pytest.raises(ValidationError, match="Duplicate source locator"):
+        SourcesConfig.model_validate(data)
 
 
 def test_backup_carries_manifest_sources(

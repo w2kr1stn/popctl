@@ -60,10 +60,6 @@ class SourceDiffEntry:
             return record.name
         return "/".join(self.locator.parts)
 
-    @property
-    def requires_reconciliation(self) -> bool:
-        return self.diff_type is not SourceDiffType.EXTRA
-
     def to_dict(self) -> dict[str, object]:
         return {
             "type": self.diff_type.value,

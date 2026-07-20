@@ -1,7 +1,7 @@
 import configparser
 import hashlib
 import shlex
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -52,7 +52,7 @@ _AUTH_OPTION_NAMES = frozenset(
         "username",
     }
 )
-_INSECURE_APT_OPTION_NAMES = frozenset(
+INSECURE_APT_OPTION_NAMES = frozenset(
     {"allow-downgrade-to-insecure", "allow-insecure", "trusted"}
 )
 _FLATPAK_AUTH_OPTION_PREFIXES = ("authenticator", "credential", "token", "password")
@@ -270,8 +270,8 @@ def _parse_signed_by(value: str) -> SignedByBinding:
     return SignedByBinding(key_paths=paths, fingerprint_selectors=selectors)
 
 
-def _has_insecure_options(options: dict[str, str]) -> bool:
-    for name in _INSECURE_APT_OPTION_NAMES:
+def has_insecure_apt_options(options: Mapping[str, str]) -> bool:
+    for name in INSECURE_APT_OPTION_NAMES:
         if options.get(name, "").lower() in {"yes", "true", "1"}:
             return True
     return False
@@ -281,22 +281,6 @@ def _parse_legacy_source(path: Path, ordinal: int, line: str) -> AptDescriptor |
     statement, _ = _split_comment(line)
     if not statement.strip():
         return None
-    if statement.lstrip().startswith("#"):
-        return AptDescriptor(
-            path=path,
-            capture_path=str(path),
-            ordinal=ordinal,
-            format=AptSourceFormat.LEGACY,
-            verbatim=line,
-            uris=(),
-            suites=(),
-            origins=(),
-            options={},
-            signed_by=None,
-            enabled=False,
-            insecure=False,
-        )
-
     try:
         source_type, remainder = statement.strip().split(maxsplit=1)
     except ValueError as error:
@@ -335,7 +319,7 @@ def _parse_legacy_source(path: Path, ordinal: int, line: str) -> AptDescriptor |
         options=options,
         signed_by=signed_by,
         enabled=True,
-        insecure=_has_insecure_options(options),
+        insecure=has_insecure_apt_options(options),
     )
 
 
@@ -420,8 +404,27 @@ def _parse_deb822_source(path: Path, ordinal: int, paragraph: str) -> AptDescrip
         options=options,
         signed_by=signed_by,
         enabled=enabled,
-        insecure=_has_insecure_options(options),
+        insecure=has_insecure_apt_options(options),
     )
+
+
+def _parse_apt_source_stanza(source: AptSource) -> AptDescriptor | None:
+    path = Path(source.capture_path)
+    if source.format is AptSourceFormat.LEGACY:
+        return _parse_legacy_source(path, source.ordinal, source.verbatim_stanza)
+    return _parse_deb822_source(path, source.ordinal, source.verbatim_stanza)
+
+
+def apt_source_identity(source: AptSource) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    descriptor = _parse_apt_source_stanza(source)
+    if descriptor is None or not descriptor.enabled:
+        return (), ()
+    return descriptor.uris, descriptor.suites
+
+
+def apt_source_has_insecure_options(source: AptSource) -> bool:
+    descriptor = _parse_apt_source_stanza(source)
+    return descriptor is not None and descriptor.insecure
 
 
 def _read_source_file(path: Path) -> str:

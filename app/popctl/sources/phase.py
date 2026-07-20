@@ -6,12 +6,12 @@ from pathlib import Path
 
 import typer
 
-from popctl.cli.types import SourceChoice
 from popctl.models.manifest import Manifest
-from popctl.models.package import PackageSource
+from popctl.models.package import PackageSource, SourceChoice
 from popctl.sources.capture import SourceCaptureError, capture_platform, capture_sources
 from popctl.sources.diff import (
     SourceDiffEntry,
+    SourceDiffError,
     SourceDiffResult,
     SourceDiffType,
     SourceRecordKind,
@@ -72,22 +72,6 @@ class SourceCaptureTrustResult:
     error: str | None = None
 
 
-def _source_filter(source: SourceChoice) -> PackageSource | None:
-    return source.to_package_source()
-
-
-def _source_diff(
-    sources: SourcesConfig,
-    live_sources: SourcesConfig,
-    source_filter: PackageSource | None,
-) -> SourceDiffResult:
-    return compute_source_diff(sources, live_sources, source_filter=source_filter)
-
-
-def _source_changes(source_diff: SourceDiffResult) -> tuple[SourceDiffEntry, ...]:
-    return source_diff.changed
-
-
 def _capture_entries(
     sources: SourcesConfig,
     modes: frozenset[ReplayMode],
@@ -133,6 +117,18 @@ def _capture_entries(
             ),
         )
     )
+
+
+def _entry_is_replayable(entry: SourceDiffEntry) -> bool:
+    return not isinstance(entry.expected, (AptSource, FlatpakRemote, SnapChannel)) or (
+        entry.expected.replay_mode is ReplayMode.REPLAY
+    )
+
+
+def _live_entry_mode(entry: SourceDiffEntry) -> ReplayMode | None:
+    if isinstance(entry.live, (AptSource, FlatpakRemote, SnapChannel)):
+        return entry.live.replay_mode
+    return None
 
 
 def _selected_captured_sources(
@@ -204,7 +200,7 @@ def capture_and_trust_sources(
     dry_run: bool,
     interaction: SourceInteractionPolicy,
 ) -> SourceCaptureTrustResult:
-    source_filter = _source_filter(source)
+    source_filter = source.to_package_source()
     managers = (source_filter,) if source_filter is not None else None
     try:
         sources = capture_sources(managers=managers)
@@ -277,6 +273,8 @@ def _is_operation_owned(change: SourceDiffEntry) -> bool:
 def _provision_changes(source_diff: SourceDiffResult) -> tuple[SourceProvisionChange, ...]:
     changes: list[SourceProvisionChange] = []
     for entry in (*source_diff.missing, *source_diff.changed):
+        if not _entry_is_replayable(entry):
+            continue
         if entry.kind not in {SourceRecordKind.APT, SourceRecordKind.FLATPAK_REMOTE}:
             continue
         changes.append(
@@ -303,6 +301,8 @@ def _print_preview(
         print_info(f"  {entry.diff_type.value}: {entry.kind.value} {entry.label}")
     apt_keys = {key.id: key for key in sources.apt.keys}
     for entry in (*source_diff.missing, *source_diff.changed):
+        if not _entry_is_replayable(entry):
+            continue
         expected = entry.expected
         if isinstance(expected, AptSource):
             for key_id in expected.key_ids:
@@ -353,7 +353,7 @@ def run_source_phase(
     if sources is None:
         return SourcePhaseResult(success=True)
 
-    source_filter = _source_filter(source)
+    source_filter = source.to_package_source()
     managers = selected_managers(sources, source_filter)
     if not managers:
         return SourcePhaseResult(success=True)
@@ -395,7 +395,15 @@ def run_source_phase(
             error=error,
         )
 
-    source_diff = _source_diff(sources, live_sources, source_filter)
+    try:
+        source_diff = compute_source_diff(sources, live_sources, source_filter=source_filter)
+    except SourceDiffError as error:
+        print_error(f"Source preflight failed: {error}")
+        return SourcePhaseResult(
+            success=False,
+            selected_managers=managers,
+            error=str(error),
+        )
     _print_preview(sources, source_diff, managers)
     if dry_run:
         return SourcePhaseResult(
@@ -405,7 +413,9 @@ def run_source_phase(
         )
 
     approved, _, error = _confirm_changes(
-        _source_changes(source_diff), interaction, action="Replace changed"
+        tuple(entry for entry in source_diff.changed if _entry_is_replayable(entry)),
+        interaction,
+        action="Replace changed",
     )
     if not approved:
         print_warning(f"Source phase stopped: {error}")
@@ -512,15 +522,30 @@ def refresh_manifest_sources(
     if sources is None:
         return SourceRefreshResult(success=True, manifest=manifest)
 
-    source_filter = _source_filter(source)
+    source_filter = source.to_package_source()
     managers = (source_filter,) if source_filter is not None else None
     try:
         live_sources = capture_sources(managers=managers)
     except SourceCaptureError as error:
         return SourceRefreshResult(success=False, manifest=manifest, error=str(error))
 
-    source_diff = _source_diff(sources, live_sources, source_filter)
+    try:
+        source_diff = compute_source_diff(sources, live_sources, source_filter=source_filter)
+    except SourceDiffError as error:
+        return SourceRefreshResult(success=False, manifest=manifest, error=str(error))
+    blocked = _capture_entries(live_sources, frozenset({ReplayMode.BLOCKED}))
+    if blocked:
+        error = "blocked source cannot be recorded: " + ", ".join(entry.label for entry in blocked)
+        return SourceRefreshResult(
+            success=False,
+            manifest=manifest,
+            source_diff=source_diff,
+            error=error,
+        )
     candidates = (*source_diff.extra, *source_diff.changed)
+    candidates = tuple(
+        entry for entry in candidates if _live_entry_mode(entry) is ReplayMode.REPLAY
+    )
     _print_capture_trust_preview(live_sources, candidates)
     approved, confirmed, error = _confirm_changes(
         candidates,

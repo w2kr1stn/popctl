@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from popctl.models.package import PackageSource
+from popctl.sources.capture import AptSourceParseError, apt_source_has_insecure_options
 from popctl.sources.keytrust import (
     KeyTrustError,
     VerifiedPublicKey,
@@ -53,10 +54,6 @@ class SourceProvisionResult:
 class SourceProvisionError(RuntimeError): ...
 
 
-_INSECURE_APT_PATTERN = re.compile(
-    r"(?:trusted\s*(?:=|:)\s*(?:yes|true|1)|allow-insecure\s*(?:=|:)\s*(?:yes|true|1))",
-    re.IGNORECASE,
-)
 _LEGACY_SIGNED_BY_PATTERN = re.compile(
     r"(signed-by\s*=\s*)(?:\"[^\"]*\"|'[^']*'|[^\s\]]+)",
     re.IGNORECASE,
@@ -157,7 +154,11 @@ def _signed_by_value(source: AptSource, keys: tuple[AptKey, ...]) -> str:
 def render_managed_apt_stanza(source: AptSource, keys: tuple[AptKey, ...]) -> str:
     if source.replay_mode is not ReplayMode.REPLAY:
         raise SourceProvisionError("Only replayable APT sources can be rendered")
-    if _INSECURE_APT_PATTERN.search(source.verbatim_stanza):
+    try:
+        insecure = apt_source_has_insecure_options(source)
+    except AptSourceParseError as error:
+        raise SourceProvisionError("APT source stanza cannot be parsed") from error
+    if insecure:
         raise SourceProvisionError("Insecure APT sources cannot be replayed")
 
     signed_by = _signed_by_value(source, keys)

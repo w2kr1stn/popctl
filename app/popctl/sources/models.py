@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from popctl.models.package import PackageSource
 
@@ -138,3 +139,18 @@ class SourcesConfig(SourceModel):
     apt: AptSources = Field(default_factory=AptSources)
     flatpak: FlatpakSources = Field(default_factory=FlatpakSources)
     snap: SnapSources = Field(default_factory=SnapSources)
+
+    @model_validator(mode="after")
+    def validate_unique_locators(self) -> Self:
+        locators: set[SourceLocator] = set()
+        records = (
+            *(source.managed_target_locator for source in self.apt.entries),
+            *(remote.locator for remote in self.flatpak.remotes),
+            *(app.locator for app in self.flatpak.apps),
+            *(channel.locator for channel in self.snap.packages),
+        )
+        for locator in records:
+            if locator in locators:
+                raise ValueError(f"Duplicate source locator: {locator}")
+            locators.add(locator)
+        return self
