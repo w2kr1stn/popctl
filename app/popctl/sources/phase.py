@@ -129,6 +129,10 @@ def _entry_is_replayable(entry: SourceDiffEntry) -> bool:
     )
 
 
+def _entry_requires_reconciliation(entry: SourceDiffEntry) -> bool:
+    return _entry_is_replayable(entry) and entry.kind is not SourceRecordKind.FLATPAK_APP
+
+
 def _live_entry_mode(entry: SourceDiffEntry) -> ReplayMode | None:
     if isinstance(entry.live, (AptSource, FlatpakRemote, SnapChannel)):
         return entry.live.replay_mode
@@ -260,7 +264,7 @@ def _is_operation_owned(change: SourceDiffEntry) -> bool:
 def _provision_changes(source_diff: SourceDiffResult) -> tuple[SourceProvisionChange, ...]:
     changes: list[SourceProvisionChange] = []
     for entry in (*source_diff.missing, *source_diff.changed):
-        if not _entry_is_replayable(entry):
+        if not _entry_requires_reconciliation(entry):
             continue
         if entry.kind not in {SourceRecordKind.APT, SourceRecordKind.FLATPAK_REMOTE}:
             continue
@@ -406,7 +410,7 @@ def run_source_phase(
         )
 
     approved, _, error = _confirm_changes(
-        tuple(entry for entry in source_diff.changed if _entry_is_replayable(entry)),
+        tuple(entry for entry in source_diff.changed if _entry_requires_reconciliation(entry)),
         interaction,
         action="Replace changed",
     )
@@ -420,7 +424,7 @@ def run_source_phase(
 
     if interaction.interactive and not interaction.yes:
         approved, _, error = _confirm_changes(
-            tuple(entry for entry in source_diff.missing if _entry_is_replayable(entry)),
+            tuple(entry for entry in source_diff.missing if _entry_requires_reconciliation(entry)),
             interaction,
             action="Provision missing",
         )

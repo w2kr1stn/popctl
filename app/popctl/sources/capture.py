@@ -61,7 +61,7 @@ INSECURE_APT_OPTION_NAMES = frozenset(
 )
 _FLATPAK_AUTH_OPTION_PREFIXES = ("authenticator", "credential", "token", "password")
 _APT_URI_SCHEMES = frozenset({"file", "http", "https"})
-_FLATPAK_URI_SCHEMES = frozenset({"http", "https", "oci"})
+_FLATPAK_URI_SCHEMES = frozenset({"http", "https", "oci+http", "oci+https"})
 _ORIGIN_FIELD = "origin"
 _LEGACY_SIGNED_BY_PATTERN = re.compile(
     r"(signed-by\s*=\s*)(?:\"[^\"]*\"|'[^']*'|[^\s\]]+)",
@@ -655,10 +655,16 @@ def _assert_public_uri(
         _ = parsed.port
     except ValueError as error:
         raise AptSourceParseError("Malformed APT source URI") from error
-    if parsed.scheme.lower() not in supported_schemes or not parsed.hostname:
+    scheme = parsed.scheme.lower()
+    if scheme not in supported_schemes:
         raise AptSourceParseError("Malformed APT source URI")
     if parsed.username is not None or parsed.password is not None or "?" in uri:
         raise CredentialedSourceError("Credential-bearing source URI cannot be captured")
+    if scheme == "file":
+        if not parsed.path.startswith("/"):
+            raise AptSourceParseError("Malformed APT source URI")
+    elif not parsed.hostname:
+        raise AptSourceParseError("Malformed APT source URI")
     if any(_uri_matches_selector(uri, selector) for selector in auth_selectors):
         raise CredentialedSourceError("Source URI matches an APT authentication selector")
 
@@ -1044,7 +1050,7 @@ def capture_platform(os_release_path: Path = OS_RELEASE_PATH) -> SourcePlatform:
             if "=" in line
             for key, value in (line.split("=", 1),)
         }
-    except OSError as error:
+    except (OSError, UnicodeDecodeError) as error:
         raise SourceCaptureError("Unable to read platform identity") from error
     distro_id = values.get("ID", "").lower()
     codename = values.get("VERSION_CODENAME", values.get("UBUNTU_CODENAME", "")).lower()

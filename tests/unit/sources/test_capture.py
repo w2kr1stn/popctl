@@ -712,6 +712,29 @@ def test_invalid_apt_uri_port_fails_closed_before_key_capture(
 
 
 @pytest.mark.parametrize(
+    "uri",
+    (
+        "file:///srv/repo",
+        "file:/srv/apt",
+        "http://[2001:db8::1]/repo",
+        "https://[2001:db8::1]/repo",
+    ),
+)
+def test_apt_capture_accepts_local_file_and_ipv6_uris(
+    apt_root: Path, platform: SourcePlatform, uri: str
+) -> None:
+    (apt_root / "sources.list").write_text(
+        f"deb [signed-by=/etc/apt/keyrings/vendor.gpg] {uri} stable main\n",
+        encoding="utf-8",
+    )
+
+    with patch("popctl.sources.capture.capture_apt_keys", side_effect=_captured_key):
+        captured = capture_apt_sources(apt_root, platform)
+
+    assert captured.entries[0].verbatim_stanza.split()[2] == uri
+
+
+@pytest.mark.parametrize(
     ("format", "uri"),
     (("legacy", "http://"), ("deb822", "nonsense")),
 )
@@ -772,6 +795,14 @@ def test_non_utf8_apt_auth_file_fails_closed_before_key_capture(
         capture_apt_sources(apt_root, platform)
 
     captured_keys.assert_not_called()
+
+
+def test_non_utf8_os_release_fails_closed(tmp_path: Path) -> None:
+    os_release = tmp_path / "os-release"
+    os_release.write_bytes(b"ID=ubuntu\nVERSION_CODENAME=\xff\n")
+
+    with pytest.raises(SourceCaptureError, match="Unable to read platform identity"):
+        capture_sources(os_release_path=os_release, managers=())
 
 
 def test_apt_candidate_provenance_maps_ambiguous_and_unknown() -> None:
@@ -884,6 +915,50 @@ def test_flatpak_capture_uses_scope_local_keyrings_and_app_contexts(tmp_path: Pa
         assert "--no-default-keyring" in command
 
 
+@pytest.mark.parametrize("scheme", ("oci+https", "oci+http"))
+def test_flatpak_oci_remote_uses_local_keyring(tmp_path: Path, scheme: str) -> None:
+    paths = FlatpakPaths(user_repo=tmp_path / "user-repo", system_repo=tmp_path / "system-repo")
+    verified = VerifiedPublicKey(
+        armor="-----BEGIN PGP PUBLIC KEY BLOCK-----\nkey\n",
+        fingerprints=("0123456789ABCDEF0123456789ABCDEF01234567",),
+    )
+
+    def oci_remote_result(args: list[str]) -> CommandResult:
+        if args[:2] == ["flatpak", "remotes"]:
+            return CommandResult(
+                stdout=f"vendor\t{scheme}://registry.example/repo\tgpg-verify\n",
+                stderr="",
+                returncode=0,
+            )
+        if args[:2] == ["flatpak", "list"]:
+            return CommandResult(stdout="", stderr="", returncode=0)
+        if args[0] == "gpg":
+            return CommandResult(
+                stdout="-----BEGIN PGP PUBLIC KEY BLOCK-----\nkey\n", stderr="", returncode=0
+            )
+        raise AssertionError(args)
+
+    with (
+        patch("popctl.sources.capture.command_exists", return_value=True),
+        patch("popctl.sources.capture.run_command", side_effect=oci_remote_result) as run,
+        patch("popctl.sources.capture.verify_public_material", return_value=verified),
+        patch("popctl.sources.capture._load_flatpakrepo_key") as load_descriptor,
+    ):
+        captured = capture_flatpak_sources(paths)
+
+    assert all(remote.url == f"{scheme}://registry.example/repo" for remote in captured.remotes)
+    gpg_keyrings = [
+        call.args[0][call.args[0].index("--keyring") + 1]
+        for call in run.call_args_list
+        if call.args[0][0] == "gpg"
+    ]
+    assert gpg_keyrings == [
+        str(paths.user_repo / "vendor.trustedkeys.gpg"),
+        str(paths.system_repo / "vendor.trustedkeys.gpg"),
+    ]
+    load_descriptor.assert_not_called()
+
+
 def test_flatpak_descriptor_key_is_validated_fallback(tmp_path: Path) -> None:
     paths = FlatpakPaths(user_repo=tmp_path / "user-repo", system_repo=tmp_path / "system-repo")
     verified = VerifiedPublicKey(
@@ -954,12 +1029,13 @@ def test_flatpak_key_capture_and_authenticator_fail_closed(tmp_path: Path) -> No
         capture_flatpak_sources(paths)
 
 
+@pytest.mark.parametrize("url", ("not-a-url", "oci://registry.example/repo"))
 def test_flatpak_descriptor_fallback_rejects_an_invalid_uri_before_key_capture(
-    tmp_path: Path,
+    tmp_path: Path, url: str
 ) -> None:
     paths = FlatpakPaths(user_repo=tmp_path / "user-repo", system_repo=tmp_path / "system-repo")
     remotes = CommandResult(
-        stdout="vendor\tnot-a-url\tgpg-verify\n", stderr="", returncode=0
+        stdout=f"vendor\t{url}\tgpg-verify\n", stderr="", returncode=0
     )
 
     with (

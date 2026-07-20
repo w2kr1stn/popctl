@@ -378,6 +378,51 @@ def test_source_phase_fails_closed_for_changed_trust_with_yes() -> None:
     provision.assert_not_called()
 
 
+def test_source_phase_reports_flatpak_app_origin_drift_without_reconciliation() -> None:
+    remote, app = _flatpak_remote_and_app()
+    expected = SourcesConfig(
+        platform=_platform(), flatpak=FlatpakSources(remotes=(remote,), apps=(app,))
+    )
+    live = expected.model_copy(
+        update={
+            "flatpak": FlatpakSources(
+                remotes=(remote,), apps=(app.model_copy(update={"origin": "other"}),)
+            )
+        }
+    )
+    lines: list[str] = []
+    with (
+        patch("popctl.sources.preflight.get_available_operators", side_effect=_available),
+        patch("popctl.sources.preflight.verify_public_material", return_value=_verified()),
+        patch("popctl.sources.phase.capture_platform", return_value=_platform()),
+        patch("popctl.sources.phase.capture_sources", return_value=live),
+        patch("popctl.sources.phase.print_info", side_effect=lines.append),
+        patch("popctl.sources.phase.typer.confirm") as confirm,
+        patch("popctl.sources.phase.provision_sources") as provision,
+    ):
+        provision.return_value = SourceProvisionResult(success=True, retained_artifacts=())
+        first = run_source_phase(
+            _manifest(expected),
+            SourceChoice.FLATPAK,
+            dry_run=False,
+            interaction=SourceInteractionPolicy(yes=True, interactive=False),
+        )
+        second = run_source_phase(
+            _manifest(expected),
+            SourceChoice.FLATPAK,
+            dry_run=False,
+            interaction=SourceInteractionPolicy(yes=True, interactive=False),
+        )
+
+    assert first.success is True
+    assert second.success is True
+    assert first.source_diff == second.source_diff
+    assert first.source_diff.changed[0].kind.value == "flatpak-app"
+    assert any("changed: flatpak-app org.example.App@beta" in line for line in lines)
+    confirm.assert_not_called()
+    assert all(call.kwargs["changes"] == () for call in provision.call_args_list)
+
+
 def test_source_phase_report_only_base_drift_skips_source_preflight_and_writes() -> None:
     expected = _apt_sources(uri="https://archive.ubuntu.com/ubuntu")
     source = expected.apt.entries[0].model_copy(
