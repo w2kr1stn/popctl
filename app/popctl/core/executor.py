@@ -50,7 +50,13 @@ def execute_actions(
         purge_pkgs = [a.package for a in source_actions if a.action_type == ActionType.PURGE]
 
         if install_pkgs:
-            results.extend(operator.install(install_pkgs))
+            install_actions = [a for a in source_actions if a.action_type == ActionType.INSTALL]
+            install_items = (
+                install_actions
+                if any(action.source_install_context is not None for action in install_actions)
+                else install_pkgs
+            )
+            results.extend(operator.install(install_items))
         if remove_pkgs:
             results.extend(operator.remove(remove_pkgs, purge=False))
         if purge_pkgs:

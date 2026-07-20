@@ -6,7 +6,7 @@ Tests for the Snap package operator implementation.
 from unittest.mock import patch
 
 import pytest
-from popctl.models.action import ActionType
+from popctl.models.action import Action, ActionType, SourceInstallContext
 from popctl.models.package import PackageSource
 from popctl.operators.snap import SnapOperator
 from popctl.utils.shell import CommandResult
@@ -99,6 +99,28 @@ class TestSnapOperator:
             results = operator.install([])
 
         assert results == []
+
+    def test_install_uses_recorded_channel(self, operator: SnapOperator) -> None:
+        action = Action(
+            ActionType.INSTALL,
+            "firefox",
+            PackageSource.SNAP,
+            SourceInstallContext(snap_channel="latest/beta"),
+        )
+        with patch("popctl.operators.base.run_command") as mock_run:
+            mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
+
+            results = operator.install([action])
+
+        assert results[0].success is True
+        assert mock_run.call_args.args[0] == [
+            "sudo",
+            "snap",
+            "install",
+            "--channel=latest/beta",
+            "--",
+            "firefox",
+        ]
 
     def test_remove_success(self, operator: SnapOperator) -> None:
         """remove() returns success results on snap success."""

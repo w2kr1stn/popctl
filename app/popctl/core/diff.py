@@ -5,13 +5,14 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from popctl.core.baseline import is_package_protected
-from popctl.models.action import Action, ActionType
+from popctl.models.action import Action, ActionType, SourceInstallContext
 from popctl.models.manifest import PackageSourceType
 from popctl.models.package import PackageSource, PackageStatus
 
 if TYPE_CHECKING:
     from popctl.models.manifest import Manifest
     from popctl.scanners.base import Scanner
+    from popctl.sources.models import SourcesConfig
 
 
 class DiffType(Enum):
@@ -181,7 +182,54 @@ def compute_diff(
     )
 
 
-def diff_to_actions(diff_result: DiffResult, purge: bool = False) -> list[Action]:
+def _install_actions_for_entry(
+    entry: DiffEntry,
+    sources: SourcesConfig | None,
+) -> list[Action]:
+    if sources is None or entry.source is PackageSource.APT:
+        return [Action(ActionType.INSTALL, entry.name, entry.source)]
+
+    if entry.source is PackageSource.SNAP:
+        channels = [channel for channel in sources.snap.packages if channel.name == entry.name]
+        if not channels:
+            return [Action(ActionType.INSTALL, entry.name, entry.source)]
+        if len(channels) != 1:
+            raise ValueError(f"Snap package has ambiguous source context: {entry.name}")
+        if channels[0].replay_mode.value != "replay":
+            raise ValueError(f"Snap package has no replayable source context: {entry.name}")
+        return [
+            Action(
+                ActionType.INSTALL,
+                entry.name,
+                entry.source,
+                SourceInstallContext.for_snap(channels[0]),
+            )
+        ]
+
+    apps = [app for app in sources.flatpak.apps if app.id == entry.name]
+    if not apps:
+        return [Action(ActionType.INSTALL, entry.name, entry.source)]
+    remotes = {(remote.scope, remote.name): remote for remote in sources.flatpak.remotes}
+    for app in apps:
+        remote = remotes.get((app.scope, app.origin))
+        if remote is None or remote.replay_mode.value != "replay":
+            raise ValueError(f"Flatpak app has no replayable remote source: {entry.name}")
+    return [
+        Action(
+            ActionType.INSTALL,
+            entry.name,
+            entry.source,
+            SourceInstallContext.for_flatpak(app),
+        )
+        for app in apps
+    ]
+
+
+def diff_to_actions(
+    diff_result: DiffResult,
+    purge: bool = False,
+    sources: SourcesConfig | None = None,
+) -> list[Action]:
     """Convert diff result to list of actions.
 
     Only MISSING and EXTRA diffs are converted to actions:
@@ -205,12 +253,7 @@ def diff_to_actions(diff_result: DiffResult, purge: bool = False) -> list[Action
 
     # MISSING -> INSTALL
     for entry in diff_result.missing:
-        action = Action(
-            action_type=ActionType.INSTALL,
-            package=entry.name,
-            source=entry.source,
-        )
-        actions.append(action)
+        actions.extend(_install_actions_for_entry(entry, sources))
 
     # EXTRA -> REMOVE/PURGE
     for entry in diff_result.extra:

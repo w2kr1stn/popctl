@@ -6,6 +6,18 @@ Tests for diff-to-action conversion and source mapping logic.
 from popctl.core.diff import DiffEntry, DiffResult, DiffType, diff_to_actions
 from popctl.models.action import ActionType
 from popctl.models.package import PackageSource
+from popctl.sources.models import (
+    AptSources,
+    FlatpakApp,
+    FlatpakRemote,
+    FlatpakScope,
+    FlatpakSources,
+    ReplayMode,
+    SnapChannel,
+    SnapSources,
+    SourcePlatform,
+    SourcesConfig,
+)
 
 
 class TestDiffToActionsMissing:
@@ -242,3 +254,116 @@ class TestDiffToActionsEdgeCases:
         assert len(remove_actions) == 1
         assert install_actions[0].package == "vim"
         assert remove_actions[0].package == "bloatware"
+
+
+class TestSourceAwareInstallActions:
+    def test_flatpak_actions_preserve_scope_arch_and_branch_identity(self) -> None:
+        remotes = (
+            FlatpakRemote(
+                name="flathub",
+                scope=FlatpakScope.USER,
+                url="https://example.com/flathub.flatpakrepo",
+                gpg_verify=True,
+                gpg_key_armor="armor",
+                gpg_fingerprints=("A" * 40,),
+                replay_mode=ReplayMode.REPLAY,
+            ),
+            FlatpakRemote(
+                name="vendor-system",
+                scope=FlatpakScope.SYSTEM,
+                url="https://example.com/vendor.flatpakrepo",
+                gpg_verify=True,
+                gpg_key_armor="armor",
+                gpg_fingerprints=("B" * 40,),
+                replay_mode=ReplayMode.REPLAY,
+            ),
+        )
+        sources = SourcesConfig(
+            platform=SourcePlatform(distro_id="ubuntu", codename="noble"),
+            apt=AptSources(),
+            flatpak=FlatpakSources(
+                remotes=remotes,
+                apps=(
+                    FlatpakApp(
+                        id="org.example.App",
+                        origin="flathub",
+                        scope=FlatpakScope.USER,
+                        arch="x86_64",
+                        branch="stable",
+                    ),
+                    FlatpakApp(
+                        id="org.example.App",
+                        origin="flathub",
+                        scope=FlatpakScope.USER,
+                        arch="x86_64",
+                        branch="beta",
+                    ),
+                    FlatpakApp(
+                        id="org.example.App",
+                        origin="vendor-system",
+                        scope=FlatpakScope.SYSTEM,
+                        arch="aarch64",
+                        branch="stable",
+                    ),
+                ),
+            ),
+            snap=SnapSources(),
+        )
+        diff = DiffResult(
+            new=(),
+            missing=(
+                DiffEntry(
+                    name="org.example.App",
+                    source=PackageSource.FLATPAK,
+                    diff_type=DiffType.MISSING,
+                ),
+            ),
+            extra=(),
+        )
+
+        actions = diff_to_actions(diff, sources=sources)
+
+        assert len(actions) == 3
+        assert {
+            (
+                action.source_install_context.flatpak_scope,
+                action.source_install_context.flatpak_arch,
+                action.source_install_context.flatpak_branch,
+            )
+            for action in actions
+            if action.source_install_context is not None
+        } == {
+            (FlatpakScope.USER, "x86_64", "stable"),
+            (FlatpakScope.USER, "x86_64", "beta"),
+            (FlatpakScope.SYSTEM, "aarch64", "stable"),
+        }
+
+    def test_snap_action_uses_recorded_channel_and_bare_fallback_requires_no_record(self) -> None:
+        sources = SourcesConfig(
+            platform=SourcePlatform(distro_id="ubuntu", codename="noble"),
+            apt=AptSources(),
+            flatpak=FlatpakSources(),
+            snap=SnapSources(
+                packages=(
+                    SnapChannel(
+                        name="firefox",
+                        channel="latest/beta",
+                        replay_mode=ReplayMode.REPLAY,
+                    ),
+                )
+            ),
+        )
+        diff = DiffResult(
+            new=(),
+            missing=(
+                DiffEntry(name="firefox", source=PackageSource.SNAP, diff_type=DiffType.MISSING),
+                DiffEntry(name="bare", source=PackageSource.SNAP, diff_type=DiffType.MISSING),
+            ),
+            extra=(),
+        )
+
+        actions = diff_to_actions(diff, sources=sources)
+
+        assert actions[0].source_install_context is not None
+        assert actions[0].source_install_context.snap_channel == "latest/beta"
+        assert actions[1].source_install_context is None

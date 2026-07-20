@@ -6,9 +6,10 @@ Tests for the Flatpak package operator implementation.
 from unittest.mock import patch
 
 import pytest
-from popctl.models.action import ActionType
+from popctl.models.action import Action, ActionType, SourceInstallContext
 from popctl.models.package import PackageSource
 from popctl.operators.flatpak import FlatpakOperator
+from popctl.sources.models import FlatpakScope
 from popctl.utils.shell import CommandResult
 
 
@@ -114,6 +115,55 @@ class TestFlatpakOperator:
             results = operator.install([])
 
         assert results == []
+
+    def test_install_uses_recorded_remote_scope_arch_and_branch(
+        self, operator: FlatpakOperator
+    ) -> None:
+        beta = Action(
+            ActionType.INSTALL,
+            "org.example.App",
+            PackageSource.FLATPAK,
+            SourceInstallContext(
+                flatpak_remote="flathub-beta",
+                flatpak_scope=FlatpakScope.USER,
+                flatpak_arch="x86_64",
+                flatpak_branch="beta",
+            ),
+        )
+        system = Action(
+            ActionType.INSTALL,
+            "org.example.App",
+            PackageSource.FLATPAK,
+            SourceInstallContext(
+                flatpak_remote="vendor-system",
+                flatpak_scope=FlatpakScope.SYSTEM,
+                flatpak_arch="aarch64",
+                flatpak_branch="stable",
+            ),
+        )
+        with patch("popctl.operators.base.run_command") as mock_run:
+            mock_run.return_value = CommandResult(stdout="", stderr="", returncode=0)
+
+            results = operator.install([beta, system])
+
+        assert all(result.success for result in results)
+        beta_command = mock_run.call_args_list[0].args[0]
+        system_command = mock_run.call_args_list[1].args[0]
+        assert beta_command == [
+            "flatpak",
+            "install",
+            "-y",
+            "--user",
+            "--arch=x86_64",
+            "--branch=beta",
+            "flathub-beta",
+            "--",
+            "org.example.App",
+        ]
+        assert system_command[:5] == ["sudo", "flatpak", "install", "-y", "--system"]
+        assert "--arch=aarch64" in system_command
+        assert "--branch=stable" in system_command
+        assert "vendor-system" in system_command
 
     def test_remove_success(self, operator: FlatpakOperator) -> None:
         """remove() returns success results on flatpak success."""
