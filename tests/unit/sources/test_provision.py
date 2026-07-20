@@ -3,7 +3,7 @@ from unittest.mock import call, patch
 
 import pytest
 from popctl.models.package import PackageSource
-from popctl.sources.keytrust import KeyTrustError, VerifiedPublicKey
+from popctl.sources.keytrust import KeyTrustError, VerifiedPublicKey, capture_apt_keys
 from popctl.sources.models import (
     AptKey,
     AptSource,
@@ -30,6 +30,7 @@ from popctl.utils.shell import CommandResult
 FINGERPRINT = "A" * 40
 SELECTED_FINGERPRINT = "B" * 40
 ARMOR = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nmaterial\n"
+PRIMARY_WITH_SUBKEY_ARMOR = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nprimary-with-subkey\n"
 
 
 def _success() -> CommandResult:
@@ -204,6 +205,57 @@ class TestAptProvisioning:
         assert result.error is not None
         assert "Signed-By binding" in result.error
         assert run_command.call_count == 2
+
+    def test_selector_bound_key_records_full_export_and_passes_post_write_verification(
+        self, tmp_path: Path
+    ) -> None:
+        paths = _paths(tmp_path)
+        source_keyrings = tmp_path / "source-keyrings"
+        source_keyrings.mkdir()
+        source_key = source_keyrings / "vendor.gpg"
+        source_key.write_text(PRIMARY_WITH_SUBKEY_ARMOR, encoding="utf-8")
+        listing = (
+            f"fpr:::::::::{FINGERPRINT}:\n"
+            f"fpr:::::::::{SELECTED_FINGERPRINT}:\n"
+        )
+
+        def gpg_result(args: list[str]) -> CommandResult:
+            if "--import" in args or "--export" in args:
+                return CommandResult(stdout=PRIMARY_WITH_SUBKEY_ARMOR, stderr="", returncode=0)
+            if "--list-keys" in args:
+                return CommandResult(stdout=listing, stderr="", returncode=0)
+            raise AssertionError(args)
+
+        with patch("popctl.sources.keytrust.run_command", side_effect=gpg_result):
+            binding, captured = capture_apt_keys(
+                SignedByBinding(
+                    key_paths=(str(source_key),), fingerprint_selectors=(FINGERPRINT + "!",)
+                ),
+                supported_roots=(source_keyrings,),
+            )
+        key = captured[0].model_copy(
+            update={"target_path": str(paths.apt_keyrings_dir / "vendor.asc")}
+        )
+        source = _apt_source(key, selectors=binding.fingerprint_selectors)
+        verified = VerifiedPublicKey(
+            armor=PRIMARY_WITH_SUBKEY_ARMOR,
+            fingerprints=(FINGERPRINT, SELECTED_FINGERPRINT),
+        )
+
+        with (
+            patch("popctl.sources.provision.verify_public_material", return_value=verified),
+            patch("popctl.sources.provision.run_command", return_value=_success()),
+        ):
+            result = provision_sources(
+                _sources(key, source),
+                changes=(_missing(source),),
+                selected_managers=(PackageSource.APT,),
+                paths=paths,
+            )
+
+        assert key.fingerprints == (FINGERPRINT, SELECTED_FINGERPRINT)
+        assert result.success is True
+        assert f"{FINGERPRINT}!" in render_managed_apt_stanza(source, (key,))
 
     def test_uses_one_writer_for_ppa_without_primary_file_or_global_trust(
         self, tmp_path: Path

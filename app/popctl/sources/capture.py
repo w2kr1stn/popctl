@@ -2,7 +2,7 @@ import configparser
 import hashlib
 import shlex
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 from urllib.request import urlopen
@@ -77,8 +77,8 @@ CANONICAL_BASE_ARCHIVES: dict[str, CanonicalArchive] = {
                 "https://deb.debian.org/debian-security",
                 "http://deb.debian.org/debian-ports",
                 "https://deb.debian.org/debian-ports",
-                "http://ftp.ports.debian.org/debian-ports",
-                "https://ftp.ports.debian.org/debian-ports",
+                "http://ftp.debian-ports.org/debian-ports",
+                "https://ftp.debian-ports.org/debian-ports",
             }
         ),
         origins=frozenset({"debian"}),
@@ -101,6 +101,10 @@ CANONICAL_BASE_ARCHIVES: dict[str, CanonicalArchive] = {
             {
                 "http://apt.pop-os.org/proprietary",
                 "https://apt.pop-os.org/proprietary",
+                "http://apt.pop-os.org/ubuntu",
+                "https://apt.pop-os.org/ubuntu",
+                "http://apt.pop-os.org/release",
+                "https://apt.pop-os.org/release",
                 "http://archive.ubuntu.com/ubuntu",
                 "https://archive.ubuntu.com/ubuntu",
                 "http://security.ubuntu.com/ubuntu",
@@ -140,6 +144,14 @@ class AptDescriptor:
 
 
 @dataclass(frozen=True, slots=True)
+class AptAuthSelector:
+    scheme: str | None
+    host: str
+    port: int | None
+    path: str
+
+
+@dataclass(frozen=True, slots=True)
 class FlatpakPaths:
     user_repo: Path
     system_repo: Path = SYSTEM_FLATPAK_REPO
@@ -168,6 +180,20 @@ def _suite_is_current(suite: str, codename: str) -> bool:
     return normalized == codename or normalized.startswith(f"{codename}-")
 
 
+def _is_canonical_uri_and_suite(
+    platform: SourcePlatform,
+    *,
+    uris: tuple[str, ...],
+    suites: tuple[str, ...],
+) -> bool:
+    canonical = CANONICAL_BASE_ARCHIVES.get(platform.distro_id.lower())
+    if canonical is None or not uris or not suites:
+        return False
+    if not {_normalize_uri(uri) for uri in uris} <= canonical.uris:
+        return False
+    return all(_suite_is_current(suite, platform.codename.lower()) for suite in suites)
+
+
 def classify_apt_archive(
     platform: SourcePlatform,
     *,
@@ -176,17 +202,11 @@ def classify_apt_archive(
     origins: tuple[str, ...] = (),
 ) -> ReplayMode:
     canonical = CANONICAL_BASE_ARCHIVES.get(platform.distro_id.lower())
-    if canonical is None or not uris or not suites:
-        return ReplayMode.REPLAY
-
-    normalized_uris = {_normalize_uri(uri) for uri in uris}
-    if not normalized_uris <= canonical.uris:
-        return ReplayMode.REPLAY
-    if not all(_suite_is_current(suite, platform.codename.lower()) for suite in suites):
+    if canonical is None or not _is_canonical_uri_and_suite(platform, uris=uris, suites=suites):
         return ReplayMode.REPLAY
 
     normalized_origins = {_normalized_origin(origin) for origin in origins if origin.strip()}
-    if normalized_origins and not normalized_origins <= canonical.origins:
+    if len(normalized_origins) != 1 or not normalized_origins <= canonical.origins:
         return ReplayMode.REPLAY
     return ReplayMode.REPORT_ONLY
 
@@ -325,12 +345,19 @@ def _split_deb822_paragraphs(content: str) -> tuple[str, ...]:
     for line in content.splitlines(keepends=True):
         if not line.strip():
             if current:
-                paragraphs.append("".join(current))
+                paragraph = "".join(current)
+                if any(
+                    raw_line.strip() and not raw_line.lstrip().startswith("#")
+                    for raw_line in current
+                ):
+                    paragraphs.append(paragraph)
                 current = []
             continue
         current.append(line)
     if current:
-        paragraphs.append("".join(current))
+        paragraph = "".join(current)
+        if any(raw_line.strip() and not raw_line.lstrip().startswith("#") for raw_line in current):
+            paragraphs.append(paragraph)
     return tuple(paragraphs)
 
 
@@ -440,8 +467,35 @@ def _auth_store_files(apt_root: Path) -> tuple[Path, ...]:
     return tuple(files)
 
 
-def _read_auth_selectors(apt_root: Path) -> tuple[tuple[str, str], ...]:
-    selectors: list[tuple[str, str]] = []
+def _parse_auth_selector(value: str) -> AptAuthSelector:
+    if not value:
+        raise CredentialedSourceError("Malformed APT authentication selector")
+    has_scheme = "://" in value
+    try:
+        parsed = urlsplit(value if has_scheme else f"//{value}")
+        port = parsed.port
+    except ValueError as error:
+        raise CredentialedSourceError("Malformed APT authentication selector") from error
+    if (
+        (has_scheme and not parsed.scheme)
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or (parsed.path and not parsed.path.startswith("/"))
+    ):
+        raise CredentialedSourceError("Malformed APT authentication selector")
+    return AptAuthSelector(
+        scheme=parsed.scheme.lower() if has_scheme else None,
+        host=parsed.hostname.lower(),
+        port=port,
+        path=parsed.path.rstrip("/"),
+    )
+
+
+def _read_auth_selectors(apt_root: Path) -> tuple[AptAuthSelector, ...]:
+    selectors: list[AptAuthSelector] = []
     for path in _auth_store_files(apt_root):
         try:
             mode = path.stat().st_mode
@@ -455,34 +509,43 @@ def _read_auth_selectors(apt_root: Path) -> tuple[tuple[str, str], ...]:
             try:
                 tokens = shlex.split(statement, posix=True)
             except ValueError as error:
-                raise SourceCaptureError("Malformed APT auth selector") from error
-            for index, token in enumerate(tokens[:-1]):
+                raise CredentialedSourceError("Malformed APT authentication selector") from error
+            for index, token in enumerate(tokens):
                 if token.lower() != "machine":
                     continue
-                selector = tokens[index + 1]
-                host, separator, selector_path = selector.partition("/")
-                if host:
-                    selectors.append((host.lower(), f"/{selector_path}" if separator else ""))
-                break
+                if index + 1 >= len(tokens):
+                    raise CredentialedSourceError("Malformed APT authentication selector")
+                selectors.append(_parse_auth_selector(tokens[index + 1]))
     return tuple(selectors)
 
 
-def _uri_matches_selector(uri: str, selector: tuple[str, str]) -> bool:
-    parsed = urlsplit(uri)
-    hostname = parsed.hostname.lower() if parsed.hostname else ""
-    selector_host, selector_path = selector
-    if hostname != selector_host:
+def _uri_matches_selector(uri: str, selector: AptAuthSelector) -> bool:
+    try:
+        parsed = urlsplit(uri)
+        port = parsed.port
+    except ValueError:
         return False
-    if not selector_path:
+    hostname = parsed.hostname.lower() if parsed.hostname else ""
+    if hostname != selector.host:
+        return False
+    if selector.scheme is None:
+        if parsed.scheme.lower() not in {"https", "tor+https"}:
+            return False
+    elif parsed.scheme.lower() != selector.scheme:
+        return False
+    if selector.port is not None and port != selector.port:
+        return False
+    if not selector.path:
         return True
-    normalized_path = parsed.path or "/"
-    return normalized_path == selector_path or normalized_path.startswith(
-        f"{selector_path.rstrip('/')}/"
-    )
+    normalized_path = (parsed.path or "/").rstrip("/") or "/"
+    return normalized_path.startswith(selector.path)
 
 
-def _assert_public_uri(uri: str, *, auth_selectors: tuple[tuple[str, str], ...]) -> None:
-    parsed = urlsplit(uri)
+def _assert_public_uri(uri: str, *, auth_selectors: tuple[AptAuthSelector, ...]) -> None:
+    try:
+        parsed = urlsplit(uri)
+    except ValueError as error:
+        raise CredentialedSourceError("Malformed source URI cannot be captured") from error
     if parsed.username is not None or parsed.password is not None or "?" in uri:
         raise CredentialedSourceError("Credential-bearing source URI cannot be captured")
     if any(_uri_matches_selector(uri, selector) for selector in auth_selectors):
@@ -492,7 +555,7 @@ def _assert_public_uri(uri: str, *, auth_selectors: tuple[tuple[str, str], ...])
 def _assert_public_apt_descriptor(
     descriptor: AptDescriptor,
     *,
-    auth_selectors: tuple[tuple[str, str], ...],
+    auth_selectors: tuple[AptAuthSelector, ...],
 ) -> None:
     for uri in descriptor.uris:
         _assert_public_uri(uri, auth_selectors=auth_selectors)
@@ -557,6 +620,74 @@ def _validated_apt_descriptors(apt_root: Path) -> tuple[AptDescriptor, ...]:
     return descriptors
 
 
+def _descriptor_identities(descriptor: AptDescriptor) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (_normalize_uri(uri), suite.lower())
+        for uri in descriptor.uris
+        for suite in descriptor.suites
+    )
+
+
+def _policy_archive_origins(output: str) -> dict[tuple[str, str], tuple[str, ...]]:
+    origins: dict[tuple[str, str], set[str]] = {}
+    current: tuple[str, str] | None = None
+    for line in output.splitlines():
+        fields = line.split()
+        if fields and fields[0].isdigit():
+            current = None
+            for index, value in enumerate(fields):
+                if not value.startswith(("http://", "https://")) or index + 1 >= len(fields):
+                    continue
+                current = (_normalize_uri(value), fields[index + 1].split("/", 1)[0].lower())
+                break
+            continue
+        stripped = line.strip()
+        if current is None or not stripped.startswith("release "):
+            continue
+        for field in stripped.removeprefix("release ").split(","):
+            name, separator, value = field.partition("=")
+            if name != "o" or not separator or not value.strip():
+                continue
+            origins.setdefault(current, set()).add(_normalized_origin(value))
+            break
+    return {identity: tuple(sorted(values)) for identity, values in origins.items()}
+
+
+def _resolve_apt_archive_origins(
+    descriptors: tuple[AptDescriptor, ...], platform: SourcePlatform
+) -> tuple[AptDescriptor, ...]:
+    candidates = tuple(
+        descriptor
+        for descriptor in descriptors
+        if descriptor.enabled
+        and _is_canonical_uri_and_suite(
+            platform, uris=descriptor.uris, suites=descriptor.suites
+        )
+    )
+    if not candidates:
+        return descriptors
+
+    result = run_command(["apt-cache", "policy"], timeout=10.0)
+    if not result.success:
+        return tuple(replace(descriptor, origins=()) for descriptor in descriptors)
+    policy_origins = _policy_archive_origins(result.stdout)
+
+    resolved: list[AptDescriptor] = []
+    for descriptor in descriptors:
+        if descriptor not in candidates:
+            resolved.append(descriptor)
+            continue
+        origin_sets = [
+            policy_origins.get(identity) for identity in _descriptor_identities(descriptor)
+        ]
+        if any(origins is None for origins in origin_sets):
+            resolved.append(replace(descriptor, origins=()))
+            continue
+        origins = tuple(sorted({origin for values in origin_sets if values for origin in values}))
+        resolved.append(replace(descriptor, origins=origins))
+    return tuple(resolved)
+
+
 def capture_apt_sources(
     apt_root: Path,
     platform: SourcePlatform,
@@ -566,6 +697,7 @@ def capture_apt_sources(
     source_descriptors = (
         descriptors if descriptors is not None else _validated_apt_descriptors(apt_root)
     )
+    source_descriptors = _resolve_apt_archive_origins(source_descriptors, platform)
 
     roots = tuple(
         dict.fromkeys(

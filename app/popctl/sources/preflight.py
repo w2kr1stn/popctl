@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from popctl.models.package import PackageSource
 from popctl.operators import get_available_operators
-from popctl.sources.keytrust import KeyTrustError, verify_public_material
+from popctl.sources.keytrust import KeyTrustError, selectors_are_satisfied, verify_public_material
 from popctl.sources.models import (
     AptSource,
     AptSourceFormat,
@@ -162,10 +162,13 @@ def _verify_apt_source(source: AptSource, sources: SourcesConfig) -> str | None:
         if frozenset(verified.fingerprints) != frozenset(key.fingerprints):
             return "APT source key fingerprints do not match the manifest"
         fingerprints.update(verified.fingerprints)
-    selectors = {
-        selector.rstrip("!").upper() for selector in source.signed_by.fingerprint_selectors
-    }
-    if selectors and selectors != fingerprints:
+    try:
+        selectors_satisfied = selectors_are_satisfied(
+            source.signed_by.fingerprint_selectors, tuple(fingerprints)
+        )
+    except KeyTrustError:
+        return "APT Signed-By selectors are invalid"
+    if source.signed_by.fingerprint_selectors and not selectors_satisfied:
         return "APT Signed-By fingerprints do not match the manifest"
     return None
 

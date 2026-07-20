@@ -107,15 +107,16 @@ def _normalize_selectors(selectors: tuple[str, ...]) -> tuple[str, ...]:
     return normalized
 
 
-def verify_public_material(
-    material: str | bytes,
-    *,
-    selectors: tuple[str, ...] = (),
-) -> VerifiedPublicKey:
-    data = material.encode() if isinstance(material, str) else material
-    _reject_secret_material(data)
-    normalized_selectors = _normalize_selectors(selectors)
+def selectors_are_satisfied(selectors: tuple[str, ...], fingerprints: tuple[str, ...]) -> bool:
+    return set(_normalize_selectors(selectors)) <= set(fingerprints)
 
+
+def _inspect_public_material(
+    data: bytes,
+    selectors: tuple[str, ...],
+    *,
+    export: bool,
+) -> tuple[tuple[str, ...], str | None]:
     with TemporaryDirectory(prefix="popctl-gpg-") as temporary_directory:
         home = Path(temporary_directory) / "home"
         home.mkdir(mode=0o700)
@@ -136,17 +137,16 @@ def verify_public_material(
         fingerprints = _fingerprints_from_listing(listed.stdout)
         if not fingerprints:
             raise KeyTrustError("OpenPGP key material has no public fingerprints")
+        if selectors and not set(selectors) <= set(fingerprints):
+            raise KeyTrustError("Signed-By fingerprint selector is absent from key material")
+        if not export:
+            return fingerprints, None
 
-        if normalized_selectors:
-            missing = set(normalized_selectors) - set(fingerprints)
-            if missing:
-                raise KeyTrustError("Signed-By fingerprint selector is absent from key material")
-            selected = tuple(
-                fingerprint for fingerprint in fingerprints if fingerprint in normalized_selectors
-            )
-        else:
-            selected = fingerprints
-
+        selected = (
+            tuple(fingerprint for fingerprint in fingerprints if fingerprint in selectors)
+            if selectors
+            else fingerprints
+        )
         exported = run_command(
             [
                 "gpg",
@@ -162,8 +162,24 @@ def verify_public_material(
         )
         if not exported.success or not exported.stdout.strip():
             raise KeyTrustError("Unable to export minimal public OpenPGP key material")
+    return fingerprints, exported.stdout
 
-    return VerifiedPublicKey(armor=exported.stdout, fingerprints=selected)
+
+def verify_public_material(
+    material: str | bytes,
+    *,
+    selectors: tuple[str, ...] = (),
+) -> VerifiedPublicKey:
+    data = material.encode() if isinstance(material, str) else material
+    _reject_secret_material(data)
+    normalized_selectors = _normalize_selectors(selectors)
+    _, armor = _inspect_public_material(data, normalized_selectors, export=True)
+    if armor is None:
+        raise KeyTrustError("Unable to export minimal public OpenPGP key material")
+    exported_fingerprints, _ = _inspect_public_material(armor.encode(), (), export=False)
+    if normalized_selectors and not set(normalized_selectors) <= set(exported_fingerprints):
+        raise KeyTrustError("Signed-By fingerprint selector is absent from exported key material")
+    return VerifiedPublicKey(armor=armor, fingerprints=exported_fingerprints)
 
 
 def _path_is_beneath(path: Path, roots: tuple[Path, ...]) -> bool:

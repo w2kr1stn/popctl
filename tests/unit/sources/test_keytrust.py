@@ -37,11 +37,11 @@ def test_public_key_capture_exports_full_set_without_selector() -> None:
     assert export_args[-2:] == [FINGERPRINT_ONE, FINGERPRINT_TWO]
 
 
-def test_public_key_capture_exports_exact_selector_set() -> None:
+def test_public_key_capture_records_full_export_for_selector() -> None:
     with patch("popctl.sources.keytrust.run_command", side_effect=_gpg_result) as run:
         verified = verify_public_material(b"public material", selectors=(f"{FINGERPRINT_TWO}!",))
 
-    assert verified.fingerprints == (FINGERPRINT_TWO,)
+    assert verified.fingerprints == (FINGERPRINT_ONE, FINGERPRINT_TWO)
     export_args = next(call.args[0] for call in run.call_args_list if "--export" in call.args[0])
     assert export_args[-1] == FINGERPRINT_TWO
     assert FINGERPRINT_ONE not in export_args
@@ -86,7 +86,7 @@ def test_capture_apt_keys_keeps_resolved_binding_and_verified_armor(tmp_path: Pa
 
     assert resolved.key_paths == (str(key),)
     assert resolved.fingerprint_selectors == (FINGERPRINT_ONE,)
-    assert captured[0].fingerprints == (FINGERPRINT_ONE,)
+    assert captured[0].fingerprints == (FINGERPRINT_ONE, FINGERPRINT_TWO)
     assert captured[0].armor.startswith("-----BEGIN PGP PUBLIC KEY BLOCK-----")
 
 

@@ -86,6 +86,13 @@ def run_command(
             stderr=f"Command timed out after {timeout}s: {cmd_str}",
             returncode=-1,
         )
+    except FileNotFoundError:
+        command = args[0] if args else "command"
+        return CommandResult(
+            stdout="",
+            stderr=f"Command not found: {command}",
+            returncode=-1,
+        )
     return CommandResult(
         stdout=cast("str", result.stdout),
         stderr=cast("str", result.stderr),

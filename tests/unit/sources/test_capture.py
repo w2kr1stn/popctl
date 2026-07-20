@@ -57,6 +57,15 @@ def _captured_key(
     )
 
 
+def _archive_policy(uri: str, suite: str, *origins: str) -> str:
+    return "".join(
+        " 500 "
+        f"{uri} {suite}/main amd64 Packages\n"
+        f"     release o={origin},a={suite}\n"
+        for origin in origins
+    )
+
+
 def test_apt_capture_preserves_legacy_options_comments_and_stanza(
     apt_root: Path, platform: SourcePlatform
 ) -> None:
@@ -114,18 +123,117 @@ def test_deb822_capture_classifies_base_and_replayable_sources_by_identity(
         encoding="utf-8",
     )
 
-    with patch("popctl.sources.capture.capture_apt_keys", side_effect=_captured_key):
+    policy = _archive_policy("https://archive.ubuntu.com/ubuntu", "noble", "Ubuntu")
+    policy += _archive_policy("https://archive.ubuntu.com/ubuntu", "noble-updates", "Ubuntu")
+    with (
+        patch("popctl.sources.capture.capture_apt_keys", side_effect=_captured_key),
+        patch(
+            "popctl.sources.capture.run_command",
+            return_value=CommandResult(stdout=policy, stderr="", returncode=0),
+        ),
+    ):
         captured = capture_apt_sources(apt_root, platform)
 
     assert [entry.replay_mode for entry in captured.entries] == [
         ReplayMode.REPORT_ONLY,
         ReplayMode.REPLAY,
-        ReplayMode.REPLAY,
+        ReplayMode.REPORT_ONLY,
     ]
     assert captured.entries[0].verbatim_stanza.startswith("# retained header comment")
     assert captured.entries[0].ordinal == 0
     assert captured.entries[2].ordinal == 2
     assert captured.entries[0].capture_path.endswith("sources.list.d/system.sources")
+
+
+@pytest.mark.parametrize(
+    ("source_format", "stanza_origin", "policy_origins", "expected_mode"),
+    [
+        ("legacy", None, ("Ubuntu",), ReplayMode.REPORT_ONLY),
+        ("deb822", None, ("Ubuntu",), ReplayMode.REPORT_ONLY),
+        ("deb822", "Ubuntu", ("Unrecognized",), ReplayMode.REPLAY),
+        ("deb822", "Ubuntu", ("Ubuntu", "Mirror"), ReplayMode.REPLAY),
+        ("deb822", "Ubuntu", (), ReplayMode.REPLAY),
+    ],
+    ids=("legacy", "deb822", "wrong-origin", "ambiguous-origin", "absent-origin"),
+)
+def test_base_classification_uses_resolved_release_origin(
+    apt_root: Path,
+    platform: SourcePlatform,
+    source_format: str,
+    stanza_origin: str | None,
+    policy_origins: tuple[str, ...],
+    expected_mode: ReplayMode,
+) -> None:
+    key_path = apt_root / "keyrings" / "archive.gpg"
+    key_path.write_bytes(b"public")
+    if source_format == "legacy":
+        source = apt_root / "sources.list"
+        source.write_text(
+            f"deb [signed-by={key_path}] https://archive.ubuntu.com/ubuntu noble main\n",
+            encoding="utf-8",
+        )
+    else:
+        source = apt_root / "sources.list.d" / "archive.sources"
+        origin = f"Origin: {stanza_origin}\n" if stanza_origin is not None else ""
+        source.write_text(
+            "Types: deb\n"
+            "URIs: https://archive.ubuntu.com/ubuntu\n"
+            "Suites: noble\n"
+            "Components: main\n"
+            f"{origin}"
+            f"Signed-By: {key_path}\n",
+            encoding="utf-8",
+        )
+
+    policy = _archive_policy("https://archive.ubuntu.com/ubuntu", "noble", *policy_origins)
+    with (
+        patch("popctl.sources.capture.capture_apt_keys", side_effect=_captured_key),
+        patch(
+            "popctl.sources.capture.run_command",
+            return_value=CommandResult(stdout=policy, stderr="", returncode=0),
+        ) as run_command,
+    ):
+        captured = capture_apt_sources(apt_root, platform)
+
+    assert captured.entries[0].replay_mode is expected_mode
+    run_command.assert_called_once_with(["apt-cache", "policy"], timeout=10.0)
+
+
+@pytest.mark.parametrize(
+    ("distro_id", "codename", "uri", "suite", "origin"),
+    [
+        ("pop", "jammy", "https://apt.pop-os.org/ubuntu", "jammy", "Pop"),
+        ("pop", "jammy", "https://apt.pop-os.org/release", "jammy", "Pop"),
+        ("debian", "sid", "https://ftp.debian-ports.org/debian-ports", "sid", "Debian"),
+    ],
+    ids=("pop-ubuntu", "pop-release", "debian-ports"),
+)
+def test_canonical_pop_and_debian_ports_archives_are_report_only(
+    apt_root: Path,
+    distro_id: str,
+    codename: str,
+    uri: str,
+    suite: str,
+    origin: str,
+) -> None:
+    key_path = apt_root / "keyrings" / "archive.gpg"
+    key_path.write_bytes(b"public")
+    (apt_root / "sources.list").write_text(
+        f"deb [signed-by={key_path}] {uri} {suite} main\n", encoding="utf-8"
+    )
+    platform = SourcePlatform(distro_id=distro_id, codename=codename)
+    policy = _archive_policy(uri, suite, origin)
+
+    with (
+        patch("popctl.sources.capture.capture_apt_keys", side_effect=_captured_key),
+        patch(
+            "popctl.sources.capture.run_command",
+            return_value=CommandResult(stdout=policy, stderr="", returncode=0),
+        ),
+    ):
+        captured = capture_apt_sources(apt_root, platform)
+
+    assert captured.entries[0].replay_mode is ReplayMode.REPORT_ONLY
 
 
 def test_deb822_disabled_stanza_is_preserved_by_parser_and_not_captured(
@@ -241,6 +349,88 @@ def test_apt_auth_selector_gate_fails_without_serializing_sources(
         capture_apt_sources(apt_root, platform)
 
     captured_keys.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("selector", "uri"),
+    [
+        ("private.example:8443/repo", "https://private.example:8443/repository"),
+        ("https://private.example/repo", "https://private.example/repository"),
+        (
+            "https://private.example:8443/repo",
+            "https://private.example:8443/repository",
+        ),
+        ("https://private.example:not-a-port/repo", "https://private.example/repository"),
+    ],
+    ids=("port", "protocol", "protocol-port-path", "malformed"),
+)
+def test_apt_auth_selectors_reject_matching_or_malformed_sources_before_key_capture(
+    apt_root: Path, platform: SourcePlatform, selector: str, uri: str
+) -> None:
+    key_path = apt_root / "keyrings" / "private.gpg"
+    key_path.write_bytes(b"public")
+    (apt_root / "auth.conf").write_text(
+        f"machine {selector} login user password secret\n", encoding="utf-8"
+    )
+    (apt_root / "sources.list").write_text(
+        f"deb [signed-by={key_path}] {uri} stable main\n", encoding="utf-8"
+    )
+
+    with (
+        patch("popctl.sources.capture.capture_apt_keys") as captured_keys,
+        pytest.raises(CredentialedSourceError),
+    ):
+        capture_apt_sources(apt_root, platform)
+
+    captured_keys.assert_not_called()
+
+
+def test_deb822_comment_only_paragraphs_are_discarded_before_ordinals(apt_root: Path) -> None:
+    key_path = apt_root / "keyrings" / "vendor.gpg"
+    key_path.write_bytes(b"public")
+    source = apt_root / "sources.list.d" / "vendors.sources"
+    source.write_text(
+        "Types: deb\n"
+        "URIs: https://one.example/apt\n"
+        "Suites: stable\n"
+        "Components: main\n"
+        f"Signed-By: {key_path}\n"
+        "\n"
+        "# human separator\n"
+        "\n"
+        "Types: deb\n"
+        "URIs: https://two.example/apt\n"
+        "Suites: stable\n"
+        "Components: main\n"
+        f"Signed-By: {key_path}\n",
+        encoding="utf-8",
+    )
+
+    descriptors = parse_apt_source_file(source)
+    with patch("popctl.sources.capture.capture_apt_keys", side_effect=_captured_key):
+        captured = capture_apt_sources(
+            apt_root, SourcePlatform(distro_id="ubuntu", codename="noble")
+        )
+
+    assert [descriptor.ordinal for descriptor in descriptors] == [0, 1]
+    assert [entry.ordinal for entry in captured.entries] == [0, 1]
+
+
+def test_missing_gpg_becomes_a_source_capture_failure(
+    apt_root: Path, platform: SourcePlatform
+) -> None:
+    key_path = apt_root / "keyrings" / "vendor.gpg"
+    key_path.write_bytes(b"public")
+    (apt_root / "sources.list").write_text(
+        f"deb [signed-by={key_path}] https://vendor.example stable main\n", encoding="utf-8"
+    )
+    missing_gpg = CommandResult(stdout="", stderr="Command not found: gpg", returncode=-1)
+
+    with (
+        patch("popctl.sources.keytrust.run_command", return_value=missing_gpg),
+        pytest.raises(SourceCaptureError, match="signing key material"),
+    ):
+        capture_apt_sources(apt_root, platform)
 
 
 def test_unreadable_apt_auth_store_fails_closed_before_platform_capture(apt_root: Path) -> None:

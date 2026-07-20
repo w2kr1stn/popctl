@@ -6,7 +6,12 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from popctl.models.package import PackageSource
-from popctl.sources.keytrust import KeyTrustError, VerifiedPublicKey, verify_public_material
+from popctl.sources.keytrust import (
+    KeyTrustError,
+    VerifiedPublicKey,
+    selectors_are_satisfied,
+    verify_public_material,
+)
 from popctl.sources.models import (
     AptKey,
     AptSource,
@@ -121,15 +126,6 @@ def _source_key_map(source: AptSource, keys: dict[str, AptKey]) -> tuple[AptKey,
         raise SourceProvisionError("APT source references an unknown signing key") from error
 
 
-def _expected_binding_fingerprints(source: AptSource, keys: tuple[AptKey, ...]) -> frozenset[str]:
-    selectors = frozenset(
-        selector.rstrip("!").upper() for selector in source.signed_by.fingerprint_selectors
-    )
-    if selectors:
-        return selectors
-    return frozenset(fingerprint for key in keys for fingerprint in key.fingerprints)
-
-
 def _verify_binding(
     source: AptSource,
     verified_keys: dict[str, VerifiedPublicKey],
@@ -140,7 +136,13 @@ def _verify_binding(
         for key in keys
         for fingerprint in verified_keys[key.id].fingerprints
     )
-    if actual != _expected_binding_fingerprints(source, keys):
+    try:
+        selectors_satisfied = selectors_are_satisfied(
+            source.signed_by.fingerprint_selectors, tuple(actual)
+        )
+    except KeyTrustError as error:
+        raise SourceProvisionError("APT Signed-By selectors are invalid") from error
+    if source.signed_by.fingerprint_selectors and not selectors_satisfied:
         raise SourceProvisionError(
             "APT key fingerprints do not match the recorded Signed-By binding"
         )
