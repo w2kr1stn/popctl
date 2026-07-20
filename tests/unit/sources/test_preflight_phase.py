@@ -34,7 +34,8 @@ from popctl.sources.preflight import (
     preflight_sources,
     selected_managers,
 )
-from popctl.sources.provision import SourceProvisionResult
+from popctl.sources.provision import SourceProvisionResult, render_managed_apt_stanza
+from popctl.utils.shell import CommandResult
 
 FINGERPRINT = "A" * 40
 CHANGED_FINGERPRINT = "B" * 40
@@ -450,6 +451,16 @@ def test_source_phase_returns_structured_failure_for_residual_diff_error() -> No
 def test_source_phase_confirms_changed_managed_target_then_provisions() -> None:
     expected = _apt_sources()
     live = _apt_sources(fingerprint=CHANGED_FINGERPRINT)
+    live_entry = live.apt.entries[0].model_copy(
+        update={
+            "verbatim_stanza": render_managed_apt_stanza(live.apt.entries[0], live.apt.keys)
+        }
+    )
+    live = live.model_copy(
+        update={
+            "apt": live.apt.model_copy(update={"entries": (live_entry,)})
+        }
+    )
     with (
         patch("popctl.sources.preflight.get_available_operators", side_effect=_available),
         patch("popctl.sources.preflight.verify_public_material", return_value=_verified()),
@@ -469,6 +480,108 @@ def test_source_phase_confirms_changed_managed_target_then_provisions() -> None:
     assert result.success is True
     change = provision.call_args.kwargs["changes"][0]
     assert change.operation_owned is True
+
+
+def test_source_phase_refuses_changed_popctl_named_unmanaged_target_without_commands() -> None:
+    expected = _apt_sources()
+    live = _apt_sources(fingerprint=CHANGED_FINGERPRINT)
+    source_commands: list[list[str]] = []
+
+    def record_source_command(
+        args: list[str], *, timeout: float | None = None
+    ) -> CommandResult:
+        source_commands.append(args)
+        return CommandResult(stdout="", stderr="", returncode=0)
+
+    with (
+        patch("popctl.sources.preflight.get_available_operators", side_effect=_available),
+        patch("popctl.sources.preflight.verify_public_material", return_value=_verified()),
+        patch("popctl.sources.phase.capture_platform", return_value=_platform()),
+        patch("popctl.sources.phase.capture_sources", return_value=live),
+        patch("popctl.sources.phase.typer.confirm", return_value=True),
+        patch("popctl.sources.provision.run_command", side_effect=record_source_command),
+    ):
+        result = run_source_phase(
+            _manifest(expected),
+            SourceChoice.APT,
+            dry_run=False,
+            interaction=SourceInteractionPolicy(interactive=True),
+        )
+
+    assert result.success is False
+    assert result.error == "Changed source conflicts with an unmanaged target"
+    assert source_commands == []
+
+
+def test_source_phase_confirms_each_missing_replay_source_before_provisioning() -> None:
+    expected = _apt_sources()
+    live = SourcesConfig(platform=_platform())
+    with (
+        patch("popctl.sources.preflight.get_available_operators", side_effect=_available),
+        patch("popctl.sources.preflight.verify_public_material", return_value=_verified()),
+        patch("popctl.sources.phase.capture_platform", return_value=_platform()),
+        patch("popctl.sources.phase.capture_sources", return_value=live),
+        patch("popctl.sources.phase.typer.confirm", return_value=True) as confirm,
+        patch("popctl.sources.phase.provision_sources") as provision,
+    ):
+        provision.return_value = SourceProvisionResult(success=True, retained_artifacts=())
+        result = run_source_phase(
+            _manifest(expected),
+            SourceChoice.APT,
+            dry_run=False,
+            interaction=SourceInteractionPolicy(interactive=True),
+        )
+
+    assert result.success is True
+    confirm.assert_called_once()
+    assert provision.call_args.kwargs["changes"][0].status.value == "missing"
+
+
+def test_source_phase_declines_missing_replay_source_without_provisioning() -> None:
+    expected = _apt_sources()
+    live = SourcesConfig(platform=_platform())
+    with (
+        patch("popctl.sources.preflight.get_available_operators", side_effect=_available),
+        patch("popctl.sources.preflight.verify_public_material", return_value=_verified()),
+        patch("popctl.sources.phase.capture_platform", return_value=_platform()),
+        patch("popctl.sources.phase.capture_sources", return_value=live),
+        patch("popctl.sources.phase.typer.confirm", return_value=False),
+        patch("popctl.sources.phase.provision_sources") as provision,
+    ):
+        result = run_source_phase(
+            _manifest(expected),
+            SourceChoice.APT,
+            dry_run=False,
+            interaction=SourceInteractionPolicy(interactive=True),
+        )
+
+    assert result.success is False
+    assert result.error == "source trust confirmation was declined"
+    provision.assert_not_called()
+
+
+def test_source_phase_yes_provisions_recorded_missing_source_without_confirmation() -> None:
+    expected = _apt_sources()
+    live = SourcesConfig(platform=_platform())
+    with (
+        patch("popctl.sources.preflight.get_available_operators", side_effect=_available),
+        patch("popctl.sources.preflight.verify_public_material", return_value=_verified()),
+        patch("popctl.sources.phase.capture_platform", return_value=_platform()),
+        patch("popctl.sources.phase.capture_sources", return_value=live),
+        patch("popctl.sources.phase.typer.confirm") as confirm,
+        patch("popctl.sources.phase.provision_sources") as provision,
+    ):
+        provision.return_value = SourceProvisionResult(success=True, retained_artifacts=())
+        result = run_source_phase(
+            _manifest(expected),
+            SourceChoice.APT,
+            dry_run=False,
+            interaction=SourceInteractionPolicy(yes=True, interactive=False),
+        )
+
+    assert result.success is True
+    confirm.assert_not_called()
+    assert provision.call_args.kwargs["changes"][0].status.value == "missing"
 
 
 def test_source_phase_blocks_incompatible_suite_before_provisioning() -> None:
@@ -564,6 +677,8 @@ def test_source_phase_preview_shows_fingerprints_and_exact_apt_commands() -> Non
 
     assert result.success is True
     assert any("fingerprints:" in line and FINGERPRINT in line for line in lines)
+    assert "  command: sudo install -d -o root -g root -m 0755 /etc/apt/keyrings" in lines
+    assert "  command: sudo install -d -o root -g root -m 0755 /etc/apt/sources.list.d" in lines
     assert any("sudo install -o root -g root -m 0644 <public-key>" in line for line in lines)
     assert "  command: sudo apt-get update --error-on=any" in lines
 

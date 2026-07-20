@@ -29,6 +29,7 @@ from popctl.sources.models import (
     SourcesConfig,
 )
 from popctl.sources.phase import SourceInteractionPolicy, capture_and_trust_sources
+from popctl.sources.provision import render_managed_apt_stanza
 from popctl.utils.shell import CommandResult
 
 
@@ -219,13 +220,21 @@ def test_base_classification_uses_resolved_release_origin(
 @pytest.mark.parametrize(
     ("distro_id", "codename", "uri", "suite", "origin"),
     [
-        ("pop", "jammy", "https://apt.pop-os.org/ubuntu", "jammy", "Pop"),
-        ("pop", "jammy", "https://apt.pop-os.org/release", "jammy", "Pop"),
-        ("debian", "sid", "https://ftp.debian-ports.org/debian-ports", "sid", "Debian"),
+        ("ubuntu", "jammy", "https://archive.ubuntu.com/ubuntu", "jammy", "Ubuntu"),
+        ("pop", "jammy", "https://apt.pop-os.org/ubuntu", "jammy", "Ubuntu"),
+        ("pop", "jammy", "https://apt.pop-os.org/release", "jammy", "pop-os-release"),
+        ("pop", "jammy", "https://apt.pop-os.org/proprietary", "jammy", "system76"),
+        (
+            "debian",
+            "sid",
+            "https://ftp.debian-ports.org/debian-ports",
+            "sid",
+            "Debian Ports",
+        ),
     ],
-    ids=("pop-ubuntu", "pop-release", "debian-ports"),
+    ids=("ubuntu", "pop-ubuntu", "pop-release", "pop-proprietary", "debian-ports"),
 )
-def test_canonical_pop_and_debian_ports_archives_are_report_only(
+def test_canonical_archives_from_real_release_metadata_are_report_only(
     apt_root: Path,
     distro_id: str,
     codename: str,
@@ -300,6 +309,88 @@ def test_deb822_embedded_signed_by_armor_preserves_blank_lines(tmp_path: Path) -
     assert descriptor.signed_by.embedded_armor == (
         "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nkey-material\n-----END PGP PUBLIC KEY BLOCK-----\n"
     )
+
+
+@pytest.mark.parametrize(
+    ("signed_by", "residue"),
+    (
+        (
+            "Signed-By: /etc/apt/keyrings/old-first.gpg\n"
+            "\t/etc/apt/keyrings/old-second.gpg\n",
+            "/etc/apt/keyrings/old-second.gpg",
+        ),
+        (
+            "Signed-By:\n"
+            "\t-----BEGIN PGP PUBLIC KEY BLOCK-----\n"
+            "\t.\n"
+            "\tkey-material\n"
+            "\t-----END PGP PUBLIC KEY BLOCK-----\n",
+            "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+        ),
+    ),
+    ids=("keyring-path", "embedded-armor"),
+)
+def test_tab_continued_signed_by_capture_renders_without_old_material(
+    apt_root: Path,
+    platform: SourcePlatform,
+    signed_by: str,
+    residue: str,
+) -> None:
+    source = apt_root / "sources.list.d" / "vendor.sources"
+    source.write_text(
+        "Types: deb\n"
+        "URIs: https://vendor.example/apt\n"
+        "Suites: stable\n"
+        "Components: main\n"
+        f"{signed_by}",
+        encoding="utf-8",
+    )
+
+    with patch("popctl.sources.capture.capture_apt_keys", side_effect=_captured_key):
+        captured = capture_apt_sources(apt_root, platform)
+
+    rendered = render_managed_apt_stanza(captured.entries[0], captured.keys)
+
+    assert "Signed-By: /etc/apt/keyrings/vendor-key.asc" in rendered
+    assert "/etc/apt/keyrings/old-first.gpg" not in rendered
+    assert "/etc/apt/keyrings/old-second.gpg" not in rendered
+    assert "-----BEGIN PGP PUBLIC KEY BLOCK-----" not in rendered
+    assert residue not in rendered
+
+
+def test_deb822_non_exact_path_suite_without_components_fails_before_key_capture(
+    apt_root: Path, platform: SourcePlatform
+) -> None:
+    (apt_root / "sources.list.d" / "vendor.sources").write_text(
+        "Types: deb\n"
+        "URIs: https://vendor.example/apt\n"
+        "Suites: stable\n"
+        "Signed-By: /etc/apt/keyrings/vendor.gpg\n",
+        encoding="utf-8",
+    )
+
+    with (
+        patch("popctl.sources.capture.capture_apt_keys") as captured_keys,
+        pytest.raises(AptSourceParseError, match="Components"),
+    ):
+        capture_apt_sources(apt_root, platform)
+
+    captured_keys.assert_not_called()
+
+
+def test_deb822_exact_path_suite_allows_omitted_components(tmp_path: Path) -> None:
+    source = tmp_path / "vendor.sources"
+    source.write_text(
+        "Types: deb\n"
+        "URIs: https://vendor.example/apt\n"
+        "Suites: ./\n"
+        "Signed-By: /etc/apt/keyrings/vendor.gpg\n",
+        encoding="utf-8",
+    )
+
+    descriptor = parse_apt_source_file(source)[0]
+
+    assert descriptor.suites == ("./",)
 
 
 def test_apt_capture_derives_ppa_display_metadata_and_managed_target(
@@ -472,6 +563,28 @@ def test_unreadable_apt_auth_store_fails_closed_before_platform_capture(apt_root
         auth_directory.chmod(0o755)
 
     captured_platform.assert_not_called()
+
+
+@pytest.mark.parametrize("location", ("auth.conf", "auth.conf.d/dangling.conf"))
+def test_dangling_apt_auth_store_symlink_fails_closed_before_key_capture(
+    apt_root: Path, platform: SourcePlatform, location: str
+) -> None:
+    key_path = apt_root / "keyrings" / "vendor.gpg"
+    key_path.write_bytes(b"public")
+    (apt_root / "sources.list").write_text(
+        f"deb [signed-by={key_path}] https://vendor.example stable main\n", encoding="utf-8"
+    )
+    dangling = apt_root / location
+    dangling.parent.mkdir(exist_ok=True)
+    dangling.symlink_to(apt_root / "missing-auth-target")
+
+    with (
+        patch("popctl.sources.capture.capture_apt_keys") as captured_keys,
+        pytest.raises(SourceCaptureError, match="auth store is unreadable"),
+    ):
+        capture_apt_sources(apt_root, platform)
+
+    captured_keys.assert_not_called()
 
 
 def test_malformed_apt_stanza_fails_closed(apt_root: Path, platform: SourcePlatform) -> None:

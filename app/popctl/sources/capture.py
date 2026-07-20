@@ -5,6 +5,7 @@ import shlex
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+from stat import S_ISDIR, S_ISLNK, S_ISREG
 from tempfile import TemporaryDirectory
 from urllib.parse import unquote, urlsplit
 from urllib.request import urlopen
@@ -64,7 +65,10 @@ _LEGACY_SIGNED_BY_PATTERN = re.compile(
     r"(signed-by\s*=\s*)(?:\"[^\"]*\"|'[^']*'|[^\s\]]+)",
     re.IGNORECASE,
 )
-_DEB822_SIGNED_BY_PATTERN = re.compile(r"^signed-by:.*(?:\n [^\n]*)*", re.IGNORECASE | re.MULTILINE)
+_DEB822_SIGNED_BY_PATTERN = re.compile(
+    r"^signed-by:.*(?:\n[ \t][^\n]*)*", re.IGNORECASE | re.MULTILINE
+)
+_MANAGED_APT_STANZA_MARKER = "popctl-managed-apt-source-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +93,7 @@ CANONICAL_BASE_ARCHIVES: dict[str, CanonicalArchive] = {
                 "https://ftp.debian-ports.org/debian-ports",
             }
         ),
-        origins=frozenset({"debian"}),
+        origins=frozenset({"debian", "debian ports"}),
     ),
     "ubuntu": CanonicalArchive(
         uris=frozenset(
@@ -121,7 +125,9 @@ CANONICAL_BASE_ARCHIVES: dict[str, CanonicalArchive] = {
                 "https://ports.ubuntu.com/ubuntu-ports",
             }
         ),
-        origins=frozenset({"pop", "pop!_os", "pop-os", "ubuntu"}),
+        origins=frozenset(
+            {"pop", "pop!_os", "pop-os", "pop-os-release", "system76", "ubuntu"}
+        ),
     ),
 }
 
@@ -288,6 +294,29 @@ def rewrite_apt_signed_by(source: AptSource, value: str) -> tuple[str, int]:
     )
 
 
+def has_managed_apt_stanza_marker(source: AptSource) -> bool:
+    marker = f"# {_MANAGED_APT_STANZA_MARKER}"
+    if source.format is AptSourceFormat.LEGACY:
+        return source.verbatim_stanza.rstrip().endswith(marker)
+    return source.verbatim_stanza.startswith(f"{marker}\n")
+
+
+def mark_managed_apt_stanza(source: AptSource, stanza: str) -> str:
+    if has_managed_apt_stanza_marker(source):
+        return stanza
+    marker = f"# {_MANAGED_APT_STANZA_MARKER}"
+    if source.format is AptSourceFormat.LEGACY:
+        return f"{stanza.rstrip()} {marker}\n"
+    return f"{marker}\n{stanza}"
+
+
+def strip_managed_apt_stanza_marker(source: AptSource, stanza: str) -> str:
+    marker = f"# {_MANAGED_APT_STANZA_MARKER}"
+    if source.format is AptSourceFormat.LEGACY:
+        return re.sub(rf"\s+{re.escape(marker)}(?=\n?$)", "", stanza)
+    return stanza.removeprefix(f"{marker}\n")
+
+
 def has_insecure_apt_options(options: Mapping[str, str]) -> bool:
     for name in INSECURE_APT_OPTION_NAMES:
         if options.get(name, "").lower() in {"yes", "true", "1"}:
@@ -394,6 +423,9 @@ def _parse_deb822_source(path: Path, ordinal: int, paragraph: str) -> AptDescrip
     suites = tuple(fields.get("suites", "").split())
     if not uris or not suites:
         raise AptSourceParseError("deb822 source requires URIs and Suites")
+    components = tuple(fields.get("components", "").split())
+    if not components and not all(suite.endswith("/") for suite in suites):
+        raise AptSourceParseError("deb822 source requires Components for non-exact-path Suites")
     enabled = fields.get("enabled", "yes").lower() not in {"no", "false", "0"}
     signed_by = _parse_signed_by(fields["signed-by"]) if "signed-by" in fields else None
     structural_fields = {
@@ -471,20 +503,51 @@ def parse_apt_source_file(path: Path) -> tuple[AptDescriptor, ...]:
     raise AptSourceParseError("Unsupported APT source file extension")
 
 
+def _auth_store_lstat(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise SourceCaptureError("APT auth store is unreadable") from error
+    return True
+
+
+def _validate_auth_file(path: Path) -> None:
+    try:
+        path.lstat()
+        mode = path.stat().st_mode
+    except OSError as error:
+        raise SourceCaptureError("APT auth store is unreadable") from error
+    if not S_ISREG(mode) or not mode & 0o444:
+        raise SourceCaptureError("APT auth store is unreadable")
+
+
 def _auth_store_files(apt_root: Path) -> tuple[Path, ...]:
     files: list[Path] = []
     auth_file = apt_root / "auth.conf"
-    if auth_file.exists():
+    if _auth_store_lstat(auth_file):
+        _validate_auth_file(auth_file)
         files.append(auth_file)
+
     auth_directory = apt_root / "auth.conf.d"
-    if auth_directory.exists():
+    if not _auth_store_lstat(auth_directory):
+        return tuple(files)
+    try:
+        directory_mode = auth_directory.stat().st_mode
+        if not S_ISDIR(directory_mode) or not directory_mode & 0o444:
+            raise SourceCaptureError("APT auth store is unreadable")
+        entries = tuple(sorted(auth_directory.iterdir()))
+    except OSError as error:
+        raise SourceCaptureError("APT auth store is unreadable") from error
+    for path in entries:
         try:
-            mode = auth_directory.stat().st_mode
-            if not mode & 0o444:
-                raise SourceCaptureError("APT auth store is unreadable")
-            files.extend(sorted(path for path in auth_directory.iterdir() if path.is_file()))
+            entry_mode = path.lstat().st_mode
         except OSError as error:
             raise SourceCaptureError("APT auth store is unreadable") from error
+        if S_ISREG(entry_mode) or S_ISLNK(entry_mode):
+            _validate_auth_file(path)
+            files.append(path)
     return tuple(files)
 
 

@@ -5,7 +5,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from popctl.models.package import PackageSource
-from popctl.sources.capture import resolve_apt_candidate_origins, rewrite_apt_signed_by
+from popctl.sources.capture import (
+    resolve_apt_candidate_origins,
+    rewrite_apt_signed_by,
+    strip_managed_apt_stanza_marker,
+)
 from popctl.sources.models import (
     AptKey,
     AptSource,
@@ -169,7 +173,7 @@ class _LocatedSource:
 
 def _normalize_apt_stanza(source: AptSource) -> str:
     normalized, _ = rewrite_apt_signed_by(source, "<popctl-signed-by>")
-    return normalized.rstrip("\n")
+    return strip_managed_apt_stanza_marker(source, normalized).rstrip("\n")
 
 
 def _apt_key_fingerprints(source: AptSource, keys: dict[str, AptKey]) -> frozenset[str]:

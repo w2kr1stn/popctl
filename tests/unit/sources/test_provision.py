@@ -137,7 +137,33 @@ class TestAptProvisioning:
             )
 
         assert result.success is True
-        key_install = run_command.call_args_list[0].args[0]
+        assert [call.args[0] for call in run_command.call_args_list[:2]] == [
+            [
+                "sudo",
+                "install",
+                "-d",
+                "-o",
+                "root",
+                "-g",
+                "root",
+                "-m",
+                "0755",
+                str(paths.apt_keyrings_dir),
+            ],
+            [
+                "sudo",
+                "install",
+                "-d",
+                "-o",
+                "root",
+                "-g",
+                "root",
+                "-m",
+                "0755",
+                str(paths.apt_sources_dir),
+            ],
+        ]
+        key_install = run_command.call_args_list[2].args[0]
         assert key_install[:8] == ["sudo", "install", "-o", "root", "-g", "root", "-m", "0644"]
         assert key_install[-1] == str(paths.apt_keyrings_dir / "vendor.asc")
         assert run_command.call_args_list[-1] == call(
@@ -180,7 +206,7 @@ class TestAptProvisioning:
         assert result.success is False
         assert result.error is not None
         assert "Installed APT key fingerprints" in result.error
-        assert run_command.call_count == 2
+        assert run_command.call_count == 4
         assert str(paths.apt_keyrings_dir / "vendor.asc") in result.retained_artifacts
 
     def test_post_write_selector_mismatch_fails_before_enabling_stanza(
@@ -204,7 +230,7 @@ class TestAptProvisioning:
         assert result.success is False
         assert result.error is not None
         assert "Signed-By binding" in result.error
-        assert run_command.call_count == 2
+        assert run_command.call_count == 4
 
     def test_selector_bound_key_records_full_export_and_passes_post_write_verification(
         self, tmp_path: Path
@@ -392,7 +418,7 @@ class TestAptProvisioning:
         assert all("popctl-base" not in command for command in commands)
         assert any("popctl-vendor.sources" in command for command in commands)
 
-    @pytest.mark.parametrize("failure_index", (0, 1, 2, 3))
+    @pytest.mark.parametrize("failure_index", range(6))
     def test_apt_failures_report_owned_artifacts_at_each_command_boundary(
         self, tmp_path: Path, failure_index: int
     ) -> None:
@@ -411,11 +437,12 @@ class TestAptProvisioning:
                 changes=(_missing(source),),
                 selected_managers=(PackageSource.APT,),
                 paths=paths,
-            )
+        )
 
         assert result.success is False
-        assert str(paths.apt_keyrings_dir / "vendor.asc") in result.retained_artifacts
         if failure_index >= 2:
+            assert str(paths.apt_keyrings_dir / "vendor.asc") in result.retained_artifacts
+        if failure_index >= 4:
             assert str(paths.apt_sources_dir / "popctl-vendor.sources") in result.retained_artifacts
 
     def test_insecure_and_legacy_sources_are_refused_without_commands(self, tmp_path: Path) -> None:

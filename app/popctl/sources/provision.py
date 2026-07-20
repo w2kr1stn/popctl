@@ -8,6 +8,7 @@ from popctl.models.package import PackageSource
 from popctl.sources.capture import (
     AptSourceParseError,
     apt_source_has_insecure_options,
+    mark_managed_apt_stanza,
     rewrite_apt_signed_by,
 )
 from popctl.sources.keytrust import (
@@ -161,6 +162,7 @@ def render_managed_apt_stanza(source: AptSource, keys: tuple[AptKey, ...]) -> st
     rendered, substitutions = rewrite_apt_signed_by(source, signed_by)
     if substitutions != 1:
         raise SourceProvisionError("APT source has no unambiguous Signed-By stanza")
+    rendered = mark_managed_apt_stanza(source, rendered)
     return rendered if rendered.endswith("\n") else f"{rendered}\n"
 
 
@@ -206,6 +208,24 @@ def _install_apt_key(
     if frozenset(verified.fingerprints) != frozenset(key.fingerprints):
         raise SourceProvisionError("Installed APT key fingerprints do not match the recorded key")
     return verified
+
+
+def _ensure_apt_directories(paths: ProvisioningPaths) -> None:
+    for directory in (paths.apt_keyrings_dir, paths.apt_sources_dir):
+        _command_or_error(
+            [
+                "sudo",
+                "install",
+                "-d",
+                "-o",
+                "root",
+                "-g",
+                "root",
+                "-m",
+                "0755",
+                str(directory),
+            ]
+        )
 
 
 def _write_managed_apt_stanza(
@@ -346,6 +366,9 @@ def provision_sources(
                     continue
                 _flatpak_fingerprints(remote)
                 flatpak_records.append((remote, replace))
+
+        if apt_records:
+            _ensure_apt_directories(paths)
 
         installed_keys: dict[str, VerifiedPublicKey] = {}
         for source, source_keys, replace in apt_records:

@@ -8,7 +8,12 @@ import typer
 
 from popctl.models.manifest import Manifest
 from popctl.models.package import PackageSource, SourceChoice
-from popctl.sources.capture import SourceCaptureError, capture_platform, capture_sources
+from popctl.sources.capture import (
+    SourceCaptureError,
+    capture_platform,
+    capture_sources,
+    has_managed_apt_stanza_marker,
+)
 from popctl.sources.diff import (
     SourceDiffEntry,
     SourceDiffError,
@@ -248,6 +253,7 @@ def _is_operation_owned(change: SourceDiffEntry) -> bool:
     return (
         captured_path.parent == Path("/etc/apt/sources.list.d")
         and captured_path.stem == expected.managed_target
+        and has_managed_apt_stanza_marker(change.live)
     )
 
 
@@ -281,6 +287,14 @@ def _print_preview(
     for entry in (*source_diff.missing, *source_diff.changed, *source_diff.extra):
         print_info(f"  {entry.diff_type.value}: {entry.kind.value} {entry.label}")
     apt_keys = {key.id: key for key in sources.apt.keys}
+    apt_changes = tuple(
+        entry
+        for entry in (*source_diff.missing, *source_diff.changed)
+        if _entry_is_replayable(entry) and isinstance(entry.expected, AptSource)
+    )
+    if apt_changes:
+        print_info("  command: sudo install -d -o root -g root -m 0755 /etc/apt/keyrings")
+        print_info("  command: sudo install -d -o root -g root -m 0755 /etc/apt/sources.list.d")
     for entry in (*source_diff.missing, *source_diff.changed):
         if not _entry_is_replayable(entry):
             continue
@@ -296,7 +310,10 @@ def _print_preview(
             suffix = ".list" if expected.format.value == "legacy" else ".sources"
             target = f"/etc/apt/sources.list.d/{expected.managed_target}{suffix}"
             if entry.diff_type is SourceDiffType.CHANGED:
-                print_info(f"  command: sudo rm -f {target}")
+                if _is_operation_owned(entry):
+                    print_info(f"  command: sudo rm -f {target}")
+                else:
+                    print_info("  conflict: unmanaged APT target will not be replaced")
             print_info(f"  command: sudo install -o root -g root -m 0644 <managed-stanza> {target}")
         elif isinstance(expected, FlatpakRemote):
             prefix = "sudo " if expected.scope.value == "system" else ""
@@ -400,6 +417,20 @@ def run_source_phase(
             source_diff=source_diff,
             error=error,
         )
+
+    if interaction.interactive and not interaction.yes:
+        approved, _, error = _confirm_changes(
+            tuple(entry for entry in source_diff.missing if _entry_is_replayable(entry)),
+            interaction,
+            action="Provision missing",
+        )
+        if not approved:
+            print_warning(f"Source phase stopped: {error}")
+            return SourcePhaseResult(
+                success=False,
+                source_diff=source_diff,
+                error=error,
+            )
 
     result = provision_sources(
         sources,

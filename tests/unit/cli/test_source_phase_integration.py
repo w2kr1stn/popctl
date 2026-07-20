@@ -7,6 +7,7 @@ import pytest
 from popctl.cli.main import app
 from popctl.core.diff import DiffEntry, DiffResult, DiffType
 from popctl.core.paths import get_manifest_path
+from popctl.domain.models import OrphanStatus, PathType, ScannedEntry
 from popctl.models.action import Action, ActionResult, ActionType
 from popctl.models.manifest import Manifest, ManifestMeta, PackageConfig, PackageEntry, SystemConfig
 from popctl.models.package import PackageSource
@@ -630,16 +631,14 @@ def test_apply_and_sync_security_matrix_stops_before_source_package_or_home_work
 
 
 @pytest.mark.parametrize(
-    ("command", "expected_yes"),
+    "command",
     (
-        ("apply", True),
-        ("sync", True),
-        ("init", False),
+        "apply",
+        "sync",
     ),
 )
 def test_source_bearing_dry_run_matrix_never_prompts_or_mutates(
     command: str,
-    expected_yes: bool,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -654,26 +653,31 @@ def test_source_bearing_dry_run_matrix_never_prompts_or_mutates(
     operator.source = PackageSource.APT
     policies: list[SourceInteractionPolicy] = []
     provision_commands: list[list[str]] = []
-    system_diff = DiffResult(new=(), missing=(), extra=())
-    live_sources = (
-        manifest.sources
-        if command == "init"
-        else SourcesConfig(platform=manifest.sources.platform)
+    system_diff = DiffResult(
+        new=(),
+        missing=(DiffEntry(name="vim", source=PackageSource.APT, diff_type=DiffType.MISSING),),
+        extra=(),
+    )
+    live_sources = SourcesConfig(platform=manifest.sources.platform)
+    action = Action(ActionType.INSTALL, "vim", PackageSource.APT)
+    orphan = ScannedEntry(
+        path="/tmp/orphan",
+        path_type=PathType.DIRECTORY,
+        status=OrphanStatus.ORPHAN,
+        size_bytes=None,
+        mtime=None,
+        parent_target=None,
+        orphan_reason=None,
+        confidence=1.0,
     )
 
-    from popctl.sources.phase import capture_and_trust_sources, run_source_phase
+    from popctl.sources.phase import run_source_phase
 
     def record_phase(*args: object, **kwargs: object) -> SourcePhaseResult:
         interaction = kwargs["interaction"]
         assert isinstance(interaction, SourceInteractionPolicy)
         policies.append(interaction)
         return run_source_phase(*args, **kwargs)
-
-    def record_capture(*args: object, **kwargs: object) -> SourcePhaseResult:
-        interaction = kwargs["interaction"]
-        assert isinstance(interaction, SourceInteractionPolicy)
-        policies.append(interaction)
-        return capture_and_trust_sources(*args, **kwargs)
 
     def record_provision_command(
         args: list[str], *, timeout: float | None = None
@@ -711,6 +715,7 @@ def test_source_bearing_dry_run_matrix_never_prompts_or_mutates(
             history = stack.enter_context(
                 patch("popctl.cli.commands.apply.record_actions_to_history")
             )
+            execute = stack.enter_context(patch("popctl.cli.commands.apply.execute_actions"))
             stack.enter_context(
                 patch("popctl.cli.commands.apply.require_manifest", return_value=manifest)
             )
@@ -720,11 +725,16 @@ def test_source_bearing_dry_run_matrix_never_prompts_or_mutates(
             stack.enter_context(
                 patch("popctl.cli.commands.apply.compute_system_diff", return_value=system_diff)
             )
-            result = runner.invoke(app, ["apply", "--dry-run", "--yes"])
-        elif command == "sync":
+            actions = stack.enter_context(
+                patch("popctl.cli.commands.apply.diff_to_actions", return_value=[action])
+            )
+            result = runner.invoke(app, ["apply", "--dry-run", "--yes", "--source", "apt"])
+            orphan_cleanup = None
+        else:
             history = stack.enter_context(
                 patch("popctl.cli.commands.sync.record_actions_to_history")
             )
+            execute = stack.enter_context(patch("popctl.cli.commands.sync.execute_actions"))
             stack.enter_context(
                 patch("popctl.cli.commands.sync._ensure_manifest", return_value=(manifest, False))
             )
@@ -734,32 +744,23 @@ def test_source_bearing_dry_run_matrix_never_prompts_or_mutates(
             stack.enter_context(
                 patch("popctl.cli.commands.sync.compute_system_diff", return_value=system_diff)
             )
+            stack.enter_context(
+                patch("popctl.cli.commands.sync._domain_scan", return_value=[orphan])
+            )
+            orphan_cleanup = stack.enter_context(patch("popctl.cli.commands.sync._domain_clean"))
             result = runner.invoke(
                 app,
-                ["sync", "--dry-run", "--yes", "--no-filesystem", "--no-configs"],
+                ["sync", "--dry-run", "--yes", "--source", "apt", "--no-advisor"],
             )
-        else:
-            history = stack.enter_context(patch("popctl.cli.commands.init.save_manifest"))
-            stack.enter_context(
-                patch("popctl.cli.commands.init.get_available_scanners", return_value=[operator])
-            )
-            stack.enter_context(
-                patch(
-                    "popctl.cli.commands.init.scan_and_create_manifest",
-                    return_value=(manifest, {}, []),
-                )
-            )
-            stack.enter_context(
-                patch(
-                    "popctl.cli.commands.init.capture_and_trust_sources",
-                    side_effect=record_capture,
-                )
-            )
-            result = runner.invoke(app, ["init", "--dry-run"])
+            actions = None
 
     assert result.exit_code == 0
-    assert policies == [SourceInteractionPolicy(yes=expected_yes, interactive=False)]
+    assert policies == [SourceInteractionPolicy(yes=True, interactive=False)]
     assert provision_commands == []
     confirm.assert_not_called()
     history.assert_not_called()
+    execute.assert_not_called()
+    if actions is not None:
+        actions.assert_called_once_with(system_diff, purge=False, sources=manifest.sources)
+    assert orphan_cleanup is None or orphan_cleanup.call_count == 0
     assert not get_manifest_path().exists()

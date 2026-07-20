@@ -277,8 +277,15 @@ def test_real_gpg_post_write_fingerprint_mismatch_stops_before_stanza_write(
         platform=SourcePlatform(distro_id="ubuntu", codename="noble"),
         apt=AptSources(entries=(source,), keys=(key,)),
     )
+    commands: list[list[str]] = []
 
     def command_recorder(args: list[str], *, timeout: float | None = None) -> CommandResult:
+        commands.append(args)
+        if args[:3] == ["sudo", "install", "-d"]:
+            directory = Path(args[-1])
+            directory.mkdir(parents=True, exist_ok=True)
+            directory.chmod(0o755)
+            return CommandResult(stdout="", stderr="", returncode=0)
         if args[:2] == ["sudo", "install"]:
             target = Path(args[-1])
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -303,4 +310,32 @@ def test_real_gpg_post_write_fingerprint_mismatch_stops_before_stanza_write(
 
     assert result.success is False
     assert result.error == "Installed APT key fingerprints do not match the recorded key"
+    assert paths.apt_keyrings_dir.is_dir()
+    assert paths.apt_sources_dir.is_dir()
+    assert commands[:2] == [
+        [
+            "sudo",
+            "install",
+            "-d",
+            "-o",
+            "root",
+            "-g",
+            "root",
+            "-m",
+            "0755",
+            str(paths.apt_keyrings_dir),
+        ],
+        [
+            "sudo",
+            "install",
+            "-d",
+            "-o",
+            "root",
+            "-g",
+            "root",
+            "-m",
+            "0755",
+            str(paths.apt_sources_dir),
+        ],
+    ]
     assert not (paths.apt_sources_dir / "popctl-fixture.list").exists()

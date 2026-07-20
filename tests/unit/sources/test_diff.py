@@ -268,6 +268,9 @@ def test_capture_provision_rescan_has_no_apt_drift_for_legacy_deb822_and_primary
     paths = ProvisioningPaths(apt_keyrings_dir=keyrings, apt_sources_dir=source_directory)
 
     def command_recorder(args: list[str], *, timeout: float | None = None) -> CommandResult:
+        if args[:3] == ["sudo", "install", "-d"]:
+            Path(args[-1]).mkdir(parents=True, exist_ok=True)
+            return CommandResult(stdout="", stderr="", returncode=0)
         if args[:2] == ["sudo", "install"]:
             target = Path(args[-1])
             target.parent.mkdir(parents=True, exist_ok=True)
