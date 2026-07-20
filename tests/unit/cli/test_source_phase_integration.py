@@ -10,7 +10,7 @@ from popctl.core.paths import get_manifest_path
 from popctl.models.action import Action, ActionResult, ActionType
 from popctl.models.manifest import Manifest, ManifestMeta, PackageConfig, PackageEntry, SystemConfig
 from popctl.models.package import PackageSource
-from popctl.sources.keytrust import VerifiedPublicKey
+from popctl.sources.keytrust import KeyTrustError, VerifiedPublicKey
 from popctl.sources.models import (
     AptKey,
     AptSource,
@@ -82,13 +82,21 @@ def _base_sources(uri: str) -> SourcesConfig:
     )
 
 
-def _apt_sources() -> SourcesConfig:
+def _apt_sources(
+    *,
+    fingerprint: str = "A" * 40,
+    fingerprints: tuple[str, ...] | None = None,
+    insecure_option: str | None = None,
+) -> SourcesConfig:
     key = AptKey(
         id="vendor",
         target_path="/etc/apt/keyrings/vendor.asc",
         armor="vendor-key",
-        fingerprints=("A" * 40,),
+        fingerprints=fingerprints if fingerprints is not None else (fingerprint,),
     )
+    options = "[signed-by=/etc/apt/keyrings/vendor.asc]"
+    if insecure_option is not None:
+        options = f"[signed-by=/etc/apt/keyrings/vendor.asc {insecure_option}]"
     entry = AptSource(
         id="vendor",
         capture_path="/etc/apt/sources.list.d/vendor.list",
@@ -96,7 +104,7 @@ def _apt_sources() -> SourcesConfig:
         ordinal=0,
         managed_target="popctl-vendor",
         verbatim_stanza=(
-            "deb [signed-by=/etc/apt/keyrings/vendor.asc] "
+            f"deb {options} "
             "https://vendor.example/apt stable main\n"
         ),
         key_ids=(key.id,),
@@ -107,6 +115,28 @@ def _apt_sources() -> SourcesConfig:
         platform=SourcePlatform(distro_id="ubuntu", codename="noble"),
         apt=AptSources(entries=(entry,), keys=(key,)),
     )
+
+
+def _source_security_case(
+    case: str,
+) -> tuple[SourcesConfig, SourcesConfig, VerifiedPublicKey | KeyTrustError]:
+    expected = _apt_sources()
+    live = expected
+    verification: VerifiedPublicKey | KeyTrustError = VerifiedPublicKey(
+        armor="vendor-key",
+        fingerprints=("A" * 40,),
+    )
+    if case == "changed fingerprint":
+        live = _apt_sources(fingerprint="B" * 40)
+    elif case == "absent fingerprint":
+        expected = _apt_sources(fingerprints=())
+    elif case == "secret key material":
+        verification = KeyTrustError("secret key material")
+    elif case == "trusted=yes":
+        expected = _apt_sources(insecure_option="trusted=yes")
+    else:
+        expected = _apt_sources(insecure_option="allow-insecure=yes")
+    return expected, live, verification
 
 
 def test_apply_runs_source_phase_before_package_execution() -> None:
@@ -461,6 +491,142 @@ def test_sync_bootstrap_scans_only_the_selected_package_source() -> None:
     scanners.assert_called_once_with(PackageSource.APT)
     assert capture.call_args.args[0] == [apt_scanner]
     assert flatpak_scanner not in capture.call_args.args[0]
+
+
+def test_sync_noninteractive_bootstrap_refuses_new_source_trust_without_writes() -> None:
+    manifest = _manifest()
+    sources = _apt_sources()
+    scanner = MagicMock()
+    scanner.source = PackageSource.APT
+    source_commands: list[list[str]] = []
+
+    def record_source_command(
+        args: list[str], *, timeout: float | None = None
+    ) -> CommandResult:
+        source_commands.append(args)
+        return CommandResult(stdout="", stderr="", returncode=0)
+
+    with (
+        patch("popctl.cli.commands.sync.manifest_exists", return_value=False),
+        patch("popctl.cli.commands.sync.get_available_scanners", return_value=[scanner]),
+        patch(
+            "popctl.cli.commands.init.scan_and_create_manifest",
+            return_value=(manifest, manifest.packages.keep, []),
+        ),
+        patch("popctl.sources.phase.capture_sources", return_value=sources),
+        patch("popctl.sources.phase.typer.confirm") as confirm,
+        patch("popctl.cli.commands.sync.save_manifest") as save,
+        patch("popctl.cli.commands.sync.run_source_phase") as phase,
+        patch("popctl.cli.commands.sync._sync_packages") as packages,
+        patch("popctl.cli.commands.sync._run_both_orphan_phases") as home,
+        patch("popctl.cli.commands.sync.record_actions_to_history") as history,
+        patch("popctl.sources.provision.run_command", side_effect=record_source_command),
+    ):
+        result = runner.invoke(
+            app,
+            ["sync", "--no-advisor", "--no-filesystem", "--no-configs"],
+        )
+
+    assert result.exit_code == 1
+    confirm.assert_not_called()
+    save.assert_not_called()
+    phase.assert_not_called()
+    packages.assert_not_called()
+    home.assert_not_called()
+    history.assert_not_called()
+    assert source_commands == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "changed fingerprint",
+        "absent fingerprint",
+        "secret key material",
+        "trusted=yes",
+        "allow-insecure",
+    ),
+)
+@pytest.mark.parametrize("command", ("apply", "sync"))
+def test_apply_and_sync_security_matrix_stops_before_source_package_or_home_work(
+    case: str,
+    command: str,
+) -> None:
+    expected, live, verification = _source_security_case(case)
+    manifest = _manifest(sources=expected)
+    operator = MagicMock()
+    operator.source = PackageSource.APT
+    source_commands: list[list[str]] = []
+
+    def record_source_command(
+        args: list[str], *, timeout: float | None = None
+    ) -> CommandResult:
+        source_commands.append(args)
+        return CommandResult(stdout="", stderr="", returncode=0)
+
+    with ExitStack() as stack:
+        confirm = stack.enter_context(patch("popctl.sources.phase.typer.confirm"))
+        provision = stack.enter_context(patch("popctl.sources.phase.provision_sources"))
+        stack.enter_context(
+            patch("popctl.sources.preflight.get_available_operators", return_value=[operator])
+        )
+        stack.enter_context(
+            patch(
+                "popctl.sources.phase.capture_platform",
+                return_value=SourcePlatform(distro_id="ubuntu", codename="noble"),
+            )
+        )
+        stack.enter_context(patch("popctl.sources.phase.capture_sources", return_value=live))
+        stack.enter_context(
+            patch(
+                "popctl.sources.preflight.verify_public_material",
+                side_effect=verification if isinstance(verification, KeyTrustError) else None,
+                return_value=None if isinstance(verification, KeyTrustError) else verification,
+            )
+        )
+        stack.enter_context(
+            patch("popctl.sources.provision.run_command", side_effect=record_source_command)
+        )
+        if command == "apply":
+            packages = stack.enter_context(patch("popctl.cli.commands.apply.execute_actions"))
+            home = stack.enter_context(patch("popctl.cli.commands.sync._run_both_orphan_phases"))
+            history = stack.enter_context(
+                patch("popctl.cli.commands.apply.record_actions_to_history")
+            )
+            stack.enter_context(
+                patch("popctl.cli.commands.apply.require_manifest", return_value=manifest)
+            )
+            result = runner.invoke(app, ["apply", "--yes"])
+        else:
+            packages = stack.enter_context(patch("popctl.cli.commands.sync._sync_packages"))
+            home = stack.enter_context(patch("popctl.cli.commands.sync._run_both_orphan_phases"))
+            history = stack.enter_context(
+                patch("popctl.cli.commands.sync.record_actions_to_history")
+            )
+            save = stack.enter_context(patch("popctl.cli.commands.sync.save_manifest"))
+            stack.enter_context(
+                patch("popctl.cli.commands.sync._ensure_manifest", return_value=(manifest, False))
+            )
+            stack.enter_context(
+                patch(
+                    "popctl.cli.commands.sync.refresh_manifest_sources",
+                    return_value=SourceRefreshResult(success=True, manifest=manifest),
+                )
+            )
+            result = runner.invoke(
+                app,
+                ["sync", "--yes", "--no-advisor", "--no-filesystem", "--no-configs"],
+            )
+
+    assert result.exit_code == 1
+    confirm.assert_not_called()
+    provision.assert_not_called()
+    packages.assert_not_called()
+    home.assert_not_called()
+    history.assert_not_called()
+    assert source_commands == []
+    if command == "sync":
+        save.assert_not_called()
 
 
 @pytest.mark.parametrize(

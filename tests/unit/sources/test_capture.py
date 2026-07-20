@@ -2,7 +2,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from popctl.models.package import PackageSource
+from popctl.models.package import PackageSource, SourceChoice
 from popctl.sources.capture import (
     AptSourceParseError,
     CredentialedSourceError,
@@ -23,8 +23,12 @@ from popctl.sources.models import (
     FlatpakScope,
     ReplayMode,
     SignedByBinding,
+    SnapChannel,
+    SnapSources,
     SourcePlatform,
+    SourcesConfig,
 )
+from popctl.sources.phase import SourceInteractionPolicy, capture_and_trust_sources
 from popctl.utils.shell import CommandResult
 
 
@@ -658,6 +662,61 @@ def test_flatpak_key_capture_and_authenticator_fail_closed(tmp_path: Path) -> No
         capture_flatpak_sources(paths)
 
 
+def test_flatpak_no_gpg_verify_is_captured_as_blocked(tmp_path: Path) -> None:
+    paths = FlatpakPaths(user_repo=tmp_path / "user-repo", system_repo=tmp_path / "system-repo")
+    verified = VerifiedPublicKey(
+        armor="-----BEGIN PGP PUBLIC KEY BLOCK-----\nkey\n",
+        fingerprints=("0123456789ABCDEF0123456789ABCDEF01234567",),
+    )
+
+    def no_gpg_verify_remote(args: list[str]) -> CommandResult:
+        if args[:2] == ["flatpak", "remotes"]:
+            return CommandResult(
+                stdout="vendor\thttps://vendor.example/repo.flatpakrepo\tno-gpg-verify\n",
+                stderr="",
+                returncode=0,
+            )
+        if args[:2] == ["flatpak", "list"]:
+            return CommandResult(stdout="", stderr="", returncode=0)
+        if args[0] == "gpg":
+            return CommandResult(
+                stdout="-----BEGIN PGP PUBLIC KEY BLOCK-----\nkey\n",
+                stderr="",
+                returncode=0,
+            )
+        raise AssertionError(args)
+
+    with (
+        patch("popctl.sources.capture.command_exists", return_value=True),
+        patch("popctl.sources.capture.run_command", side_effect=no_gpg_verify_remote),
+        patch("popctl.sources.capture.verify_public_material", return_value=verified),
+    ):
+        captured = capture_flatpak_sources(paths)
+
+    assert len(captured.remotes) == 2
+    assert all(remote.gpg_verify is False for remote in captured.remotes)
+    assert all(remote.replay_mode is ReplayMode.BLOCKED for remote in captured.remotes)
+
+    sources = SourcesConfig(
+        platform=SourcePlatform(distro_id="ubuntu", codename="noble"),
+        flatpak=captured,
+    )
+    with (
+        patch("popctl.sources.phase.capture_sources", return_value=sources),
+        patch("popctl.sources.phase.typer.confirm") as confirm,
+    ):
+        trusted = capture_and_trust_sources(
+            SourceChoice.ALL,
+            dry_run=False,
+            interaction=SourceInteractionPolicy(interactive=True),
+        )
+
+    assert trusted.success is False
+    assert trusted.sources is None
+    assert "blocked" in (trusted.error or "")
+    confirm.assert_not_called()
+
+
 def test_flatpak_capture_rejects_an_app_with_an_empty_branch(tmp_path: Path) -> None:
     paths = FlatpakPaths(user_repo=tmp_path / "user-repo", system_repo=tmp_path / "system-repo")
     verified = VerifiedPublicKey(
@@ -699,3 +758,40 @@ def test_snap_capture_uses_tracking_channel_and_skips_runtime_snaps() -> None:
     assert captured.packages[0].name == "firefox"
     assert captured.packages[0].channel == "latest/edge"
     assert captured.packages[0].replay_mode is ReplayMode.REPLAY
+
+
+def test_capture_sources_dispatches_only_selected_snap_with_an_authenticated_apt_present(
+    apt_root: Path, tmp_path: Path
+) -> None:
+    (apt_root / "sources.list").write_text(
+        "deb https://user:secret@vendor.example/apt stable main\n",
+        encoding="utf-8",
+    )
+    os_release = tmp_path / "os-release"
+    os_release.write_text("ID=ubuntu\nVERSION_CODENAME=noble\n", encoding="utf-8")
+    snap = SnapSources(
+        packages=(
+            SnapChannel(name="hello", channel="latest/edge", replay_mode=ReplayMode.REPLAY),
+        )
+    )
+
+    with (
+        patch(
+            "popctl.sources.capture.capture_apt_sources",
+            side_effect=SourceCaptureError("authenticated APT source"),
+        ) as apt,
+        patch("popctl.sources.capture.capture_flatpak_sources") as flatpak,
+        patch("popctl.sources.capture.capture_snap_sources", return_value=snap) as snap_capture,
+    ):
+        captured = capture_sources(
+            apt_root=apt_root,
+            os_release_path=os_release,
+            managers=(PackageSource.SNAP,),
+        )
+
+    assert captured.apt.entries == ()
+    assert captured.flatpak.remotes == ()
+    assert captured.snap == snap
+    apt.assert_not_called()
+    flatpak.assert_not_called()
+    snap_capture.assert_called_once()

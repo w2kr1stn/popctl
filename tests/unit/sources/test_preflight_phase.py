@@ -618,6 +618,46 @@ def test_capture_and_trust_rejects_blocked_sources_before_persisting() -> None:
     confirm.assert_not_called()
 
 
+def test_no_gpg_verify_flatpak_preflight_refuses_provisioning() -> None:
+    remote, _ = _flatpak_remote_and_app()
+    blocked_remote = remote.model_copy(
+        update={"gpg_verify": False, "replay_mode": ReplayMode.BLOCKED}
+    )
+    sources = SourcesConfig(
+        platform=_platform(),
+        flatpak=FlatpakSources(remotes=(blocked_remote,)),
+    )
+
+    with patch("popctl.sources.preflight.get_available_operators", side_effect=_available):
+        preflight = preflight_sources(
+            sources,
+            source_filter=PackageSource.FLATPAK,
+            target_platform=_platform(),
+        )
+
+    assert preflight.success is False
+    assert "blocked Flatpak" in (preflight.error or "")
+
+    with (
+        patch("popctl.sources.preflight.get_available_operators", side_effect=_available),
+        patch("popctl.sources.phase.capture_platform", return_value=_platform()),
+        patch("popctl.sources.phase.capture_sources", return_value=sources),
+        patch("popctl.sources.phase.provision_sources") as provision,
+        patch("popctl.sources.phase.typer.confirm") as confirm,
+    ):
+        result = run_source_phase(
+            _manifest(sources),
+            SourceChoice.FLATPAK,
+            dry_run=False,
+            interaction=SourceInteractionPolicy(yes=True, interactive=False),
+        )
+
+    assert result.success is False
+    assert "blocked Flatpak" in (result.error or "")
+    confirm.assert_not_called()
+    provision.assert_not_called()
+
+
 def test_capture_and_trust_refuses_rejected_authenticated_and_noninteractive_sources() -> None:
     sources = _apt_sources()
     with (

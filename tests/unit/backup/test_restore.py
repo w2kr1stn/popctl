@@ -42,6 +42,7 @@ from popctl.sources.models import (
 )
 from popctl.sources.phase import SourceInteractionPolicy, SourcePhaseResult
 from popctl.sources.provision import SourceProvisionResult
+from popctl.utils.shell import CommandResult
 
 FINGERPRINT = "A" * 40
 CHANGED_FINGERPRINT = "B" * 40
@@ -590,6 +591,13 @@ class TestRestoreSourceIntegration:
         manifest = _manifest(expected)
         available_operator = MagicMock()
         available_operator.source = PackageSource.APT
+        source_commands: list[list[str]] = []
+
+        def record_source_command(
+            args: list[str], *, timeout: float | None = None
+        ) -> CommandResult:
+            source_commands.append(args)
+            return CommandResult(stdout="", stderr="", returncode=0)
 
         with (
             patch("popctl.backup.restore._fetch_backup", return_value=tmp_path / "backup.age"),
@@ -613,6 +621,7 @@ class TestRestoreSourceIntegration:
                 return_value=None if isinstance(verification, KeyTrustError) else verification,
             ),
             patch("popctl.sources.phase.provision_sources") as provision,
+            patch("popctl.sources.provision.run_command", side_effect=record_source_command),
             patch("popctl.sources.phase.typer.confirm") as confirm,
             pytest.raises(BackupError),
         ):
@@ -627,6 +636,7 @@ class TestRestoreSourceIntegration:
         install_packages.assert_not_called()
         restore_home.assert_not_called()
         permissions.assert_not_called()
+        assert source_commands == []
 
     def test_restore_runs_source_then_packages_then_home_and_permissions(
         self, tmp_path: Path
