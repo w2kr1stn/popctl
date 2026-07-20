@@ -95,8 +95,13 @@ def require_manifest(manifest_path: Path | None = None) -> Manifest:
         raise typer.Exit(code=1) from e
 
 
-def compute_system_diff(source: SourceChoice, *, silent_warnings: bool = False) -> DiffResult:
-    manifest = require_manifest()
+def compute_system_diff(
+    source: SourceChoice,
+    *,
+    silent_warnings: bool = False,
+    manifest: Manifest | None = None,
+) -> DiffResult:
+    manifest = manifest or require_manifest()
     scanners = get_checked_scanners(source, silent=silent_warnings)
     try:
         return compute_diff(manifest, scanners, source.to_source_filter())

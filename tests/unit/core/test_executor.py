@@ -6,6 +6,7 @@ Tests operator factory, action execution dispatch, and history recording.
 from unittest.mock import MagicMock, patch
 
 from popctl.core.executor import (
+    UNHANDLED_ACTION_DETAIL,
     execute_actions,
     record_actions_to_history,
 )
@@ -212,6 +213,22 @@ class TestExecuteActions:
 
         operator.install.assert_called_once_with([action])
         assert results == [result]
+
+    def test_synthesizes_a_failure_for_an_action_without_an_operator_result(self) -> None:
+        action = _make_action(package="vim")
+        operator = MagicMock(spec=AptOperator)
+        operator.source = PackageSource.APT
+        operator.install.return_value = []
+
+        results = execute_actions([action], [operator])
+
+        assert results == [
+            ActionResult(
+                action=action,
+                success=False,
+                detail=UNHANDLED_ACTION_DETAIL,
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------

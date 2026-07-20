@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import TYPE_CHECKING
 
 from popctl.core.state import record_action
-from popctl.models.action import ActionType
+from popctl.models.action import ActionResult, ActionType
 from popctl.models.history import (
     HistoryActionType,
     HistoryItem,
@@ -25,6 +25,8 @@ _PACKAGE_TO_HISTORY: dict[ActionType, HistoryActionType] = {
     ActionType.REMOVE: HistoryActionType.REMOVE,
     ActionType.PURGE: HistoryActionType.PURGE,
 }
+
+UNHANDLED_ACTION_DETAIL = "No result returned for planned action"
 
 
 def execute_actions(
@@ -61,6 +63,19 @@ def execute_actions(
             results.extend(operator.remove(remove_pkgs, purge=False))
         if purge_pkgs:
             results.extend(operator.remove(purge_pkgs, purge=True))
+
+    result_counts = Counter(result.action for result in results)
+    for action in actions:
+        if result_counts[action]:
+            result_counts[action] -= 1
+            continue
+        results.append(
+            ActionResult(
+                action=action,
+                success=False,
+                detail=UNHANDLED_ACTION_DETAIL,
+            )
+        )
 
     return results
 
