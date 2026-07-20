@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 
 import pytest
-from popctl.core.diff import DiffEntry, DiffResult, DiffType, compute_diff
+from popctl.core.diff import DiffEntry, DiffResult, DiffType, compute_diff, diff_to_actions
 from popctl.models.manifest import (
     Manifest,
     ManifestMeta,
@@ -17,6 +17,17 @@ from popctl.models.manifest import (
 )
 from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
 from popctl.scanners.base import Scanner
+from popctl.sources.models import (
+    AptSources,
+    FlatpakApp,
+    FlatpakRemote,
+    FlatpakScope,
+    FlatpakSources,
+    ReplayMode,
+    SnapSources,
+    SourcePlatform,
+    SourcesConfig,
+)
 
 
 class MockScanner(Scanner):
@@ -541,3 +552,124 @@ class TestComputeDiff:
         new_names = [e.name for e in result.new]
         assert "firefox" in new_names
         assert "htop" not in new_names
+
+
+def _manifest_with_flatpak_contexts(apps: tuple[FlatpakApp, ...]) -> Manifest:
+    now = datetime.now(UTC)
+    remotes = tuple(
+        FlatpakRemote(
+            name=name,
+            scope=scope,
+            url=f"https://example.com/{name}.flatpakrepo",
+            gpg_verify=True,
+            gpg_key_armor="armor",
+            gpg_fingerprints=("A" * 40,),
+            replay_mode=ReplayMode.REPLAY,
+        )
+        for scope, name in {(app.scope, app.origin) for app in apps}
+    )
+    return Manifest(
+        meta=ManifestMeta(created=now, updated=now),
+        system=SystemConfig(name="test-machine"),
+        packages=PackageConfig(
+            keep={"org.example.App": PackageEntry(source="flatpak")},
+        ),
+        sources=SourcesConfig(
+            platform=SourcePlatform(distro_id="ubuntu", codename="noble"),
+            apt=AptSources(),
+            flatpak=FlatpakSources(remotes=remotes, apps=apps),
+            snap=SnapSources(),
+        ),
+    )
+
+
+class TestFlatpakContextDiff:
+    def test_beta_system_context_is_missing_when_only_stable_is_installed(self) -> None:
+        manifest = _manifest_with_flatpak_contexts(
+            (
+                FlatpakApp(
+                    id="org.example.App",
+                    origin="flathub",
+                    scope=FlatpakScope.USER,
+                    arch="x86_64",
+                    branch="stable",
+                ),
+                FlatpakApp(
+                    id="org.example.App",
+                    origin="flathub-beta",
+                    scope=FlatpakScope.SYSTEM,
+                    arch="x86_64",
+                    branch="beta",
+                ),
+            )
+        )
+        scanner = MockScanner(
+            source=PackageSource.FLATPAK,
+            packages=[
+                ScannedPackage(
+                    name="org.example.App",
+                    source=PackageSource.FLATPAK,
+                    version="1.0",
+                    status=PackageStatus.MANUAL,
+                    flatpak_scope="user",
+                    flatpak_arch="x86_64",
+                    flatpak_branch="stable",
+                )
+            ],
+        )
+
+        diff = compute_diff(manifest, [scanner])
+        actions = diff_to_actions(diff, sources=manifest.sources)
+
+        assert len(diff.missing) == 1
+        assert diff.missing[0].source_install_context is not None
+        assert diff.missing[0].source_install_context.flatpak_scope is FlatpakScope.SYSTEM
+        assert diff.missing[0].source_install_context.flatpak_branch == "beta"
+        assert len(actions) == 1
+        assert actions[0].source_install_context is not None
+        assert actions[0].source_install_context.flatpak_remote == "flathub-beta"
+        assert actions[0].source_install_context.flatpak_scope is FlatpakScope.SYSTEM
+        assert actions[0].source_install_context.flatpak_arch == "x86_64"
+        assert actions[0].source_install_context.flatpak_branch == "beta"
+
+    def test_same_id_multi_branch_contexts_remain_distinct_through_diff(self) -> None:
+        manifest = _manifest_with_flatpak_contexts(
+            (
+                FlatpakApp(
+                    id="org.example.App",
+                    origin="flathub",
+                    scope=FlatpakScope.USER,
+                    arch="x86_64",
+                    branch="stable",
+                ),
+                FlatpakApp(
+                    id="org.example.App",
+                    origin="flathub",
+                    scope=FlatpakScope.USER,
+                    arch="x86_64",
+                    branch="beta",
+                ),
+            )
+        )
+        scanner = MockScanner(
+            source=PackageSource.FLATPAK,
+            packages=[
+                ScannedPackage(
+                    name="org.example.App",
+                    source=PackageSource.FLATPAK,
+                    version="1.0",
+                    status=PackageStatus.MANUAL,
+                    flatpak_scope="user",
+                    flatpak_arch="x86_64",
+                    flatpak_branch="stable",
+                )
+            ],
+        )
+
+        diff = compute_diff(manifest, [scanner])
+        actions = diff_to_actions(diff, sources=manifest.sources)
+
+        assert [entry.source_install_context.flatpak_branch for entry in diff.missing] == ["beta"]
+        assert len(actions) == 1
+        assert actions[0].source_install_context is not None
+        assert actions[0].source_install_context.flatpak_branch == "beta"

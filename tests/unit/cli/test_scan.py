@@ -232,13 +232,16 @@ class TestScanSourceOption:
 
     def test_scan_source_flatpak_only(self) -> None:
         """Scan --source flatpak scans only Flatpak apps."""
-        mock_flatpak = "com.spotify.Client\t1.2.31\t1.2 GB\tMusic"
+        mock_flatpak = "com.spotify.Client\t1.2.31\t1.2 GB\tMusic\tx86_64\tstable"
 
         with (
             patch("popctl.scanners.flatpak.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.run_command") as mock_run,
         ):
-            mock_run.return_value = CommandResult(stdout=mock_flatpak, stderr="", returncode=0)
+            mock_run.side_effect = [
+                CommandResult(stdout=mock_flatpak, stderr="", returncode=0),
+                CommandResult(stdout="", stderr="", returncode=0),
+            ]
 
             result = runner.invoke(app, ["scan", "--source", "flatpak"])
 
@@ -250,7 +253,7 @@ class TestScanSourceOption:
         """Scan --source all scans both APT and Flatpak."""
         mock_dpkg = "installed\tfirefox\t128.0\t204800\tFirefox"
         mock_auto = ""
-        mock_flatpak = "com.spotify.Client\t1.2.31\t1.2 GB\tMusic"
+        mock_flatpak = "com.spotify.Client\t1.2.31\t1.2 GB\tMusic\tx86_64\tstable"
 
         with (
             patch("popctl.scanners.apt.command_exists", return_value=True),
@@ -262,9 +265,10 @@ class TestScanSourceOption:
                 CommandResult(stdout=mock_auto, stderr="", returncode=0),
                 CommandResult(stdout=mock_dpkg, stderr="", returncode=0),
             ]
-            mock_flatpak_run.return_value = CommandResult(
-                stdout=mock_flatpak, stderr="", returncode=0
-            )
+            mock_flatpak_run.side_effect = [
+                CommandResult(stdout=mock_flatpak, stderr="", returncode=0),
+                CommandResult(stdout="", stderr="", returncode=0),
+            ]
 
             result = runner.invoke(app, ["scan", "--source", "all"])
 

@@ -39,6 +39,7 @@ class DiffEntry:
     diff_type: DiffType
     version: str | None = None
     description: str | None = None
+    source_install_context: SourceInstallContext | None = None
 
     def to_dict(self) -> dict[str, str]:
         result: dict[str, str] = {
@@ -105,6 +106,7 @@ def compute_diff(
     """
     # Collect currently installed manual packages from system
     installed: dict[str, tuple[PackageSource, str | None, str | None]] = {}
+    installed_flatpak_locators: set[tuple[str, str, str, str]] = set()
 
     for scanner in scanners:
         # Skip if source filter is active and doesn't match
@@ -121,6 +123,8 @@ def compute_diff(
                 continue
 
             installed[pkg.name] = (scanner.source, pkg.version, pkg.description)
+            if scanner.source is PackageSource.FLATPAK and pkg.flatpak_locator is not None:
+                installed_flatpak_locators.add(pkg.flatpak_locator)
 
     # Get packages from manifest
     keep_packages = manifest.get_keep_packages(source_filter)
@@ -143,6 +147,21 @@ def compute_diff(
     # Compute MISSING: in manifest.keep but not installed
     missing_entries: list[DiffEntry] = []
     for name, entry in keep_packages.items():
+        if entry.source == PackageSource.FLATPAK.value and manifest.sources is not None:
+            apps = tuple(app for app in manifest.sources.flatpak.apps if app.id == name)
+            if apps:
+                for app in apps:
+                    locator = (app.scope.value, app.id, app.arch, app.branch)
+                    if locator not in installed_flatpak_locators:
+                        missing_entries.append(
+                            DiffEntry(
+                                name=name,
+                                source=PackageSource.FLATPAK,
+                                diff_type=DiffType.MISSING,
+                                source_install_context=SourceInstallContext.for_flatpak(app),
+                            )
+                        )
+                continue
         if name not in installed:
             # Skip protected packages from missing check too
             if is_package_protected(name):
@@ -171,9 +190,9 @@ def compute_diff(
             )
 
     # Sort all entries by source and name for consistent output
-    new_entries.sort(key=lambda e: (e.source.value, e.name))
-    missing_entries.sort(key=lambda e: (e.source.value, e.name))
-    extra_entries.sort(key=lambda e: (e.source.value, e.name))
+    new_entries.sort(key=_diff_entry_sort_key)
+    missing_entries.sort(key=_diff_entry_sort_key)
+    extra_entries.sort(key=_diff_entry_sort_key)
 
     return DiffResult(
         new=tuple(new_entries),
@@ -182,10 +201,42 @@ def compute_diff(
     )
 
 
+def _diff_entry_sort_key(entry: DiffEntry) -> tuple[str, str, str, str, str]:
+    context = entry.source_install_context
+    if context is None or not context.is_flatpak:
+        return (entry.source.value, entry.name, "", "", "")
+    return (
+        entry.source.value,
+        entry.name,
+        context.flatpak_scope.value if context.flatpak_scope is not None else "",
+        context.flatpak_arch or "",
+        context.flatpak_branch or "",
+    )
+
+
 def _install_actions_for_entry(
     entry: DiffEntry,
     sources: SourcesConfig | None,
 ) -> list[Action]:
+    if entry.source is PackageSource.FLATPAK and entry.source_install_context is not None:
+        if sources is None:
+            raise ValueError(f"Flatpak package has no source configuration: {entry.name}")
+        context = entry.source_install_context
+        if context.flatpak_scope is None or context.flatpak_remote is None:
+            raise ValueError(f"Flatpak package has incomplete source context: {entry.name}")
+        remotes = {(remote.scope, remote.name): remote for remote in sources.flatpak.remotes}
+        remote = remotes.get((context.flatpak_scope, context.flatpak_remote))
+        if remote is None or remote.replay_mode.value != "replay":
+            raise ValueError(f"Flatpak app has no replayable remote source: {entry.name}")
+        return [
+            Action(
+                ActionType.INSTALL,
+                entry.name,
+                entry.source,
+                context,
+            )
+        ]
+
     if sources is None or entry.source is PackageSource.APT:
         return [Action(ActionType.INSTALL, entry.name, entry.source)]
 

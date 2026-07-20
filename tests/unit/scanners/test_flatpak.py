@@ -46,9 +46,10 @@ class TestFlatpakScanner:
             patch("popctl.scanners.flatpak.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.run_command") as mock_run,
         ):
-            mock_run.return_value = CommandResult(
-                stdout=mock_flatpak_output, stderr="", returncode=0
-            )
+            mock_run.side_effect = [
+                CommandResult(stdout=mock_flatpak_output, stderr="", returncode=0),
+                CommandResult(stdout="", stderr="", returncode=0),
+            ]
 
             packages = list(scanner.scan())
 
@@ -61,12 +62,30 @@ class TestFlatpakScanner:
         assert spotify.status == PackageStatus.MANUAL
         assert spotify.size_bytes == int(1.2 * 1024 * 1024 * 1024)  # 1.2 GB
         assert spotify.description == "Music streaming service"
+        assert spotify.flatpak_scope == "user"
+        assert spotify.flatpak_arch == "x86_64"
+        assert spotify.flatpak_branch == "stable"
 
         # Check Firefox
         firefox = packages[1]
         assert firefox.name == "org.mozilla.firefox"
         assert firefox.version == "128.0"
         assert firefox.size_bytes == 500 * 1024 * 1024  # 500 MB
+
+        assert mock_run.call_args_list[0].args[0] == [
+            "flatpak",
+            "list",
+            "--user",
+            "--app",
+            "--columns=application,version,size,description,arch,branch",
+        ]
+        assert mock_run.call_args_list[1].args[0] == [
+            "flatpak",
+            "list",
+            "--system",
+            "--app",
+            "--columns=application,version,size,description,arch,branch",
+        ]
 
     def test_scan_all_packages_are_manual(
         self,
@@ -78,9 +97,10 @@ class TestFlatpakScanner:
             patch("popctl.scanners.flatpak.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.run_command") as mock_run,
         ):
-            mock_run.return_value = CommandResult(
-                stdout=mock_flatpak_output, stderr="", returncode=0
-            )
+            mock_run.side_effect = [
+                CommandResult(stdout=mock_flatpak_output, stderr="", returncode=0),
+                CommandResult(stdout="", stderr="", returncode=0),
+            ]
 
             packages = list(scanner.scan())
 
@@ -139,13 +159,16 @@ single_field"""
 
     def test_scan_handles_missing_description(self, scanner: FlatpakScanner) -> None:
         """Scan handles packages without description."""
-        minimal = "com.example.App\t1.0\t100 MB\t"
+        minimal = "com.example.App\t1.0\t100 MB\t\tx86_64\tstable"
 
         with (
             patch("popctl.scanners.flatpak.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.run_command") as mock_run,
         ):
-            mock_run.return_value = CommandResult(stdout=minimal, stderr="", returncode=0)
+            mock_run.side_effect = [
+                CommandResult(stdout=minimal, stderr="", returncode=0),
+                CommandResult(stdout="", stderr="", returncode=0),
+            ]
 
             packages = list(scanner.scan())
 
@@ -154,13 +177,16 @@ single_field"""
 
     def test_scan_handles_missing_size(self, scanner: FlatpakScanner) -> None:
         """Scan handles packages without size."""
-        no_size = "com.example.App\t1.0\t\tSome app"
+        no_size = "com.example.App\t1.0\t\tSome app\tx86_64\tstable"
 
         with (
             patch("popctl.scanners.flatpak.command_exists", return_value=True),
             patch("popctl.scanners.flatpak.run_command") as mock_run,
         ):
-            mock_run.return_value = CommandResult(stdout=no_size, stderr="", returncode=0)
+            mock_run.side_effect = [
+                CommandResult(stdout=no_size, stderr="", returncode=0),
+                CommandResult(stdout="", stderr="", returncode=0),
+            ]
 
             packages = list(scanner.scan())
 

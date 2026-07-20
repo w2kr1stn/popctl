@@ -152,18 +152,24 @@ class TestFlatpakOperator:
         assert beta_command == [
             "flatpak",
             "install",
-            "-y",
+            "--assumeyes",
+            "--noninteractive",
             "--user",
             "--arch=x86_64",
-            "--branch=beta",
             "flathub-beta",
-            "--",
-            "org.example.App",
+            "org.example.App/x86_64/beta",
         ]
-        assert system_command[:5] == ["sudo", "flatpak", "install", "-y", "--system"]
-        assert "--arch=aarch64" in system_command
-        assert "--branch=stable" in system_command
-        assert "vendor-system" in system_command
+        assert system_command == [
+            "sudo",
+            "flatpak",
+            "install",
+            "--assumeyes",
+            "--noninteractive",
+            "--system",
+            "--arch=aarch64",
+            "vendor-system",
+            "org.example.App/aarch64/stable",
+        ]
 
     def test_remove_success(self, operator: FlatpakOperator) -> None:
         """remove() returns success results on flatpak success."""

@@ -48,13 +48,12 @@ class FlatpakOperator(Operator):
                 cmd = (["sudo"] if context.flatpak_scope.value == "system" else []) + [
                     "flatpak",
                     "install",
-                    "-y",
+                    "--assumeyes",
+                    "--noninteractive",
                     scope,
                     f"--arch={context.flatpak_arch}",
-                    f"--branch={context.flatpak_branch}",
                     context.flatpak_remote,
-                    "--",
-                    action.package,
+                    f"{action.package}/{context.flatpak_arch}/{context.flatpak_branch}",
                 ]
             results.append(self._run_single(action, cmd))
         return results
