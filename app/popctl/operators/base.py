@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 
 from popctl.models.action import Action, ActionResult
 from popctl.models.package import PackageSource
@@ -18,7 +19,7 @@ class Operator(ABC):
     source: PackageSource
 
     @abstractmethod
-    def install(self, packages: list[str]) -> list[ActionResult]: ...
+    def install(self, items: Sequence[Action | str]) -> list[ActionResult]: ...
 
     @abstractmethod
     def remove(self, packages: list[str], purge: bool = False) -> list[ActionResult]: ...

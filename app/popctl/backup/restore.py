@@ -5,10 +5,13 @@ import tempfile
 from pathlib import Path
 
 from popctl.backup.backup import BackupError, is_rclone_remote
-from popctl.core.manifest import load_manifest
+from popctl.core.manifest import ManifestError, load_manifest
 from popctl.core.paths import get_backups_dir, get_config_dir, get_state_dir
 from popctl.models.backup import BackupMetadata
-from popctl.utils.formatting import print_warning
+from popctl.models.manifest import Manifest
+from popctl.models.package import SourceChoice
+from popctl.sources.phase import SourceInteractionPolicy, run_source_phase
+from popctl.utils.formatting import print_info
 from popctl.utils.shell import command_exists, run_command
 
 logger = logging.getLogger(__name__)
@@ -119,7 +122,10 @@ def read_backup_metadata(
             raise BackupError(f"Invalid metadata.json: {e}") from e
 
 
-def _restore_popctl_state(staging_dir: Path) -> int:
+def _restore_popctl_state(staging_dir: Path, *, dry_run: bool = False) -> int:
+    if dry_run:
+        return 0
+
     config_dir = get_config_dir()
     state_dir = get_state_dir()
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -161,7 +167,10 @@ def _restore_popctl_state(staging_dir: Path) -> int:
     return count
 
 
-def _restore_home_files(staging_dir: Path) -> int:
+def _restore_home_files(staging_dir: Path, *, dry_run: bool = False) -> int:
+    if dry_run:
+        return 0
+
     home_dir = staging_dir / "files" / "home"
     if not home_dir.exists():
         return 0
@@ -194,7 +203,10 @@ def _restore_home_files(staging_dir: Path) -> int:
     return count
 
 
-def _fix_sensitive_permissions() -> None:
+def _fix_sensitive_permissions(*, dry_run: bool = False) -> None:
+    if dry_run:
+        return
+
     home = Path.home()
 
     ssh_dir = home / ".ssh"
@@ -215,23 +227,20 @@ def _fix_sensitive_permissions() -> None:
             logger.warning("Could not fix .gnupg permissions: %s", e)
 
 
-def _install_packages() -> tuple[int, int]:
+def _install_packages(
+    manifest: Manifest,
+    source: SourceChoice,
+    *,
+    dry_run: bool,
+) -> tuple[int, int]:
     from popctl.core.diff import DiffEntry, DiffResult, DiffType, diff_to_actions
     from popctl.core.executor import execute_actions, record_actions_to_history
-    from popctl.core.manifest import ManifestError
     from popctl.models.package import PackageSource
     from popctl.operators import get_available_operators
 
-    try:
-        manifest = load_manifest()
-    except ManifestError as e:
-        logger.warning("Could not load restored manifest: %s", e)
-        print_warning(f"Could not load restored manifest: {e}")
-        return 0, 0
-
     # Build MISSING entries for all packages.keep (they're all missing on fresh install)
     missing: list[DiffEntry] = []
-    for name, entry in manifest.packages.keep.items():
+    for name, entry in manifest.get_keep_packages(source.to_source_filter()).items():
         missing.append(DiffEntry(
             name=name,
             source=PackageSource(entry.source),
@@ -240,7 +249,7 @@ def _install_packages() -> tuple[int, int]:
 
     # Build EXTRA entries for all packages.remove (they might be pre-installed)
     extra: list[DiffEntry] = []
-    for name, entry in manifest.packages.remove.items():
+    for name, entry in manifest.get_remove_packages(source.to_source_filter()).items():
         extra.append(DiffEntry(
             name=name,
             source=PackageSource(entry.source),
@@ -253,15 +262,21 @@ def _install_packages() -> tuple[int, int]:
         extra=tuple(extra),
     )
 
-    actions = diff_to_actions(diff_result)
+    actions = diff_to_actions(diff_result, sources=manifest.sources)
     if not actions:
         return 0, 0
 
-    operators = get_available_operators()
+    if dry_run:
+        print_info("Package restore preview:")
+        for action in actions:
+            print_info(f"  {action.action_type.value}: {action.source.value} {action.package}")
+        return 0, 0
+
+    operators = get_available_operators(source.to_package_source(), dry_run=dry_run)
     results = execute_actions(actions, operators)
 
     # Record to history
-    if results:
+    if results and not dry_run:
         record_actions_to_history(results, command="popctl backup restore")
 
     installed = sum(1 for r in results if r.success)
@@ -295,7 +310,11 @@ def restore_backup(
     *,
     files_only: bool = False,
     packages_only: bool = False,
+    package_source: SourceChoice = SourceChoice.ALL,
+    dry_run: bool = False,
+    interaction: SourceInteractionPolicy | None = None,
 ) -> dict[str, int]:
+    interaction = interaction or SourceInteractionPolicy()
     with tempfile.TemporaryDirectory(prefix="popctl-restore-") as tmpdir:
         staging_dir = Path(tmpdir)
         backup_path = _fetch_backup(source, staging_dir)
@@ -312,23 +331,41 @@ def restore_backup(
             "packages_failed": 0,
         }
 
-        if not packages_only:
-            # Always restore popctl state first (manifest needed for package install)
-            counts["popctl_state"] = _restore_popctl_state(staging_dir)
-
-            # Restore home directory files
-            counts["home_files"] = _restore_home_files(staging_dir)
-
-            # Fix sensitive file permissions
-            _fix_sensitive_permissions()
-
+        manifest: Manifest | None = None
         if not files_only:
-            # Ensure manifest is available (restore it if packages_only)
-            if packages_only:
-                counts["popctl_state"] = _restore_popctl_state(staging_dir)
+            manifest_path = staging_dir / "files" / "popctl" / "manifest.toml"
+            try:
+                manifest = load_manifest(manifest_path)
+            except ManifestError as error:
+                raise BackupError(f"Could not load backup manifest: {error}") from error
 
-            installed, failed = _install_packages()
-            counts["packages_installed"] = installed
-            counts["packages_failed"] = failed
+        # State is restored before every mode's remaining work.
+        counts["popctl_state"] = _restore_popctl_state(staging_dir, dry_run=dry_run)
+
+        if files_only:
+            counts["home_files"] = _restore_home_files(staging_dir, dry_run=dry_run)
+            _fix_sensitive_permissions(dry_run=dry_run)
+            return counts
+
+        assert manifest is not None  # Manifest loading above is required for package-bearing modes.
+        source_phase = run_source_phase(
+            manifest,
+            package_source,
+            dry_run=dry_run,
+            interaction=interaction,
+        )
+        if not source_phase.success:
+            raise BackupError(
+                "Source phase stopped package and home work: "
+                f"{source_phase.error or 'source preflight failed'}"
+            )
+
+        installed, failed = _install_packages(manifest, package_source, dry_run=dry_run)
+        counts["packages_installed"] = installed
+        counts["packages_failed"] = failed
+
+        if not packages_only:
+            counts["home_files"] = _restore_home_files(staging_dir, dry_run=dry_run)
+            _fix_sensitive_permissions(dry_run=dry_run)
 
     return counts

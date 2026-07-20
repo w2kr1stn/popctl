@@ -1,6 +1,7 @@
 import logging
 import re
 from collections.abc import Iterator
+from typing import Literal
 
 from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
 from popctl.scanners.base import Scanner, parse_tab_fields
@@ -32,30 +33,38 @@ class FlatpakScanner(Scanner):
             msg = "Flatpak is not available on this system"
             raise RuntimeError(msg)
 
-        # Query installed apps (not runtimes)
-        # Format: application, version, size, description (tab-separated)
-        result = run_command(
-            [
-                "flatpak",
-                "list",
-                "--app",
-                "--columns=application,version,size,description",
-            ],
+        scopes: tuple[tuple[Literal["user", "system"], str], ...] = (
+            ("user", "--user"),
+            ("system", "--system"),
         )
+        for scope, scope_option in scopes:
+            result = run_command(
+                [
+                    "flatpak",
+                    "list",
+                    scope_option,
+                    "--app",
+                    "--columns=application,version,size,description,arch,branch",
+                ],
+            )
 
-        if not result.success:
-            msg = f"flatpak list failed: {result.stderr}"
-            raise RuntimeError(msg)
+            if not result.success:
+                msg = f"flatpak list failed: {result.stderr}"
+                raise RuntimeError(msg)
 
-        for line in result.stdout.strip().split("\n"):
-            if not line.strip():
-                continue
+            for line in result.stdout.strip().split("\n"):
+                if not line.strip():
+                    continue
 
-            package = self._parse_flatpak_line(line)
-            if package is not None:
-                yield package
+                package = self._parse_flatpak_line(line, scope)
+                if package is not None:
+                    yield package
 
-    def _parse_flatpak_line(self, line: str) -> ScannedPackage | None:
+    def _parse_flatpak_line(
+        self,
+        line: str,
+        scope: Literal["user", "system"],
+    ) -> ScannedPackage | None:
         parsed = parse_tab_fields(line, "flatpak")
         if parsed is None:
             return None
@@ -72,6 +81,10 @@ class FlatpakScanner(Scanner):
         if len(parts) >= 4:
             description = parts[3].strip() or None
 
+        if len(parts) < 6 or not parts[4].strip() or not parts[5].strip():
+            logger.debug("Skipping Flatpak package without architecture or branch: %r", line[:100])
+            return None
+
         # All Flatpak apps are considered manually installed
         # (there's no auto-dependency installation like APT)
         return ScannedPackage(
@@ -81,6 +94,9 @@ class FlatpakScanner(Scanner):
             status=PackageStatus.MANUAL,
             description=description,
             size_bytes=size_bytes,
+            flatpak_scope=scope,
+            flatpak_arch=parts[4].strip(),
+            flatpak_branch=parts[5].strip(),
         )
 
     def _parse_size(self, size_str: str) -> int | None:

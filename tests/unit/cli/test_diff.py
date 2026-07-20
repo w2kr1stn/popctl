@@ -9,9 +9,12 @@ from unittest.mock import patch
 
 import pytest
 from popctl.cli.main import app
+from popctl.cli.types import SourceChoice, compute_source_system_diff
 from popctl.core.diff import DiffEntry, DiffResult, DiffType
 from popctl.models.manifest import Manifest
 from popctl.models.package import PackageSource
+from popctl.sources.diff import SourceDiffEntry, SourceDiffResult, SourceDiffType, SourceRecordKind
+from popctl.sources.models import SourceLocator, SourcePlatform, SourcesConfig
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -261,6 +264,65 @@ def test_diff_source_apt(sample_manifest: Manifest) -> None:
     call_args = mock_diff.call_args
     # compute_system_diff(source, silent_warnings=...) — first positional is SourceChoice
     assert call_args[0][0].value == "apt"
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ([], "popctl-vendor"),
+        (["--brief"], "Source changed: 1"),
+        (["--json"], "sources"),
+    ],
+)
+def test_diff_renders_source_changes_in_all_output_forms_and_applies_filter(
+    sample_manifest: Manifest,
+    arguments: list[str],
+    expected: str,
+) -> None:
+    source_result = SourceDiffResult(
+        changed=(
+            SourceDiffEntry(
+                locator=SourceLocator(manager=PackageSource.APT, parts=("popctl-vendor",)),
+                kind=SourceRecordKind.APT,
+                diff_type=SourceDiffType.CHANGED,
+            ),
+        ),
+    )
+    package_result = DiffResult(new=(), missing=(), extra=())
+
+    with (
+        patch("popctl.cli.commands.diff.compute_system_diff", return_value=package_result),
+        patch(
+            "popctl.cli.commands.diff.compute_source_system_diff", return_value=source_result
+        ) as source_diff,
+    ):
+        result = runner.invoke(app, ["diff", "--source", "apt", *arguments])
+
+    assert result.exit_code == 0
+    assert expected in result.stdout
+    source_diff.assert_called_once()
+    assert source_diff.call_args.args[0].value == "apt"
+    if arguments == ["--json"]:
+        data = json.loads(result.stdout)
+        assert data["sources"]["changed"][0]["label"] == "popctl-vendor"
+
+
+def test_source_diff_scan_uses_the_selected_manager_filter(sample_manifest: Manifest) -> None:
+    sources = SourcesConfig(platform=SourcePlatform(distro_id="ubuntu", codename="noble"))
+    manifest = sample_manifest.model_copy(update={"sources": sources})
+    expected = SourceDiffResult()
+
+    with (
+        patch("popctl.cli.types.require_manifest", return_value=manifest),
+        patch("popctl.cli.types.capture_sources", return_value=sources) as capture_sources,
+        patch("popctl.cli.types.compute_source_diff", return_value=expected) as source_diff,
+    ):
+        result = compute_source_system_diff(SourceChoice.APT)
+
+    assert result is expected
+    assert capture_sources.call_args.kwargs["managers"] == (PackageSource.APT,)
+    assert source_diff.call_args.kwargs["source_filter"] is PackageSource.APT
+    assert tuple(source_diff.call_args.kwargs["apt_package_names"]) == ("firefox", "neovim")
 
 
 class TestDiffScannerAvailability:

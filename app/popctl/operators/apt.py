@@ -1,5 +1,6 @@
 import logging
 import re
+from collections.abc import Sequence
 
 from popctl.core.baseline import is_package_protected
 from popctl.models.action import Action, ActionResult, ActionType
@@ -16,11 +17,25 @@ class AptOperator(Operator):
     def is_available(self) -> bool:
         return command_exists("apt-get")
 
-    def install(self, packages: list[str]) -> list[ActionResult]:
+    def install(self, items: Sequence[Action | str]) -> list[ActionResult]:
+        packages = self._package_names(items)
         if not packages:
             return []
 
         return self._execute_apt_command(ActionType.INSTALL, packages)
+
+    @staticmethod
+    def _package_names(items: Sequence[Action | str]) -> list[str]:
+        packages: list[str] = []
+        for item in items:
+            if isinstance(item, Action):
+                if item.source is not PackageSource.APT:
+                    msg = "APT operator received an action for another source"
+                    raise ValueError(msg)
+                packages.append(item.package)
+            else:
+                packages.append(item)
+        return packages
 
     def remove(self, packages: list[str], purge: bool = False) -> list[ActionResult]:
         if not packages:

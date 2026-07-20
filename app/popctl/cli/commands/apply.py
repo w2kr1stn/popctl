@@ -1,3 +1,4 @@
+import sys
 from typing import Annotated
 
 import typer
@@ -8,12 +9,14 @@ from popctl.cli.display import (
     print_actions_summary,
     print_results_summary,
 )
-from popctl.cli.types import SourceChoice, compute_system_diff
+from popctl.cli.types import SourceChoice, compute_system_diff, require_manifest
 from popctl.core.diff import diff_to_actions
 from popctl.core.executor import execute_actions, record_actions_to_history
 from popctl.operators import get_available_operators
+from popctl.sources.phase import SourceInteractionPolicy, run_source_phase
 from popctl.utils.formatting import (
     console,
+    print_error,
     print_info,
     print_success,
 )
@@ -80,11 +83,22 @@ def apply_manifest(
         popctl apply --source apt       # Only APT packages
         popctl apply --purge            # Remove APT packages with configs
     """
+    manifest = require_manifest()
+    source_phase = run_source_phase(
+        manifest,
+        source,
+        dry_run=dry_run,
+        interaction=SourceInteractionPolicy(yes=yes, interactive=sys.stdin.isatty()),
+    )
+    if not source_phase.success:
+        print_error(f"Source phase stopped package work: {source_phase.error}")
+        raise typer.Exit(code=1)
+
     # Compute diff (exits on failure)
-    diff_result = compute_system_diff(source)
+    diff_result = compute_system_diff(source, manifest=manifest)
 
     # Convert diff to actions
-    actions = diff_to_actions(diff_result, purge=purge)
+    actions = diff_to_actions(diff_result, purge=purge, sources=manifest.sources)
 
     # Check if there's anything to do
     if not actions:

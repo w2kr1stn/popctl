@@ -1,16 +1,21 @@
+import sys
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
+from popctl.cli.types import SourceChoice
 from popctl.core.manifest import (
     manifest_exists,
     save_manifest,
     scan_and_create_manifest,
 )
 from popctl.core.paths import get_manifest_path
-from popctl.models.manifest import Manifest
+from popctl.models.manifest import Manifest, PackageEntry
 from popctl.scanners import get_available_scanners
+from popctl.scanners.base import Scanner
+from popctl.sources.capture import SourceCaptureError
+from popctl.sources.phase import SourceInteractionPolicy, capture_and_trust_sources
 from popctl.utils.formatting import (
     console,
     print_error,
@@ -23,6 +28,28 @@ app = typer.Typer(
     help="Initialize manifest from current system state.",
     invoke_without_command=True,
 )
+
+
+def capture_manifest(
+    scanners: list[Scanner],
+    source: SourceChoice,
+    *,
+    dry_run: bool,
+    interaction: SourceInteractionPolicy,
+) -> tuple[Manifest, dict[str, PackageEntry], list[str]]:
+    manifest, packages, skipped_protected = scan_and_create_manifest(scanners)
+    source_capture = capture_and_trust_sources(
+        source,
+        dry_run=dry_run,
+        interaction=interaction,
+    )
+    if not source_capture.success or source_capture.sources is None:
+        raise SourceCaptureError(source_capture.error or "source capture failed")
+    return (
+        manifest.model_copy(update={"sources": source_capture.sources}),
+        packages,
+        skipped_protected,
+    )
 
 
 def _show_manifest_summary(
@@ -126,7 +153,12 @@ def init_manifest(
 
     # Collect packages and create manifest
     try:
-        manifest, packages, skipped_protected = scan_and_create_manifest(scanners)
+        manifest, packages, skipped_protected = capture_manifest(
+            scanners,
+            SourceChoice.ALL,
+            dry_run=dry_run,
+            interaction=SourceInteractionPolicy(yes=False, interactive=sys.stdin.isatty()),
+        )
     except RuntimeError as e:
         print_error(f"Scan failed: {e}")
         raise typer.Exit(code=1) from e

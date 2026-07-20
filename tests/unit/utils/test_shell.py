@@ -121,3 +121,13 @@ class TestRunCommandBytes:
         assert result.stderr == b"Command timed out after 3s: git cat-file"
         assert result.returncode == -1
         mock_run.assert_called_once()
+
+
+class TestRunCommand:
+    @patch("popctl.utils.shell._run_subprocess", side_effect=FileNotFoundError)
+    def test_missing_binary_returns_failed_result(self, _run_subprocess: MagicMock) -> None:
+        result = run_command(["missing-binary"])
+
+        assert result.success is False
+        assert result.returncode == -1
+        assert result.stderr == "Command not found: missing-binary"

@@ -4,15 +4,9 @@ from collections.abc import Iterator
 from popctl.models.package import PackageSource, PackageStatus, ScannedPackage
 from popctl.scanners.base import Scanner
 from popctl.utils.shell import command_exists, run_command
+from popctl.utils.snap import is_runtime_snap
 
 logger = logging.getLogger(__name__)
-
-# Notes values that indicate runtime/infrastructure snaps
-_RUNTIME_NOTES: frozenset[str] = frozenset({"base", "snapd"})
-
-# Exact snap names that are always runtime infrastructure
-_RUNTIME_NAMES: frozenset[str] = frozenset({"snapd", "bare"})
-
 
 class SnapScanner(Scanner):
     source = PackageSource.SNAP
@@ -52,7 +46,7 @@ class SnapScanner(Scanner):
         version = parts[1]
         notes = parts[5]
 
-        if self._is_runtime_snap(name, notes):
+        if is_runtime_snap(name, notes):
             return None
 
         return ScannedPackage(
@@ -63,17 +57,3 @@ class SnapScanner(Scanner):
             description=None,
             size_bytes=None,
         )
-
-    @staticmethod
-    def _is_runtime_snap(name: str, notes: str) -> bool:
-        """Runtime snaps: cores, bases, snapd, bare, and GNOME platform snaps."""
-        if notes in _RUNTIME_NOTES:
-            return True
-
-        if name in _RUNTIME_NAMES:
-            return True
-
-        if name.startswith("core"):
-            return True
-
-        return name.startswith("gnome-") and name.endswith("-platform")

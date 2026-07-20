@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
@@ -24,6 +25,7 @@ from popctl.advisor.exchange import (
 from popctl.advisor.runner import MANUAL_MODE_SENTINEL
 from popctl.advisor.scanning import scan_system
 from popctl.advisor.workspace import create_session_workspace, ensure_advisor_sessions_dir
+from popctl.cli.commands.init import capture_manifest
 from popctl.cli.display import (
     create_actions_table,
     create_results_table,
@@ -36,6 +38,7 @@ from popctl.cli.types import (
     collect_domain_orphans,
     compute_system_diff,
     post_clean_update,
+    require_manifest,
 )
 from popctl.configs import ConfigOperator
 from popctl.core.diff import DiffResult, diff_to_actions
@@ -45,15 +48,20 @@ from popctl.core.manifest import (
     load_manifest,
     manifest_exists,
     save_manifest,
-    scan_and_create_manifest,
 )
 from popctl.core.paths import get_manifest_path, get_state_dir
 from popctl.domain.models import ScannedEntry
 from popctl.domain.protected import is_protected
 from popctl.filesystem import FilesystemOperator
 from popctl.models.action import ActionType
+from popctl.models.manifest import Manifest
 from popctl.operators import get_available_operators
 from popctl.scanners import get_available_scanners
+from popctl.sources.phase import (
+    SourceInteractionPolicy,
+    refresh_manifest_sources,
+    run_source_phase,
+)
 from popctl.utils.formatting import (
     console,
     print_error,
@@ -70,13 +78,22 @@ app = typer.Typer(
 )
 
 
-def _ensure_manifest() -> None:
+def _ensure_manifest(
+    source: SourceChoice,
+    *,
+    dry_run: bool,
+    interaction: SourceInteractionPolicy,
+) -> tuple[Manifest | None, bool]:
     if manifest_exists():
-        return
+        try:
+            return require_manifest(), False
+        except typer.Exit:
+            return None, False
 
     print_info("No manifest found. Auto-initializing from current system...")
 
-    scanners = get_available_scanners()
+    selected_source = source.to_package_source()
+    scanners = get_available_scanners(selected_source)
     if not scanners:
         print_error("No package managers available (APT, Flatpak, or Snap required).")
         raise typer.Exit(code=1)
@@ -85,7 +102,12 @@ def _ensure_manifest() -> None:
     print_info(f"Scanning system packages: {', '.join(source_names)}")
 
     try:
-        manifest, packages, _ = scan_and_create_manifest(scanners)
+        manifest, packages, _ = capture_manifest(
+            scanners,
+            source,
+            dry_run=dry_run,
+            interaction=interaction,
+        )
     except RuntimeError as e:
         print_error(f"Scan failed: {e}")
         raise typer.Exit(code=1) from e
@@ -93,12 +115,17 @@ def _ensure_manifest() -> None:
     if not packages:
         print_warning("No manually installed packages found (excluding protected system packages).")
 
+    if dry_run:
+        print_info("Dry-run mode: Manifest capture is ephemeral and was not saved.")
+        return manifest, True
+
     try:
         saved_path = save_manifest(manifest)
         print_success(f"Manifest created: {saved_path}")
     except OSError as e:
         print_error(f"Failed to save manifest: {e}")
         raise typer.Exit(code=1) from e
+    return manifest, True
 
 
 def _invoke_advisor(
@@ -284,14 +311,19 @@ def _sync_packages(
     no_advisor: bool,
     auto: bool,
     review: bool,
-) -> bool:
+    manifest: Manifest | None = None,
+) -> tuple[bool, bool]:
     # Phase 2: Compute diff
-    diff_result = compute_system_diff(source)
+    diff_result = (
+        compute_system_diff(source, manifest=manifest)
+        if manifest is not None
+        else compute_system_diff(source)
+    )
 
     # Check if system is already in sync
     if diff_result.is_in_sync and not review:
         print_success("System is already in sync with manifest. Nothing to do.")
-        return False
+        return False, False
 
     # Show diff summary
     console.print()
@@ -305,27 +337,35 @@ def _sync_packages(
     # Phase 2b: Dry-run stops here (for packages)
     if dry_run:
         print_info("\nDry-run mode: No package changes were made.")
-        return False
+        return False, False
 
     # Phase 3-5: Advisor (unless --no-advisor or no NEW packages)
     if not no_advisor and (diff_result.new or review):
         _run_advisor(diff_result, auto, review=review)
 
         # Phase 5: Re-diff after advisor changes
-        diff_result = compute_system_diff(source)
+        diff_result = (
+            compute_system_diff(source, manifest=manifest)
+            if manifest is not None
+            else compute_system_diff(source)
+        )
 
         if diff_result.is_in_sync:
             print_success(
                 "System is already in sync with manifest after advisor changes. Nothing to do."
             )
-            return False
+            return False, False
 
     # Phase 6: Convert to actions and display
-    actions = diff_to_actions(diff_result, purge=purge)
+    actions = diff_to_actions(
+        diff_result,
+        purge=purge,
+        sources=manifest.sources if manifest is not None else None,
+    )
 
     if not actions:
         print_success("No actionable changes. System is in sync with manifest.")
-        return False
+        return False, False
 
     table = create_actions_table(actions)
     console.print(table)
@@ -359,13 +399,15 @@ def _sync_packages(
 
     # Auto-fix: move failed removes/purges from remove → keep in manifest
     failed_removes = [
-        r.action.package for r in results
+        r.action.package
+        for r in results
         if r.failed and r.action.action_type in {ActionType.REMOVE, ActionType.PURGE}
     ]
     if failed_removes:
         _move_failed_removes_to_keep(failed_removes)
 
-    return any(r.failed for r in results)
+    incomplete = any(r.detail == "No result returned for planned action" for r in results)
+    return any(r.failed for r in results), incomplete
 
 
 @app.callback(invoke_without_command=True)
@@ -487,10 +529,34 @@ def sync(
         popctl sync --backup            # Create backup after sync
     """
     # Phase 1: Ensure manifest exists
-    _ensure_manifest()
+    interaction = SourceInteractionPolicy(yes=yes, interactive=sys.stdin.isatty())
+    manifest, was_missing = _ensure_manifest(source, dry_run=dry_run, interaction=interaction)
+    if manifest is not None and not was_missing and not dry_run:
+        refresh = refresh_manifest_sources(manifest, source, interaction=interaction)
+        if not refresh.success:
+            print_error(f"Source refresh failed: {refresh.error}")
+            raise typer.Exit(code=1)
+        if refresh.changed:
+            try:
+                save_manifest(refresh.manifest)
+            except (OSError, ManifestError) as error:
+                print_error(f"Failed to persist refreshed sources: {error}")
+                raise typer.Exit(code=1) from error
+            manifest = refresh.manifest
+
+    if manifest is not None:
+        source_phase = run_source_phase(
+            manifest,
+            source,
+            dry_run=dry_run,
+            interaction=interaction,
+        )
+        if not source_phase.success:
+            print_error(f"Source phase stopped package and home work: {source_phase.error}")
+            raise typer.Exit(code=1)
 
     # Package sync phases
-    any_failed = _sync_packages(
+    any_failed, incomplete = _sync_packages(
         source=source,
         yes=yes,
         dry_run=dry_run,
@@ -498,7 +564,11 @@ def sync(
         no_advisor=no_advisor,
         auto=auto,
         review=review,
+        manifest=manifest,
     )
+
+    if incomplete:
+        raise typer.Exit(code=1)
 
     # Domain orphan phases (always run after package sync)
     _run_both_orphan_phases(

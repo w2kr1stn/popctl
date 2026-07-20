@@ -1,11 +1,14 @@
 import re
+import sys
 from pathlib import Path
 from shutil import which
 from typing import Annotated
 
 import typer
 
+from popctl.cli.types import SourceChoice
 from popctl.core.paths import get_config_dir
+from popctl.sources.phase import SourceInteractionPolicy
 from popctl.utils.formatting import (
     console,
     print_error,
@@ -188,7 +191,7 @@ def create(
 
 @app.command()
 def restore(
-    source: Annotated[
+    backup_source: Annotated[
         str,
         typer.Argument(
             help="Backup file: local path or rclone remote.",
@@ -208,6 +211,23 @@ def restore(
             "--yes",
             "-y",
             help="Skip confirmation prompt.",
+        ),
+    ] = False,
+    package_source: Annotated[
+        SourceChoice,
+        typer.Option(
+            "--source",
+            "-s",
+            help="Package source to restore: apt, flatpak, snap, or all.",
+            case_sensitive=False,
+        ),
+    ] = SourceChoice.ALL,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            "-n",
+            help="Preview the restore without making changes.",
         ),
     ] = False,
     files_only: Annotated[
@@ -245,7 +265,7 @@ def restore(
 
     # Read metadata for confirmation
     try:
-        metadata = read_backup_metadata(source, identity)
+        metadata = read_backup_metadata(backup_source, identity)
     except BackupError as e:
         print_error(str(e))
         raise typer.Exit(code=1) from e
@@ -258,7 +278,7 @@ def restore(
     mode = "files only" if files_only else "packages only" if packages_only else "full restore"
     console.print(f"  Mode:     {mode}")
 
-    if not yes:
+    if not yes and not dry_run:
         confirmed = typer.confirm(f"\nProceed with {mode}?", default=False)
         if not confirmed:
             print_info("Aborted.")
@@ -266,14 +286,21 @@ def restore(
 
     try:
         counts = restore_backup(
-            source,
+            backup_source,
             identity,
             files_only=files_only,
             packages_only=packages_only,
+            package_source=package_source,
+            dry_run=dry_run,
+            interaction=SourceInteractionPolicy(yes=yes, interactive=sys.stdin.isatty()),
         )
     except BackupError as e:
         print_error(str(e))
         raise typer.Exit(code=1) from e
+
+    if dry_run:
+        print_info("Dry-run mode: No changes were made.")
+        return
 
     # Summary
     console.print()

@@ -16,40 +16,24 @@ from popctl.core.paths import get_manifest_path
 from popctl.core.state import record_domain_deletions
 from popctl.domain.models import DomainActionResult, OrphanStatus, ScannedEntry
 from popctl.filesystem import FilesystemScanner
-from popctl.models.manifest import Manifest, PackageSourceType
-from popctl.models.package import PackageSource
+from popctl.models.manifest import Manifest
+from popctl.models.package import PackageSource, SourceChoice
 from popctl.scanners import get_scanners
 from popctl.scanners.base import Scanner
+from popctl.sources.capture import capture_sources
+from popctl.sources.diff import SourceDiffResult, compute_source_diff
 from popctl.utils.formatting import print_error, print_info, print_warning
 
 __all__ = [
     "OutputFormat",
     "SourceChoice",
     "collect_domain_orphans",
+    "compute_source_system_diff",
     "compute_system_diff",
     "get_checked_scanners",
     "post_clean_update",
     "require_manifest",
 ]
-
-
-class SourceChoice(str, Enum):
-
-    APT = "apt"
-    FLATPAK = "flatpak"
-    SNAP = "snap"
-    ALL = "all"
-
-    def to_package_source(self) -> PackageSource | None:
-        if self == SourceChoice.ALL:
-            return None
-        return PackageSource(self.value)
-
-    def to_source_filter(self) -> PackageSourceType | None:
-        ps = self.to_package_source()
-        if ps is None:
-            return None
-        return ps.value  # type: ignore[return-value]
 
 
 class OutputFormat(str, Enum):
@@ -92,13 +76,43 @@ def require_manifest(manifest_path: Path | None = None) -> Manifest:
         raise typer.Exit(code=1) from e
 
 
-def compute_system_diff(source: SourceChoice, *, silent_warnings: bool = False) -> DiffResult:
-    manifest = require_manifest()
+def compute_system_diff(
+    source: SourceChoice,
+    *,
+    silent_warnings: bool = False,
+    manifest: Manifest | None = None,
+) -> DiffResult:
+    manifest = manifest or require_manifest()
     scanners = get_checked_scanners(source, silent=silent_warnings)
     try:
         return compute_diff(manifest, scanners, source.to_source_filter())
     except RuntimeError as e:
         print_error(f"Scan failed: {e}")
+        raise typer.Exit(code=1) from e
+
+
+def compute_source_system_diff(source: SourceChoice) -> SourceDiffResult:
+    manifest = require_manifest()
+    if manifest.sources is None:
+        return SourceDiffResult()
+
+    source_filter = source.to_package_source()
+    managers = (source_filter,) if source_filter is not None else None
+    try:
+        live_sources = capture_sources(managers=managers)
+        apt_package_names = (
+            manifest.get_keep_packages("apt").keys()
+            if source_filter in {None, PackageSource.APT}
+            else ()
+        )
+        return compute_source_diff(
+            manifest.sources,
+            live_sources,
+            source_filter=source_filter,
+            apt_package_names=apt_package_names,
+        )
+    except RuntimeError as e:
+        print_error(f"Source scan failed: {e}")
         raise typer.Exit(code=1) from e
 
 

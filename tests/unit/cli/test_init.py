@@ -5,11 +5,29 @@ Tests for the CLI init command implementation.
 
 import os
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from popctl.cli.main import app
+from popctl.models.manifest import Manifest, ManifestMeta, PackageConfig, PackageEntry, SystemConfig
+from popctl.models.package import PackageSource
+from popctl.sources.models import (
+    AptKey,
+    AptSource,
+    AptSourceFormat,
+    AptSources,
+    ReplayMode,
+    SignedByBinding,
+    SourcePlatform,
+    SourcesConfig,
+)
+from popctl.sources.phase import (
+    SourceCaptureTrustResult,
+    SourceInteractionPolicy,
+    capture_and_trust_sources,
+)
 from popctl.utils.shell import CommandResult
 from typer.testing import CliRunner
 
@@ -17,9 +35,16 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
-def _snap_unavailable() -> Iterator[None]:
-    """Keep init tests independent of whether the host has Snap installed."""
-    with patch("popctl.scanners.snap.command_exists", return_value=False):
+def _source_capture_without_replay() -> Iterator[None]:
+    """Keep package-focused init tests independent of source-capture commands."""
+    sources = SourcesConfig(platform=SourcePlatform(distro_id="ubuntu", codename="noble"))
+    with (
+        patch("popctl.scanners.snap.command_exists", return_value=False),
+        patch(
+            "popctl.cli.commands.init.capture_and_trust_sources",
+            return_value=SourceCaptureTrustResult(success=True, sources=sources),
+        ),
+    ):
         yield
 
 
@@ -202,6 +227,193 @@ installed\tlibfoo\t1.0\t50\tLibrary"""
 
         assert result.exit_code == 1
         assert "No package managers available" in (result.stdout + result.stderr)
+
+    def test_init_dry_run_forwards_to_source_capture_without_mutation(self) -> None:
+        source = AptSource(
+            id="vendor",
+            capture_path="/etc/apt/sources.list.d/vendor.sources",
+            format=AptSourceFormat.DEB822,
+            ordinal=0,
+            managed_target="popctl-vendor",
+            verbatim_stanza="Types: deb\nURIs: https://vendor.example/apt\nSuites: stable\n",
+            key_ids=("vendor",),
+            signed_by=SignedByBinding(key_paths=("/etc/apt/keyrings/vendor.asc",)),
+            replay_mode=ReplayMode.REPLAY,
+        )
+        sources = SourcesConfig(
+            platform=SourcePlatform(distro_id="ubuntu", codename="noble"),
+            apt=AptSources(
+                entries=(source,),
+                keys=(
+                    AptKey(
+                        id="vendor",
+                        target_path="/etc/apt/keyrings/vendor.asc",
+                        armor="vendor-key",
+                        fingerprints=("A" * 40,),
+                    ),
+                ),
+            ),
+        )
+        manifest = Manifest(
+            meta=ManifestMeta(created=datetime.now(UTC), updated=datetime.now(UTC)),
+            system=SystemConfig(name="test-machine"),
+            packages=PackageConfig(keep={"vim": PackageEntry(source="apt")}),
+        )
+        scanner = MagicMock()
+        scanner.source = PackageSource.APT
+
+        with (
+            patch("popctl.cli.commands.init.get_available_scanners", return_value=[scanner]),
+            patch(
+                "popctl.cli.commands.init.scan_and_create_manifest",
+                return_value=(manifest, manifest.packages.keep, []),
+            ),
+            patch(
+                "popctl.cli.commands.init.capture_and_trust_sources",
+                return_value=SourceCaptureTrustResult(success=True, sources=sources),
+            ) as capture,
+            patch("popctl.cli.commands.init.save_manifest") as save,
+            patch("popctl.sources.phase.typer.confirm") as confirm,
+            patch("popctl.sources.phase.provision_sources") as provision,
+            patch("popctl.core.executor.record_actions_to_history") as history,
+        ):
+            result = runner.invoke(app, ["init", "--dry-run"])
+
+        assert result.exit_code == 0
+        assert capture.call_args.kwargs["dry_run"] is True
+        save.assert_not_called()
+        confirm.assert_not_called()
+        provision.assert_not_called()
+        history.assert_not_called()
+
+    def test_init_noninteractive_refuses_new_source_trust_without_writes(self) -> None:
+        source = AptSource(
+            id="vendor",
+            capture_path="/etc/apt/sources.list.d/vendor.sources",
+            format=AptSourceFormat.DEB822,
+            ordinal=0,
+            managed_target="popctl-vendor",
+            verbatim_stanza="Types: deb\nURIs: https://vendor.example/apt\nSuites: stable\n",
+            key_ids=("vendor",),
+            signed_by=SignedByBinding(key_paths=("/etc/apt/keyrings/vendor.asc",)),
+            replay_mode=ReplayMode.REPLAY,
+        )
+        sources = SourcesConfig(
+            platform=SourcePlatform(distro_id="ubuntu", codename="noble"),
+            apt=AptSources(
+                entries=(source,),
+                keys=(
+                    AptKey(
+                        id="vendor",
+                        target_path="/etc/apt/keyrings/vendor.asc",
+                        armor="vendor-key",
+                        fingerprints=("A" * 40,),
+                    ),
+                ),
+            ),
+        )
+        manifest = Manifest(
+            meta=ManifestMeta(created=datetime.now(UTC), updated=datetime.now(UTC)),
+            system=SystemConfig(name="test-machine"),
+            packages=PackageConfig(keep={"vim": PackageEntry(source="apt")}),
+        )
+        scanner = MagicMock()
+        scanner.source = PackageSource.APT
+        source_commands: list[list[str]] = []
+
+        def record_source_command(
+            args: list[str], *, timeout: float | None = None
+        ) -> CommandResult:
+            source_commands.append(args)
+            return CommandResult(stdout="", stderr="", returncode=0)
+
+        with (
+            patch("popctl.cli.commands.init.get_available_scanners", return_value=[scanner]),
+            patch(
+                "popctl.cli.commands.init.scan_and_create_manifest",
+                return_value=(manifest, manifest.packages.keep, []),
+            ),
+            patch(
+                "popctl.cli.commands.init.capture_and_trust_sources",
+                wraps=capture_and_trust_sources,
+            ) as capture,
+            patch("popctl.sources.phase.capture_sources", return_value=sources),
+            patch("popctl.sources.phase.typer.confirm") as confirm,
+            patch("popctl.cli.commands.init.save_manifest") as save,
+            patch("popctl.sources.provision.run_command", side_effect=record_source_command),
+            patch("popctl.core.executor.record_actions_to_history") as history,
+        ):
+            result = runner.invoke(app, ["init"])
+
+        assert result.exit_code == 1
+        assert capture.call_args.kwargs["interaction"] == SourceInteractionPolicy(
+            yes=False,
+            interactive=False,
+        )
+        confirm.assert_not_called()
+        save.assert_not_called()
+        history.assert_not_called()
+        assert source_commands == []
+
+    def test_init_persists_an_approved_source_capture_once(self) -> None:
+        source = AptSource(
+            id="vendor",
+            capture_path="/etc/apt/sources.list.d/vendor.sources",
+            format=AptSourceFormat.DEB822,
+            ordinal=0,
+            managed_target="popctl-vendor",
+            verbatim_stanza="Types: deb\nURIs: https://vendor.example/apt\nSuites: stable\n",
+            key_ids=("vendor",),
+            signed_by=SignedByBinding(key_paths=("/etc/apt/keyrings/vendor.asc",)),
+            replay_mode=ReplayMode.REPLAY,
+        )
+        sources = SourcesConfig(
+            platform=SourcePlatform(distro_id="ubuntu", codename="noble"),
+            apt=AptSources(
+                entries=(source,),
+                keys=(
+                    AptKey(
+                        id="vendor",
+                        target_path="/etc/apt/keyrings/vendor.asc",
+                        armor="vendor-key",
+                        fingerprints=("A" * 40,),
+                    ),
+                ),
+            ),
+        )
+        manifest = Manifest(
+            meta=ManifestMeta(created=datetime.now(UTC), updated=datetime.now(UTC)),
+            system=SystemConfig(name="test-machine"),
+            packages=PackageConfig(keep={"vim": PackageEntry(source="apt")}),
+        )
+        scanner = MagicMock()
+        scanner.source = PackageSource.APT
+
+        with (
+            patch("popctl.cli.commands.init.get_available_scanners", return_value=[scanner]),
+            patch(
+                "popctl.cli.commands.init.scan_and_create_manifest",
+                return_value=(manifest, manifest.packages.keep, []),
+            ),
+            patch(
+                "popctl.cli.commands.init.capture_and_trust_sources",
+                wraps=capture_and_trust_sources,
+            ),
+            patch("popctl.sources.phase.capture_sources", return_value=sources),
+            patch("popctl.sources.phase.typer.confirm", return_value=True) as confirm,
+            patch(
+                "popctl.cli.commands.init.SourceInteractionPolicy",
+                return_value=SourceInteractionPolicy(interactive=True),
+            ),
+            patch("popctl.cli.commands.init.save_manifest") as save,
+        ):
+            result = runner.invoke(app, ["init"])
+
+        assert result.exit_code == 0
+        confirm.assert_called_once()
+        saved_manifest = save.call_args.args[0]
+        assert saved_manifest.sources == sources
+        save.assert_called_once()
 
 
 class TestInitManifestContent:

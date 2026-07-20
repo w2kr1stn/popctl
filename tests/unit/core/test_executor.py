@@ -6,16 +6,18 @@ Tests operator factory, action execution dispatch, and history recording.
 from unittest.mock import MagicMock, patch
 
 from popctl.core.executor import (
+    UNHANDLED_ACTION_DETAIL,
     execute_actions,
     record_actions_to_history,
 )
-from popctl.models.action import Action, ActionResult, ActionType
+from popctl.models.action import Action, ActionResult, ActionType, SourceInstallContext
 from popctl.models.history import HistoryActionType
 from popctl.models.package import PackageSource
 from popctl.operators import get_available_operators
 from popctl.operators.apt import AptOperator
 from popctl.operators.flatpak import FlatpakOperator
 from popctl.operators.snap import SnapOperator
+from popctl.sources.models import FlatpakScope
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -189,6 +191,44 @@ class TestExecuteActions:
         flatpak_op.install.assert_not_called()
         flatpak_op.remove.assert_not_called()
         assert results == [result]
+
+    def test_preserves_source_context_when_dispatching_install(self) -> None:
+        action = Action(
+            ActionType.INSTALL,
+            "org.example.App",
+            PackageSource.FLATPAK,
+            SourceInstallContext(
+                flatpak_remote="flathub-beta",
+                flatpak_scope=FlatpakScope.USER,
+                flatpak_arch="x86_64",
+                flatpak_branch="beta",
+            ),
+        )
+        result = _make_result(action)
+        operator = MagicMock(spec=FlatpakOperator)
+        operator.source = PackageSource.FLATPAK
+        operator.install.return_value = [result]
+
+        results = execute_actions([action], [operator])
+
+        operator.install.assert_called_once_with([action])
+        assert results == [result]
+
+    def test_synthesizes_a_failure_for_an_action_without_an_operator_result(self) -> None:
+        action = _make_action(package="vim")
+        operator = MagicMock(spec=AptOperator)
+        operator.source = PackageSource.APT
+        operator.install.return_value = []
+
+        results = execute_actions([action], [operator])
+
+        assert results == [
+            ActionResult(
+                action=action,
+                success=False,
+                detail=UNHANDLED_ACTION_DETAIL,
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------

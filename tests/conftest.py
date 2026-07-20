@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
 import pytest
 
+_SYSTEM_RUN = subprocess.run
+_SYSTEM_POPEN = subprocess.Popen
+
 
 def pytest_configure(config: pytest.Config) -> None:
     """Isolate user-state paths before test collection imports application modules."""
     config.addinivalue_line("markers", "real_git: opt in to the scoped real-Git fixture")
+    config.addinivalue_line("markers", "real_gpg: opt in to the scoped real-GPG fixture")
     session_dir = Path(tempfile.mkdtemp(prefix="popctl-pytest-"))
     home_dir = session_dir / "home"
     config_dir = session_dir / "xdg-config"
@@ -81,3 +86,20 @@ def _no_real_system_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("popctl.utils.shell.subprocess.run", _refuse)
     monkeypatch.setattr("popctl.backup.backup.subprocess.Popen", _refuse)
     monkeypatch.setattr("popctl.backup.restore.subprocess.Popen", _refuse)
+
+
+@pytest.fixture
+def real_gpg(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Permit isolated fixture tests to execute only the local GPG binary."""
+
+    def run_gpg_only(args: object, *args_rest: object, **kwargs: object) -> object:
+        if not isinstance(args, list) or not args or args[0] != "gpg":
+            pytest.fail("real_gpg permits only gpg as argv[0]")
+        guarded_popen = subprocess.Popen
+        subprocess.Popen = _SYSTEM_POPEN
+        try:
+            return _SYSTEM_RUN(args, *args_rest, **kwargs)
+        finally:
+            subprocess.Popen = guarded_popen
+
+    monkeypatch.setattr("popctl.utils.shell.subprocess.run", run_gpg_only)

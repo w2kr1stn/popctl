@@ -4,6 +4,8 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from popctl.sources.models import SourcesConfig
+
 
 class ManifestMeta(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -80,6 +82,7 @@ class Manifest(BaseModel):
     packages: PackageConfig
     filesystem: DomainConfig | None = None
     configs: DomainConfig | None = None
+    sources: SourcesConfig | None = None
 
     def get_keep_packages(self, source: PackageSourceType | None = None) -> dict[str, PackageEntry]:
         if source is None:

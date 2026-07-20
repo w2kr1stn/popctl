@@ -37,7 +37,7 @@ installed\t\t\t\t"""
 @pytest.fixture
 def mock_flatpak_output() -> str:
     """Sample flatpak list output for testing."""
-    return """com.spotify.Client\t1.2.31.1205\t1.2 GB\tMusic streaming service
-org.mozilla.firefox\t128.0\t500 MB\tMozilla Firefox web browser
-org.gnome.Calculator\t46.1\t50 MB\tGNOME Calculator
-io.github.celluloid_player.Celluloid\t0.26\t100 MB\tVideo player"""
+    return """com.spotify.Client\t1.2.31.1205\t1.2 GB\tMusic streaming service\tx86_64\tstable
+org.mozilla.firefox\t128.0\t500 MB\tMozilla Firefox web browser\tx86_64\tstable
+org.gnome.Calculator\t46.1\t50 MB\tGNOME Calculator\tx86_64\tstable
+io.github.celluloid_player.Celluloid\t0.26\t100 MB\tVideo player\tx86_64\tstable"""
