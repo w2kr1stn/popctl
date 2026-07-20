@@ -96,11 +96,11 @@ class FlatpakRemote(SourceModel):
 
 
 class FlatpakApp(SourceModel):
-    id: str
-    origin: str
+    id: str = Field(min_length=1)
+    origin: str = Field(min_length=1)
     scope: FlatpakScope
-    arch: str
-    branch: str
+    arch: str = Field(min_length=1)
+    branch: str = Field(min_length=1)
 
     @property
     def locator(self) -> SourceLocator:

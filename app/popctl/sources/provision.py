@@ -1,4 +1,3 @@
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -6,7 +5,11 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from popctl.models.package import PackageSource
-from popctl.sources.capture import AptSourceParseError, apt_source_has_insecure_options
+from popctl.sources.capture import (
+    AptSourceParseError,
+    apt_source_has_insecure_options,
+    rewrite_apt_signed_by,
+)
 from popctl.sources.keytrust import (
     KeyTrustError,
     VerifiedPublicKey,
@@ -52,13 +55,6 @@ class SourceProvisionResult:
 
 
 class SourceProvisionError(RuntimeError): ...
-
-
-_LEGACY_SIGNED_BY_PATTERN = re.compile(
-    r"(signed-by\s*=\s*)(?:\"[^\"]*\"|'[^']*'|[^\s\]]+)",
-    re.IGNORECASE,
-)
-_DEB822_SIGNED_BY_PATTERN = re.compile(r"^signed-by:.*(?:\n [^\n]*)*", re.IGNORECASE | re.MULTILINE)
 
 
 def _command_or_error(args: list[str]) -> CommandResult:
@@ -162,14 +158,7 @@ def render_managed_apt_stanza(source: AptSource, keys: tuple[AptKey, ...]) -> st
         raise SourceProvisionError("Insecure APT sources cannot be replayed")
 
     signed_by = _signed_by_value(source, keys)
-    if source.format is AptSourceFormat.LEGACY:
-        rendered, substitutions = _LEGACY_SIGNED_BY_PATTERN.subn(
-            rf"\1{signed_by}", source.verbatim_stanza
-        )
-    else:
-        rendered, substitutions = _DEB822_SIGNED_BY_PATTERN.subn(
-            f"Signed-By: {signed_by}", source.verbatim_stanza
-        )
+    rendered, substitutions = rewrite_apt_signed_by(source, signed_by)
     if substitutions != 1:
         raise SourceProvisionError("APT source has no unambiguous Signed-By stanza")
     return rendered if rendered.endswith("\n") else f"{rendered}\n"

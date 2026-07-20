@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
+from popctl.core.diff import DiffEntry, DiffResult, DiffType, diff_to_actions
 from popctl.models.manifest import Manifest, ManifestMeta, PackageConfig, SystemConfig
 from popctl.models.package import PackageSource, SourceChoice
 from popctl.sources.capture import SourceCaptureError
@@ -88,6 +89,26 @@ def _snap_sources(*channels: SnapChannel) -> SourcesConfig:
     return SourcesConfig(platform=_platform(), snap=SnapSources(packages=channels))
 
 
+def _flatpak_remote_and_app() -> tuple[FlatpakRemote, FlatpakApp]:
+    remote = FlatpakRemote(
+        name="vendor",
+        scope=FlatpakScope.USER,
+        url="https://vendor.example/repo.flatpakrepo",
+        gpg_verify=True,
+        gpg_key_armor="vendor-key",
+        gpg_fingerprints=(FINGERPRINT,),
+        replay_mode=ReplayMode.REPLAY,
+    )
+    app = FlatpakApp(
+        id="org.example.App",
+        origin="vendor",
+        scope=FlatpakScope.USER,
+        arch="x86_64",
+        branch="beta",
+    )
+    return remote, app
+
+
 def _verified(fingerprint: str = FINGERPRINT) -> VerifiedPublicKey:
     return VerifiedPublicKey(armor="verified", fingerprints=(fingerprint,))
 
@@ -127,6 +148,32 @@ def test_selected_managers_only_requires_sources_in_the_selected_filter() -> Non
     assert selected_managers(sources, PackageSource.APT) == (PackageSource.APT,)
     assert selected_managers(sources, PackageSource.FLATPAK) == (PackageSource.FLATPAK,)
     assert selected_managers(sources, PackageSource.SNAP) == (PackageSource.SNAP,)
+
+
+def test_report_only_apt_records_do_not_select_a_manager_or_preflight() -> None:
+    sources = _apt_sources()
+    report_only = sources.apt.entries[0].model_copy(
+        update={
+            "replay_mode": ReplayMode.REPORT_ONLY,
+            "verbatim_stanza": sources.apt.entries[0].verbatim_stanza.replace("stable", "jammy"),
+        }
+    )
+    sources = sources.model_copy(
+        update={
+            "platform": _platform("jammy"),
+            "apt": sources.apt.model_copy(update={"entries": (report_only,)}),
+        }
+    )
+
+    result = preflight_sources(
+        sources,
+        source_filter=PackageSource.APT,
+        target_platform=_platform("oracular"),
+    )
+
+    assert selected_managers(sources, PackageSource.APT) == ()
+    assert result.success is True
+    assert result.checks == ()
 
 
 def test_preflight_collects_all_selected_failures_before_any_write() -> None:
@@ -330,7 +377,7 @@ def test_source_phase_fails_closed_for_changed_trust_with_yes() -> None:
     provision.assert_not_called()
 
 
-def test_source_phase_report_only_base_drift_skips_trust_and_write_preview() -> None:
+def test_source_phase_report_only_base_drift_skips_source_preflight_and_writes() -> None:
     expected = _apt_sources(uri="https://archive.ubuntu.com/ubuntu")
     source = expected.apt.entries[0].model_copy(
         update={
@@ -353,7 +400,7 @@ def test_source_phase_report_only_base_drift_skips_trust_and_write_preview() -> 
         patch("popctl.sources.preflight.get_available_operators", side_effect=_available),
         patch("popctl.sources.preflight.verify_public_material", return_value=_verified()),
         patch("popctl.sources.phase.capture_platform", return_value=_platform()),
-        patch("popctl.sources.phase.capture_sources", return_value=live),
+        patch("popctl.sources.phase.capture_sources", return_value=live) as capture,
         patch("popctl.sources.phase.print_info", side_effect=lines.append),
         patch("popctl.sources.phase.typer.confirm") as confirm,
         patch("popctl.sources.phase.provision_sources") as provision,
@@ -367,11 +414,11 @@ def test_source_phase_report_only_base_drift_skips_trust_and_write_preview() -> 
         )
 
     assert result.success is True
-    assert result.source_diff.changed[0].expected is source
-    assert any("changed: apt popctl-vendor" in line for line in lines)
-    assert not any("popctl-vendor" in line and "command:" in line for line in lines)
+    assert result.source_diff.changed == ()
+    assert lines == []
+    capture.assert_not_called()
     confirm.assert_not_called()
-    assert provision.call_args.kwargs["changes"] == ()
+    provision.assert_not_called()
 
 
 def test_source_phase_returns_structured_failure_for_residual_diff_error() -> None:
@@ -548,58 +595,6 @@ def test_source_phase_keeps_provision_failure_and_retained_artifacts() -> None:
     assert result.error == "strict update failed"
 
 
-def test_capture_and_trust_filters_bootstrap_and_shows_fingerprint_before_prompt() -> None:
-    sources = _apt_sources().model_copy(
-        update={
-            "flatpak": FlatpakSources(
-                remotes=(
-                    FlatpakRemote(
-                        name="vendor",
-                        scope=FlatpakScope.USER,
-                        url="https://vendor.example/flatpak",
-                        gpg_verify=True,
-                        gpg_key_armor="vendor-key",
-                        gpg_fingerprints=(FINGERPRINT,),
-                        replay_mode=ReplayMode.REPLAY,
-                    ),
-                ),
-            ),
-            "snap": _snap_sources(
-                SnapChannel(name="hello", channel="latest/edge", replay_mode=ReplayMode.REPLAY)
-            ).snap,
-        }
-    )
-    events: list[str] = []
-
-    def confirm_source(*_args: object, **_kwargs: object) -> bool:
-        events.append("confirm")
-        return True
-
-    with (
-        patch("popctl.sources.phase.capture_sources", return_value=sources) as capture,
-        patch("popctl.sources.phase.print_info", side_effect=events.append),
-        patch("popctl.sources.phase.typer.confirm", side_effect=confirm_source) as confirm,
-    ):
-        result = capture_and_trust_sources(
-            SourceChoice.APT,
-            dry_run=False,
-            interaction=SourceInteractionPolicy(interactive=True),
-    )
-
-    assert result.success is True
-    assert result.sources is not None
-    assert result.sources.apt == sources.apt
-    assert result.sources.flatpak == FlatpakSources()
-    assert result.sources.snap == SnapSources()
-    assert capture.call_args.kwargs["managers"] == (PackageSource.APT,)
-    assert confirm.call_count == 1
-    assert any("Third-party APT source: https://vendor.example/apt" in event for event in events)
-    assert any(FINGERPRINT in event for event in events)
-    assert events.index("confirm") > next(
-        index for index, event in enumerate(events) if FINGERPRINT in event
-    )
-
-
 def test_capture_and_trust_rejects_blocked_sources_before_persisting() -> None:
     sources = _apt_sources()
     blocked = sources.apt.entries[0].model_copy(update={"replay_mode": ReplayMode.BLOCKED})
@@ -756,6 +751,131 @@ def test_refresh_atomically_merges_only_the_individually_confirmed_sources() -> 
     assert result.manifest.sources is not None
     assert result.manifest.sources.snap.packages == (changed,)
     assert confirm.call_count == 2
+
+
+def test_refresh_merges_flatpak_app_context_from_an_existing_trusted_remote() -> None:
+    remote, app = _flatpak_remote_and_app()
+    sources = SourcesConfig(
+        platform=_platform(), flatpak=FlatpakSources(remotes=(remote,))
+    )
+    manifest = _manifest(sources)
+    live = sources.model_copy(update={"flatpak": FlatpakSources(remotes=(remote,), apps=(app,))})
+
+    with (
+        patch("popctl.sources.phase.capture_sources", return_value=live) as capture,
+        patch("popctl.sources.phase._print_capture_trust_preview") as preview,
+        patch("popctl.sources.phase.typer.confirm") as confirm,
+    ):
+        result = refresh_manifest_sources(
+            manifest,
+            SourceChoice.FLATPAK,
+            interaction=SourceInteractionPolicy(interactive=True),
+        )
+
+    assert result.success is True
+    assert result.changed is True
+    assert result.manifest.sources is not None
+    assert result.manifest.sources.flatpak.apps == (app,)
+    assert capture.call_args.kwargs["managers"] == (PackageSource.FLATPAK,)
+    assert preview.call_args.args[1][0].live == app
+    confirm.assert_not_called()
+
+    actions = diff_to_actions(
+        DiffResult(
+            new=(),
+            missing=(
+                DiffEntry(
+                    name=app.id,
+                    source=PackageSource.FLATPAK,
+                    diff_type=DiffType.MISSING,
+                ),
+            ),
+            extra=(),
+        ),
+        sources=result.manifest.sources,
+    )
+    assert actions[0].source_install_context is not None
+    assert actions[0].source_install_context.flatpak_remote == "vendor"
+    assert actions[0].source_install_context.flatpak_scope is FlatpakScope.USER
+    assert actions[0].source_install_context.flatpak_arch == "x86_64"
+    assert actions[0].source_install_context.flatpak_branch == "beta"
+
+
+def test_refresh_updates_flatpak_app_context_for_an_existing_trusted_remote() -> None:
+    remote, app = _flatpak_remote_and_app()
+    legacy_remote = remote.model_copy(update={"name": "legacy"})
+    legacy_app = app.model_copy(update={"origin": "legacy"})
+    sources = SourcesConfig(
+        platform=_platform(),
+        flatpak=FlatpakSources(remotes=(legacy_remote, remote), apps=(legacy_app,)),
+    )
+    manifest = _manifest(sources)
+    live = sources.model_copy(
+        update={"flatpak": FlatpakSources(remotes=(legacy_remote, remote), apps=(app,))}
+    )
+
+    with (
+        patch("popctl.sources.phase.capture_sources", return_value=live),
+        patch("popctl.sources.phase.typer.confirm") as confirm,
+    ):
+        result = refresh_manifest_sources(
+            manifest,
+            SourceChoice.FLATPAK,
+            interaction=SourceInteractionPolicy(interactive=True),
+        )
+
+    assert result.success is True
+    assert result.changed is True
+    assert result.manifest.sources is not None
+    assert result.manifest.sources.flatpak.apps == (app,)
+    confirm.assert_not_called()
+
+
+def test_refresh_merges_flatpak_app_only_with_an_approved_new_remote() -> None:
+    remote, app = _flatpak_remote_and_app()
+    manifest = _manifest(SourcesConfig(platform=_platform()))
+    live = SourcesConfig(
+        platform=_platform(), flatpak=FlatpakSources(remotes=(remote,), apps=(app,))
+    )
+
+    with (
+        patch("popctl.sources.phase.capture_sources", return_value=live),
+        patch("popctl.sources.phase.typer.confirm", return_value=True) as confirm,
+    ):
+        result = refresh_manifest_sources(
+            manifest,
+            SourceChoice.FLATPAK,
+            interaction=SourceInteractionPolicy(interactive=True),
+        )
+
+    assert result.success is True
+    assert result.changed is True
+    assert result.manifest.sources is not None
+    assert result.manifest.sources.flatpak.remotes == (remote,)
+    assert result.manifest.sources.flatpak.apps == (app,)
+    assert confirm.call_count == 1
+
+
+def test_refresh_does_not_merge_flatpak_app_when_its_new_remote_is_rejected() -> None:
+    remote, app = _flatpak_remote_and_app()
+    manifest = _manifest(SourcesConfig(platform=_platform()))
+    live = SourcesConfig(
+        platform=_platform(), flatpak=FlatpakSources(remotes=(remote,), apps=(app,))
+    )
+
+    with (
+        patch("popctl.sources.phase.capture_sources", return_value=live),
+        patch("popctl.sources.phase.typer.confirm", return_value=False),
+    ):
+        result = refresh_manifest_sources(
+            manifest,
+            SourceChoice.FLATPAK,
+            interaction=SourceInteractionPolicy(interactive=True),
+        )
+
+    assert result.success is True
+    assert result.changed is False
+    assert result.manifest.sources == manifest.sources
 
 
 def test_refresh_noninteractive_refuses_a_new_source_without_mutating_manifest() -> None:

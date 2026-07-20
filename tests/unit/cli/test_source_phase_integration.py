@@ -193,7 +193,7 @@ def test_apply_yes_continues_to_packages_for_report_only_base_drift() -> None:
         ),
         patch(
             "popctl.sources.phase.capture_platform",
-            return_value=SourcePlatform(distro_id="ubuntu", codename="noble"),
+            return_value=SourcePlatform(distro_id="ubuntu", codename="oracular"),
         ),
         patch("popctl.sources.phase.capture_sources", return_value=live),
         patch(
@@ -339,7 +339,7 @@ def test_sync_yes_continues_to_packages_for_report_only_base_drift() -> None:
         ),
         patch(
             "popctl.sources.phase.capture_platform",
-            return_value=SourcePlatform(distro_id="ubuntu", codename="noble"),
+            return_value=SourcePlatform(distro_id="ubuntu", codename="oracular"),
         ),
         patch("popctl.sources.phase.capture_sources", return_value=live),
         patch(
@@ -428,6 +428,39 @@ def test_sync_missing_manifest_dry_run_never_saves_the_ephemeral_manifest() -> N
     assert capture.call_args.kwargs["dry_run"] is True
     save.assert_not_called()
     assert "ephemeral" in result.stdout.lower()
+
+
+def test_sync_bootstrap_scans_only_the_selected_package_source() -> None:
+    manifest = _manifest()
+    apt_scanner = MagicMock()
+    apt_scanner.source = PackageSource.APT
+    flatpak_scanner = MagicMock()
+    flatpak_scanner.source = PackageSource.FLATPAK
+    with (
+        patch("popctl.cli.commands.sync.manifest_exists", return_value=False),
+        patch(
+            "popctl.cli.commands.sync.get_available_scanners",
+            return_value=[apt_scanner],
+        ) as scanners,
+        patch(
+            "popctl.cli.commands.sync.capture_manifest",
+            return_value=(manifest, {"vim": PackageEntry(source="apt")}, []),
+        ) as capture,
+        patch(
+            "popctl.cli.commands.sync.run_source_phase",
+            return_value=SourcePhaseResult(success=True),
+        ),
+        patch("popctl.cli.commands.sync.compute_system_diff", return_value=DiffResult((), (), ())),
+    ):
+        result = runner.invoke(
+            app,
+            ["sync", "--source", "apt", "--dry-run", "--no-filesystem", "--no-configs"],
+        )
+
+    assert result.exit_code == 0
+    scanners.assert_called_once_with(PackageSource.APT)
+    assert capture.call_args.args[0] == [apt_scanner]
+    assert flatpak_scanner not in capture.call_args.args[0]
 
 
 @pytest.mark.parametrize(

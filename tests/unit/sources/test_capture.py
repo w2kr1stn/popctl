@@ -93,6 +93,19 @@ def test_apt_capture_preserves_legacy_options_comments_and_stanza(
     assert entry.key_ids == ("vendor-key",)
 
 
+def test_legacy_exact_path_source_allows_omitted_component(tmp_path: Path) -> None:
+    source = tmp_path / "vendor.list"
+    source.write_text(
+        "deb [signed-by=/etc/apt/keyrings/vendor.gpg] https://vendor.example/repo ./\n",
+        encoding="utf-8",
+    )
+
+    descriptor = parse_apt_source_file(source)[0]
+
+    assert descriptor.uris == ("https://vendor.example/repo",)
+    assert descriptor.suites == ("./",)
+
+
 def test_deb822_capture_classifies_base_and_replayable_sources_by_identity(
     apt_root: Path, platform: SourcePlatform
 ) -> None:
@@ -563,11 +576,16 @@ def test_flatpak_capture_uses_scope_local_keyrings_and_app_contexts(tmp_path: Pa
         (FlatpakScope.USER, "flathub", "stable"),
         (FlatpakScope.SYSTEM, "vendor", "beta"),
     ]
-    gpg_keyrings = [call.args[0][4] for call in run.call_args_list if call.args[0][0] == "gpg"]
+    gpg_commands = [call.args[0] for call in run.call_args_list if call.args[0][0] == "gpg"]
+    gpg_keyrings = [command[command.index("--keyring") + 1] for command in gpg_commands]
     assert gpg_keyrings == [
         str(paths.user_repo / "flathub.trustedkeys.gpg"),
         str(paths.system_repo / "vendor.trustedkeys.gpg"),
     ]
+    for command in gpg_commands:
+        assert "--homedir" in command
+        assert "--no-options" in command
+        assert "--no-default-keyring" in command
 
 
 def test_flatpak_descriptor_key_is_validated_fallback(tmp_path: Path) -> None:
@@ -636,6 +654,29 @@ def test_flatpak_key_capture_and_authenticator_fail_closed(tmp_path: Path) -> No
             ),
         ),
         pytest.raises(CredentialedSourceError, match="Authenticated Flatpak"),
+    ):
+        capture_flatpak_sources(paths)
+
+
+def test_flatpak_capture_rejects_an_app_with_an_empty_branch(tmp_path: Path) -> None:
+    paths = FlatpakPaths(user_repo=tmp_path / "user-repo", system_repo=tmp_path / "system-repo")
+    verified = VerifiedPublicKey(
+        armor="-----BEGIN PGP PUBLIC KEY BLOCK-----\nkey\n",
+        fingerprints=("0123456789ABCDEF0123456789ABCDEF01234567",),
+    )
+
+    def malformed_list(args: list[str]) -> CommandResult:
+        if args[:2] == ["flatpak", "list"] and "--user" in args:
+            return CommandResult(
+                stdout="org.example.App\tflathub\tx86_64\t\n", stderr="", returncode=0
+            )
+        return _flatpak_result(args)
+
+    with (
+        patch("popctl.sources.capture.command_exists", return_value=True),
+        patch("popctl.sources.capture.run_command", side_effect=malformed_list),
+        patch("popctl.sources.capture.verify_public_material", return_value=verified),
+        pytest.raises(SourceCaptureError, match="Malformed flatpak list output"),
     ):
         capture_flatpak_sources(paths)
 

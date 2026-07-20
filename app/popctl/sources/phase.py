@@ -51,7 +51,6 @@ class SourceInteractionPolicy:
 class SourcePhaseResult:
     success: bool
     source_diff: SourceDiffResult = SourceDiffResult()
-    selected_managers: tuple[PackageSource, ...] = ()
     retained_artifacts: tuple[str, ...] = ()
     error: str | None = None
 
@@ -131,23 +130,6 @@ def _live_entry_mode(entry: SourceDiffEntry) -> ReplayMode | None:
     return None
 
 
-def _selected_captured_sources(
-    sources: SourcesConfig,
-    source_filter: PackageSource | None,
-) -> SourcesConfig:
-    if source_filter is None:
-        return sources
-    return sources.model_copy(
-        update={
-            "apt": sources.apt if source_filter is PackageSource.APT else AptSources(),
-            "flatpak": (
-                sources.flatpak if source_filter is PackageSource.FLATPAK else FlatpakSources()
-            ),
-            "snap": sources.snap if source_filter is PackageSource.SNAP else SnapSources(),
-        }
-    )
-
-
 def _apt_identity(source: AptSource) -> str:
     if source.ppa_display is not None:
         return f"ppa:{source.ppa_display}"
@@ -208,7 +190,6 @@ def capture_and_trust_sources(
         print_error(f"Source capture failed: {error}")
         return SourceCaptureTrustResult(success=False, error=str(error))
 
-    sources = _selected_captured_sources(sources, source_filter)
     blocked = _capture_entries(sources, frozenset({ReplayMode.BLOCKED}))
     if blocked:
         error = "blocked source cannot be recorded: " + ", ".join(
@@ -365,7 +346,6 @@ def run_source_phase(
         print_error(f"Source preflight failed: {error}")
         return SourcePhaseResult(
             success=False,
-            selected_managers=managers,
             error=error,
         )
 
@@ -376,7 +356,6 @@ def run_source_phase(
         print_error(f"Source preflight failed: {error}")
         return SourcePhaseResult(
             success=False,
-            selected_managers=managers,
             error=str(error),
         )
 
@@ -391,7 +370,6 @@ def run_source_phase(
         print_error(f"Source preflight failed: {error}")
         return SourcePhaseResult(
             success=False,
-            selected_managers=managers,
             error=error,
         )
 
@@ -401,7 +379,6 @@ def run_source_phase(
         print_error(f"Source preflight failed: {error}")
         return SourcePhaseResult(
             success=False,
-            selected_managers=managers,
             error=str(error),
         )
     _print_preview(sources, source_diff, managers)
@@ -409,7 +386,6 @@ def run_source_phase(
         return SourcePhaseResult(
             success=True,
             source_diff=source_diff,
-            selected_managers=managers,
         )
 
     approved, _, error = _confirm_changes(
@@ -422,7 +398,6 @@ def run_source_phase(
         return SourcePhaseResult(
             success=False,
             source_diff=source_diff,
-            selected_managers=managers,
             error=error,
         )
 
@@ -440,7 +415,6 @@ def run_source_phase(
         return SourcePhaseResult(
             success=False,
             source_diff=source_diff,
-            selected_managers=managers,
             retained_artifacts=result.retained_artifacts,
             error=error,
         )
@@ -448,7 +422,6 @@ def run_source_phase(
     return SourcePhaseResult(
         success=True,
         source_diff=source_diff,
-        selected_managers=managers,
         retained_artifacts=result.retained_artifacts,
     )
 
@@ -512,6 +485,42 @@ def _merge_confirmed_sources(
     return merged
 
 
+def _flatpak_remote_key(remote: FlatpakRemote) -> tuple[str, str]:
+    return remote.scope.value, remote.name
+
+
+def _flatpak_app_remote_key(app: FlatpakApp) -> tuple[str, str]:
+    return app.scope.value, app.origin
+
+
+def _trusted_flatpak_remotes(
+    sources: SourcesConfig,
+    source_diff: SourceDiffResult,
+) -> frozenset[tuple[str, str]]:
+    changed = {
+        _flatpak_remote_key(entry.live)
+        for entry in source_diff.changed
+        if isinstance(entry.live, FlatpakRemote)
+    }
+    return frozenset(
+        _flatpak_remote_key(remote)
+        for remote in sources.flatpak.remotes
+        if remote.replay_mode is ReplayMode.REPLAY and _flatpak_remote_key(remote) not in changed
+    )
+
+
+def _flatpak_app_refresh_entries(
+    entries: tuple[SourceDiffEntry, ...],
+    approved_remotes: frozenset[tuple[str, str]],
+) -> tuple[SourceDiffEntry, ...]:
+    return tuple(
+        entry
+        for entry in entries
+        if isinstance(entry.live, FlatpakApp)
+        and _flatpak_app_remote_key(entry.live) in approved_remotes
+    )
+
+
 def refresh_manifest_sources(
     manifest: Manifest,
     source: SourceChoice,
@@ -542,13 +551,22 @@ def refresh_manifest_sources(
             source_diff=source_diff,
             error=error,
         )
-    candidates = (*source_diff.extra, *source_diff.changed)
-    candidates = tuple(
-        entry for entry in candidates if _live_entry_mode(entry) is ReplayMode.REPLAY
+    changed_or_extra = (*source_diff.extra, *source_diff.changed)
+    trust_candidates = tuple(
+        entry for entry in changed_or_extra if _live_entry_mode(entry) is ReplayMode.REPLAY
     )
-    _print_capture_trust_preview(live_sources, candidates)
+    trusted_remotes = _trusted_flatpak_remotes(sources, source_diff)
+    approvable_remotes = frozenset(
+        _flatpak_remote_key(entry.live)
+        for entry in trust_candidates
+        if isinstance(entry.live, FlatpakRemote)
+    )
+    app_candidates = _flatpak_app_refresh_entries(
+        changed_or_extra, trusted_remotes | approvable_remotes
+    )
+    _print_capture_trust_preview(live_sources, (*trust_candidates, *app_candidates))
     approved, confirmed, error = _confirm_changes(
-        candidates,
+        trust_candidates,
         interaction,
         action="Trust and record changed",
         allow_rejection=True,
@@ -560,11 +578,20 @@ def refresh_manifest_sources(
             source_diff=source_diff,
             error=error,
         )
-    if not confirmed:
+    confirmed_remotes = frozenset(
+        _flatpak_remote_key(entry.live)
+        for entry in confirmed
+        if isinstance(entry.live, FlatpakRemote)
+    )
+    confirmed_apps = _flatpak_app_refresh_entries(
+        app_candidates, trusted_remotes | confirmed_remotes
+    )
+    merged_entries = (*confirmed, *confirmed_apps)
+    if not merged_entries:
         return SourceRefreshResult(success=True, manifest=manifest, source_diff=source_diff)
 
     try:
-        merged_sources = _merge_confirmed_sources(sources, live_sources, confirmed)
+        merged_sources = _merge_confirmed_sources(sources, live_sources, merged_entries)
     except ValueError as error:
         return SourceRefreshResult(
             success=False,

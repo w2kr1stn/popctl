@@ -60,7 +60,9 @@ def selected_managers(
     source_filter: PackageSource | None,
 ) -> tuple[PackageSource, ...]:
     selected: list[PackageSource] = []
-    if source_filter in {None, PackageSource.APT} and sources.apt.entries:
+    if source_filter in {None, PackageSource.APT} and any(
+        source.replay_mode is not ReplayMode.REPORT_ONLY for source in sources.apt.entries
+    ):
         selected.append(PackageSource.APT)
     if source_filter in {None, PackageSource.FLATPAK} and (
         sources.flatpak.remotes or sources.flatpak.apps
@@ -207,6 +209,8 @@ def preflight_sources(
     }
     if PackageSource.APT in managers:
         for source in sources.apt.entries:
+            if source.replay_mode is ReplayMode.REPORT_ONLY:
+                continue
             trust_error = _verify_apt_source(source, sources)
             compatible = _apt_compatible(
                 source,

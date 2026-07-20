@@ -92,7 +92,8 @@ def _ensure_manifest(
 
     print_info("No manifest found. Auto-initializing from current system...")
 
-    scanners = get_available_scanners()
+    selected_source = source.to_package_source()
+    scanners = get_available_scanners(selected_source)
     if not scanners:
         print_error("No package managers available (APT, Flatpak, or Snap required).")
         raise typer.Exit(code=1)

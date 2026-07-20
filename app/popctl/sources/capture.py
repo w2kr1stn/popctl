@@ -1,9 +1,11 @@
 import configparser
 import hashlib
+import re
 import shlex
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import unquote, urlsplit
 from urllib.request import urlopen
 
@@ -35,6 +37,7 @@ from popctl.sources.models import (
     SourcesConfig,
 )
 from popctl.utils.shell import CommandResult, command_exists, run_command
+from popctl.utils.snap import is_runtime_snap
 
 APT_ROOT = Path("/etc/apt")
 OS_RELEASE_PATH = Path("/etc/os-release")
@@ -57,6 +60,11 @@ INSECURE_APT_OPTION_NAMES = frozenset(
 )
 _FLATPAK_AUTH_OPTION_PREFIXES = ("authenticator", "credential", "token", "password")
 _ORIGIN_FIELD = "origin"
+_LEGACY_SIGNED_BY_PATTERN = re.compile(
+    r"(signed-by\s*=\s*)(?:\"[^\"]*\"|'[^']*'|[^\s\]]+)",
+    re.IGNORECASE,
+)
+_DEB822_SIGNED_BY_PATTERN = re.compile(r"^signed-by:.*(?:\n [^\n]*)*", re.IGNORECASE | re.MULTILINE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +278,16 @@ def _parse_signed_by(value: str) -> SignedByBinding:
     return SignedByBinding(key_paths=paths, fingerprint_selectors=selectors)
 
 
+def rewrite_apt_signed_by(source: AptSource, value: str) -> tuple[str, int]:
+    if source.format is AptSourceFormat.LEGACY:
+        return _LEGACY_SIGNED_BY_PATTERN.subn(
+            lambda match: f"{match.group(1)}{value}", source.verbatim_stanza
+        )
+    return _DEB822_SIGNED_BY_PATTERN.subn(
+        f"Signed-By: {value}", source.verbatim_stanza
+    )
+
+
 def has_insecure_apt_options(options: Mapping[str, str]) -> bool:
     for name in INSECURE_APT_OPTION_NAMES:
         if options.get(name, "").lower() in {"yes", "true", "1"}:
@@ -301,7 +319,7 @@ def _parse_legacy_source(path: Path, ordinal: int, line: str) -> AptDescriptor |
         tokens = shlex.split(remainder, posix=True)
     except ValueError as error:
         raise AptSourceParseError("Malformed legacy APT source line") from error
-    if len(tokens) < 3:
+    if len(tokens) < 2 or (len(tokens) == 2 and not tokens[1].endswith("/")):
         raise AptSourceParseError("Legacy APT source requires URI, suite, and component")
 
     uri = tokens[0]
@@ -781,19 +799,25 @@ def _parse_tab_rows(output: str, expected_fields: int, label: str) -> tuple[tupl
 
 
 def _export_flatpak_keyring(keyring: Path) -> VerifiedPublicKey | None:
-    result = run_command(
-        [
-            "gpg",
-            "--batch",
-            "--no-default-keyring",
-            "--keyring",
-            str(keyring),
-            "--export-options",
-            "export-minimal",
-            "--armor",
-            "--export",
-        ]
-    )
+    with TemporaryDirectory(prefix="popctl-flatpak-gpg-") as temporary_directory:
+        home = Path(temporary_directory) / "home"
+        home.mkdir(mode=0o700)
+        result = run_command(
+            [
+                "gpg",
+                "--batch",
+                "--homedir",
+                str(home),
+                "--no-options",
+                "--no-default-keyring",
+                "--keyring",
+                str(keyring),
+                "--export-options",
+                "export-minimal",
+                "--armor",
+                "--export",
+            ]
+        )
     if not result.success or not result.stdout.strip():
         return None
     try:
@@ -864,6 +888,8 @@ def _capture_flatpak_scope(
         ["flatpak", "list", scope_option, "--app", "--columns=application,origin,arch,branch"]
     )
     app_rows = _parse_tab_rows(apps_result.stdout, 4, "flatpak list")
+    if any(not field for row in app_rows for field in row):
+        raise SourceCaptureError("Malformed flatpak list output")
     apps = tuple(
         FlatpakApp(id=app_id, origin=origin, scope=scope, arch=arch, branch=branch)
         for app_id, origin, arch, branch in app_rows
@@ -880,12 +906,6 @@ def capture_flatpak_sources(paths: FlatpakPaths | None = None) -> FlatpakSources
         FlatpakScope.SYSTEM, flatpak_paths.system_repo
     )
     return FlatpakSources(remotes=user_remotes + system_remotes, apps=user_apps + system_apps)
-
-
-def _is_runtime_snap(name: str, notes: str) -> bool:
-    if notes in {"base", "snapd"} or name in {"snapd", "bare"} or name.startswith("core"):
-        return True
-    return name.startswith("gnome-") and name.endswith("-platform")
 
 
 def capture_snap_sources() -> SnapSources:
@@ -912,7 +932,7 @@ def capture_snap_sources() -> SnapSources:
         tracking = fields[tracking_index]
         if not tracking or tracking == "-":
             raise SourceCaptureError("Snap has no tracking channel")
-        if _is_runtime_snap(name, fields[notes_index]):
+        if is_runtime_snap(name, fields[notes_index]):
             continue
         packages.append(SnapChannel(name=name, channel=tracking, replay_mode=ReplayMode.REPLAY))
     return SnapSources(packages=tuple(packages))

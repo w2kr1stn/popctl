@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 
 from popctl.models.package import PackageSource
-from popctl.sources.capture import resolve_apt_candidate_origins
+from popctl.sources.capture import resolve_apt_candidate_origins, rewrite_apt_signed_by
 from popctl.sources.models import (
     AptKey,
     AptSource,
@@ -168,22 +167,8 @@ class _LocatedSource:
     attributes: SourceAttributes
 
 
-_LEGACY_SIGNED_BY_PATTERN = re.compile(
-    r"(signed-by\s*=\s*)(?:\"[^\"]*\"|'[^']*'|[^\s\]]+)",
-    re.IGNORECASE,
-)
-_DEB822_SIGNED_BY_PATTERN = re.compile(r"^signed-by:.*(?:\n [^\n]*)*", re.IGNORECASE | re.MULTILINE)
-
-
 def _normalize_apt_stanza(source: AptSource) -> str:
-    if source.format is AptSourceFormat.LEGACY:
-        normalized = _LEGACY_SIGNED_BY_PATTERN.sub(
-            r"\g<1><popctl-signed-by>", source.verbatim_stanza
-        )
-    else:
-        normalized = _DEB822_SIGNED_BY_PATTERN.sub(
-            "Signed-By: <popctl-signed-by>", source.verbatim_stanza
-        )
+    normalized, _ = rewrite_apt_signed_by(source, "<popctl-signed-by>")
     return normalized.rstrip("\n")
 
 

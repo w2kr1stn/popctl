@@ -170,6 +170,21 @@ def test_flatpak_app_locator_keeps_duplicate_id_contexts_distinct() -> None:
     assert beta.locator.parts == ("user", "org.example.App", "x86_64", "beta")
 
 
+@pytest.mark.parametrize("field", ("id", "origin", "arch", "branch"))
+def test_flatpak_app_rejects_empty_locator_fields(field: str) -> None:
+    values = {
+        "id": "org.example.App",
+        "origin": "flathub",
+        "scope": FlatpakScope.USER,
+        "arch": "x86_64",
+        "branch": "stable",
+    }
+    values[field] = ""
+
+    with pytest.raises(ValidationError):
+        FlatpakApp(**values)
+
+
 def test_manifest_without_sources_remains_compatible(tmp_path: Path) -> None:
     now = datetime.now(UTC)
     manifest = Manifest(
