@@ -49,7 +49,7 @@ The `sync` command is the primary entry point. It runs the entire pipeline in a 
 # Interactive (advisor prompts you for decisions)
 popctl sync
 
-# Fully automated (CI-friendly)
+# Fully automated when no new or changed source trust needs approval
 popctl sync -y -a
 
 # Dry-run (preview only, no changes)
@@ -68,18 +68,51 @@ popctl sync --no-filesystem --no-configs
 ┌──────────────────────────────────────────────────────────────────────┐
 │                         popctl sync                                  │
 │                                                                      │
-│  1. Init          Auto-create manifest if missing                    │
-│  2. Diff          Compute NEW / MISSING / EXTRA packages             │
-│  3. Advisor       AI classifies NEW packages (keep/remove/ask)       │
-│  4. Apply-M       Write advisor decisions to manifest                │
-│  5. Re-Diff       Recompute diff after manifest changes              │
-│  6. Confirm       Display planned actions, ask confirmation          │
-│  7. Execute       Install MISSING, remove/purge EXTRA packages       │
-│  8. History       Record all actions to history                      │
-│  9-13. FS         Scan → advisor → apply → cleanup → history         │
-│  14-18. Configs   Scan → advisor → apply → backup+cleanup → history  │
+│  1. Init          Auto-create manifest and trust sources if missing  │
+│  2. Source        Refresh → preflight → preview → reconcile sources │
+│  3. Diff          Compute package NEW / MISSING / EXTRA              │
+│  4. Advisor       AI classifies NEW packages (keep/remove/ask)       │
+│  5. Apply-M       Write advisor decisions to manifest                │
+│  6. Re-Diff       Recompute diff after manifest changes              │
+│  7. Confirm       Display planned package actions, ask confirmation  │
+│  8. Execute       Install MISSING, remove/purge EXTRA packages       │
+│  9. History       Record all actions to history                      │
+│  10-14. FS        Scan → advisor → apply → cleanup → history         │
+│  15-19. Configs   Scan → advisor → apply → backup+cleanup → history  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
+
+### Package Source Reproduction
+
+Packages can be present in a manifest while their package source is absent on a new machine. The
+optional `[sources]` manifest section makes that source state reproducible:
+
+- **APT:** enabled public source stanzas with their `Signed-By` public keys and fingerprints.
+- **Flatpak:** user or system remotes with verified public keys, plus the app's remote, scope,
+  architecture, and branch.
+- **Snap:** each package's tracking channel.
+
+`popctl init` and a missing-manifest `popctl sync` capture sources together with packages. Before
+the manifest is saved, every replayable third-party source is shown with its identity and key
+fingerprint and must be approved. A normal `popctl sync` refreshes the selected live sources before
+provisioning; it asks separately about each newly discovered or changed source and saves only the
+approved additions or changes. Existing extra live sources are reported but never removed.
+
+`popctl apply`, `popctl sync`, and package-bearing `popctl backup restore` run the shared source
+phase before package work. It checks selected-manager availability, platform and suite compatibility,
+recorded key fingerprints, and Flatpak app/remote relationships before writing anything. Its preview
+shows the source diff, public-key fingerprints, and planned commands. `--dry-run` performs the
+read-only checks and preview only. `--yes` and a non-interactive invocation cannot approve a new or
+changed trust relationship, so they stop rather than silently recording or replacing one.
+
+When APT is selected, successful source reconciliation ends with the strict command
+`apt-get update --error-on=any`; a source or index-refresh failure blocks later package and home
+work. There is no automatic rollback of privileged source artifacts, and retained artifacts are
+reported on failure.
+
+Capture fails closed for credential-bearing or authenticated source definitions, unreadable APT
+authentication stores, unsigned legacy APT entries, insecure APT options, disabled Flatpak signature
+verification, and Flatpak remotes without verified public key material.
 
 ### Individual Commands
 
@@ -87,12 +120,12 @@ Each phase can also be run independently:
 
 | Command | Purpose |
 |---------|---------|
-| `popctl init` | Create manifest from current system state |
+| `popctl init` | Create manifest and source records from current system state |
 | `popctl setup` | Guided first-run setup wizard |
 | `popctl scan` | Display installed packages (read-only) |
-| `popctl diff` | Compare manifest vs. system (NEW/MISSING/EXTRA) |
-| `popctl apply` | Execute install/remove/purge from manifest |
-| `popctl sync` | Full pipeline (init + diff + advisor + apply + orphan cleanup) |
+| `popctl diff` | Compare package and source records with the live system |
+| `popctl apply` | Reconcile sources, then install/remove/purge packages |
+| `popctl sync` | Full pipeline (init + source phase + diff + advisor + apply + orphan cleanup) |
 | `popctl advisor classify` | AI classification (headless, packages only) |
 | `popctl advisor session` | AI classification (interactive, packages only) |
 | `popctl advisor apply` | Apply AI decisions to manifest |
@@ -127,8 +160,8 @@ Each phase can also be run independently:
 popctl doctor
 ```
 
-`popctl doctor` checks core package-management tools, optional package sources, advisor
-configuration and CLI availability, desktop-alert configuration/notification/sound support, and
+`popctl doctor` checks core package-management tools, advisor configuration and CLI availability,
+desktop-alert configuration/notification/sound support, and
 backup and dotfiles readiness. It exits with status 1 only when core package-management tools are
 missing. Optional-feature findings are nonfatal, and advisor configuration or CLI issues are
 reported as a warning because `popctl sync --no-advisor` remains available. The dotfiles check also
@@ -165,6 +198,11 @@ popctl init --dry-run                    # Preview without creating
 popctl init --force                      # Overwrite existing
 ```
 
+Initialization captures source records for available managers as well as installed packages.
+Third-party source identities and public-key fingerprints are shown before they can be saved; base
+distribution sources remain visible but are report-only. `popctl init --dry-run` captures and
+previews without confirmation or a manifest write.
+
 ### Compare System vs Manifest
 
 ```bash
@@ -173,6 +211,10 @@ popctl diff --brief                      # Counts only
 popctl diff --source apt                 # Filter by source
 popctl diff --json                       # JSON output
 ```
+
+The table, brief, and JSON forms include package drift and source drift. Source rows are `missing`,
+`extra`, or `changed`; an APT package whose candidate depends on an unrecorded source is also shown
+when its provenance can be resolved, or as `unknown` when it cannot.
 
 ### Apply Manifest Changes
 
@@ -184,6 +226,9 @@ popctl apply --purge                     # Purge instead of remove (APT/Snap)
 popctl apply --dry-run                   # Preview only
 ```
 
+Before package actions, `apply` runs the selected source phase. A `--source` filter applies to both
+source records and package actions.
+
 ### Full Sync
 
 ```bash
@@ -191,8 +236,8 @@ popctl sync                              # Interactive advisor + full pipeline
 popctl sync --auto                       # Headless advisor
 popctl sync --no-advisor                 # Skip all advisor phases
 popctl sync --dry-run                    # Preview only
-popctl sync -y -a                        # Fully automated
-popctl sync --source apt                 # Filter to APT packages
+popctl sync -y -a                        # Fully automated when no new trust needs approval
+popctl sync --source apt                 # Filter to APT sources and packages
 popctl sync --purge                      # Purge instead of remove
 popctl sync --no-filesystem              # Skip filesystem orphan phases
 popctl sync --no-configs                 # Skip config orphan phases
@@ -225,9 +270,17 @@ popctl undo --yes                        # Skip confirmation
 popctl backup create                     # Create encrypted backup
 popctl backup create --target remote:    # Upload to rclone remote
 popctl backup restore backup.tar.zst.age # Restore from backup
+popctl backup restore backup.tar.zst.age --source flatpak --dry-run
+                                      # Preview only the backup's Flatpak sources/packages
 popctl backup list                       # List local backups
 popctl backup info backup.tar.zst.age    # Show backup metadata
 ```
+
+A package-bearing restore loads the backup's manifest once, restores popctl state, then runs the
+backup's source phase before package installation and home-file restoration. `--packages-only` uses
+the same state → sources → packages order; `--files-only` remains state → home files → permissions
+and does no source or package work. Restore `--source` filters both source and package work, and
+restore `--dry-run` writes neither XDG state nor package or home files.
 
 ### Private Dotfiles
 
@@ -257,8 +310,9 @@ an explicit acknowledgement that the exact displayed URL is private. That standi
 is bound to the canonical remote URL; changing the URL requires a fresh interactive acknowledgement
 and non-interactive sync refuses. Install `gh` for per-push privacy verification.
 
-For a fresh machine, install popctl, run the setup wizard, make the package manifest available and
-apply its packages, then bootstrap and materialize dotfiles:
+For a fresh machine, install popctl, run the setup wizard, make the package manifest available, and
+apply it. When `[sources]` is present, this preflights and restores selected sources before installing
+packages; only after that package phase should you bootstrap and materialize dotfiles:
 
 ```bash
 popctl setup
@@ -288,6 +342,71 @@ popctl manifest keep vim                 # Move package to keep list
 popctl manifest remove bloatware         # Move package to remove list
 ```
 
+### Source Records in the Manifest
+
+`[sources]` is optional, so older manifests continue to run without source capture, preflight, or
+provisioning. When present, it is generated by `init` or the shared missing-manifest sync workflow
+and is included automatically in encrypted backups. It contains public trust material, so keep the
+manifest private and review any manual edits carefully.
+
+```toml
+[sources.platform]
+distro_id = "ubuntu"
+codename = "noble"
+
+[[sources.apt.keys]]
+id = "vendor-..."
+target_path = "/etc/apt/keyrings/vendor-....asc"
+armor = "-----BEGIN PGP PUBLIC KEY BLOCK-----\\n..."
+fingerprints = ["FULL_UPPERCASE_FINGERPRINT"]
+
+[[sources.apt.entries]]
+id = "apt-..."
+capture_path = "/etc/apt/sources.list.d/vendor.sources"
+format = "deb822"                       # or "legacy"
+ordinal = 0
+managed_target = "popctl-apt-..."
+verbatim_stanza = "Types: deb\\nURIs: https://packages.example/...\\n..."
+key_ids = ["vendor-..."]
+replay_mode = "replay"
+
+[sources.apt.entries.signed_by]
+key_paths = ["/etc/apt/keyrings/vendor-....asc"]
+fingerprint_selectors = []
+
+[[sources.flatpak.remotes]]
+name = "flathub-beta"
+scope = "user"                           # or "system"
+url = "https://example.invalid/repo.flatpakrepo"
+gpg_verify = true
+gpg_key_armor = "-----BEGIN PGP PUBLIC KEY BLOCK-----\\n..."
+gpg_fingerprints = ["FULL_UPPERCASE_FINGERPRINT"]
+replay_mode = "replay"
+
+[[sources.flatpak.apps]]
+id = "org.example.App"
+origin = "flathub-beta"
+scope = "user"
+arch = "x86_64"
+branch = "beta"
+
+[[sources.snap.packages]]
+name = "example"
+channel = "latest/edge"
+replay_mode = "replay"
+```
+
+APT entries also retain their exact captured stanza and a durable generated target name, so a
+restored source rescans as the same record. `replay_mode` is `report-only` for recognized base
+distribution archives, `replay` for eligible third-party sources, or `blocked` for unsafe sources;
+only `replay` records can be written on a target.
+
+During replay, popctl installs each verified APT public key under `/etc/apt/keyrings` and rewrites
+the stanza to use `signed-by=`. It imports the recorded Flatpak public key before adding the remote
+in its recorded scope, then installs Flatpak apps from their recorded remote/architecture/branch and
+Snaps with their recorded `--channel`. It does not use `apt-key`, does not recreate private or
+credentialed sources, and never replaces the primary distribution source file.
+
 ### AI-Assisted Classification
 
 ```bash
@@ -304,8 +423,8 @@ popctl advisor apply --dry-run           # Preview changes
 | Manager | Scan | Install | Remove | Purge |
 |---------|------|---------|--------|-------|
 | APT | dpkg-query + apt-mark | apt-get install | apt-get remove | apt-get purge |
-| Flatpak | flatpak list | flatpak install --user | flatpak uninstall | N/A |
-| Snap | snap list | snap install | snap remove | snap remove --purge |
+| Flatpak | flatpak list | recorded remote/scope/arch/branch, or `--user` when absent | flatpak uninstall | N/A |
+| Snap | snap list | recorded `--channel`, or default channel when absent | snap remove | snap remove --purge |
 
 ## Desktop Alerts
 
@@ -451,7 +570,7 @@ uv sync --dev
 
 # Quality checks
 uv run ruff check .                       # Lint
-uv run pyright app/                      # Type checking
+uv run pyright .                         # Type checking
 uv run pytest                            # Run tests
 
 # Development helpers
@@ -547,6 +666,14 @@ app/popctl/
 │   ├── apt.py               # AptOperator (batch)
 │   ├── flatpak.py           # FlatpakOperator (single-action)
 │   └── snap.py              # SnapOperator (single-action)
+├── sources/
+│   ├── models.py            # [sources] records and replay modes
+│   ├── capture.py           # Public source capture and parser boundary
+│   ├── keytrust.py          # Isolated OpenPGP verification
+│   ├── diff.py              # Source drift by stable locator
+│   ├── preflight.py         # Compatibility, trust, and manager barrier
+│   ├── provision.py         # Source reconciliation and strict APT refresh
+│   └── phase.py             # Shared source workflow for init/sync/apply/restore
 ├── utils/
 │   ├── shell.py             # run_command() subprocess wrapper
 │   └── formatting.py        # Rich console helpers

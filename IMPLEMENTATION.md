@@ -11,14 +11,15 @@ This document provides a comprehensive technical reference for the popctl implem
 3. [Data Models](#data-models)
 4. [Core Modules](#core-modules)
 5. [Package Scanners & Operators](#package-scanners--operators)
-6. [Domain Layer (Filesystem & Configs)](#domain-layer-filesystem--configs)
-7. [AI Advisor System](#ai-advisor-system)
-8. [The Sync Pipeline](#the-sync-pipeline)
-9. [CLI Commands](#cli-commands)
-10. [Dotfiles](#dotfiles)
-11. [Desktop Alerts](#desktop-alerts)
-12. [Data Flow Examples](#data-flow-examples)
-13. [Design Decisions](#design-decisions)
+6. [Sources Subsystem](#sources-subsystem)
+7. [Domain Layer (Filesystem & Configs)](#domain-layer-filesystem--configs)
+8. [AI Advisor System](#ai-advisor-system)
+9. [The Sync Pipeline](#the-sync-pipeline)
+10. [CLI Commands](#cli-commands)
+11. [Dotfiles](#dotfiles)
+12. [Desktop Alerts](#desktop-alerts)
+13. [Data Flow Examples](#data-flow-examples)
+14. [Design Decisions](#design-decisions)
 
 ---
 
@@ -69,7 +70,7 @@ popctl follows a **Modular Monolith** architecture with strict layer separation 
 │  │.py      │ │ .py       │ │ .py      │ │ .py       │              │
 │  └─────────┘ └───────────┘ └──────────┘ └───────────┘              │
 ├─────────────────────────────────────────────────────────────────────┤
-│          Scanners/Operators/Advisor/Filesystem/Configs/Backup        │
+│     Scanners/Operators/Sources/Advisor/Filesystem/Configs/Backup     │
 │  ┌─────────────┐ ┌──────────────┐ ┌──────────────┐                 │
 │  │  scanners/   │ │  operators/  │ │   advisor/   │                 │
 │  │ APT,Flatpak, │ │ APT,Flatpak, │ │ config,      │                 │
@@ -160,7 +161,19 @@ popctl follows a **Modular Monolith** architecture with strict layer separation 
 |------|----------------|
 | `backup.py` | `create_backup()` — streams tar|zstd|age pipeline, `collect_backup_files()`, auto-prune with `max_backups` retention |
 | `config.py` | `load_backup_config()` — reads `~/.config/popctl/backup.toml` (target, recipients, identity, max_backups) |
-| `restore.py` | `restore_backup()` — decrypt, decompress, restore files + packages; `read_backup_metadata()`, `list_backups()` |
+| `restore.py` | `restore_backup()` — decrypt, decompress, then restore state → sources → packages → home files; `read_backup_metadata()`, `list_backups()` |
+
+### Sources (`sources/`)
+
+| File | Responsibility |
+|------|----------------|
+| `models.py` | Strict frozen Pydantic records for captured source state, locators, bindings, and replay modes |
+| `capture.py` | Fail-closed capture of public APT, Flatpak, and Snap source state plus the narrow APT parser |
+| `keytrust.py` | Isolated OpenPGP inspection, minimal public-key export, fingerprint verification, and safe key-path resolution |
+| `diff.py` | Source `missing` / `extra` / `changed` diff by stable locator, including APT provenance diagnostics |
+| `preflight.py` | Selected-manager, platform, suite-compatibility, trust, and Flatpak relationship barrier |
+| `provision.py` | Managed APT key/stanza and Flatpak remote reconciliation, strict APT index refresh, retained-artifact results |
+| `phase.py` | Shared capture/trust, refresh, preview, confirmation, preflight, and provision orchestration |
 
 ### Dotfiles (`dotfiles/`)
 
@@ -218,10 +231,19 @@ class ActionType(Enum):
     PURGE = "purge"
 
 @dataclass(frozen=True, slots=True)
+class SourceInstallContext:
+    flatpak_remote: str | None = None
+    flatpak_scope: FlatpakScope | None = None
+    flatpak_arch: str | None = None
+    flatpak_branch: str | None = None
+    snap_channel: str | None = None
+
+@dataclass(frozen=True, slots=True)
 class Action:
     action_type: ActionType
     package: str
     source: PackageSource
+    source_install_context: SourceInstallContext | None = None
     # Validates: PURGE only for APT and SNAP
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +255,13 @@ class ActionResult:
     @property
     def failed(self) -> bool: ...
 ```
+
+`SourceInstallContext` is populated only for installs that have a recorded source context. A
+Flatpak context is all-or-nothing (`remote`, `scope`, `arch`, and `branch`); a Snap context is its
+channel. It cannot mix the two. `diff_to_actions()` keeps duplicate Flatpak application IDs distinct
+when their `(scope, id, arch, branch)` records differ, and the executor passes those `Action`
+objects through to the single-action Flatpak and Snap operators. A missing context deliberately
+keeps the legacy bare install behavior.
 
 ### History Models (`models/history.py`)
 
@@ -300,7 +329,13 @@ class Manifest(BaseModel):
     packages: PackageConfig
     filesystem: DomainConfig | None = None
     configs: DomainConfig | None = None
+    sources: SourcesConfig | None = None
 ```
+
+`sources` is a root-level optional section, not an extension of `PackageEntry`. It is strict at
+every structural level and therefore makes an older binary fail loudly rather than silently dropping
+source state on a later save. `None` is the backward-compatible empty source context: it triggers no
+source diff, preflight, prompt, manager requirement, or provisioning.
 
 ### Domain Models (`domain/models.py`)
 
@@ -388,7 +423,7 @@ class DiffResult:
     def is_in_sync(self) -> bool: ...
 
 def compute_diff(manifest, scanners, source_filter=None) -> DiffResult
-def diff_to_actions(diff_result, purge=False) -> list[Action]
+def diff_to_actions(diff_result, purge=False, sources=None) -> list[Action]
 ```
 
 **Diff logic:**
@@ -402,6 +437,9 @@ def diff_to_actions(diff_result, purge=False) -> list[Action]
 - MISSING → `INSTALL`
 - EXTRA → `REMOVE` (or `PURGE` if `--purge` and APT/Snap)
 - NEW → no action (handled by advisor or user)
+- A source-aware Flatpak install gets the recorded remote, scope, architecture, and branch; a
+  source-aware Snap install gets its recorded channel. Ambiguous or non-replayable recorded context
+  is an error instead of a silently different install.
 
 ### executor.py — Action Execution
 
@@ -414,6 +452,8 @@ def record_actions_to_history(results: list[ActionResult], command: str) -> None
 1. Group actions by `source` (`defaultdict(list)`)
 2. For each operator, split into `install_pkgs`, `remove_pkgs`, `purge_pkgs`
 3. Call `operator.install()`, `operator.remove(purge=False)`, `operator.remove(purge=True)`
+4. Synthesize a failed result for every planned action that no operator returned, so a missing
+   selected manager cannot become a silent omission.
 
 **History mapping:** Uses `_PACKAGE_TO_HISTORY` dict to convert `ActionType` → `HistoryActionType` (no runtime string conversion).
 
@@ -485,8 +525,99 @@ class Operator(ABC):
 | Operator | Install | Remove | Purge |
 |----------|---------|--------|-------|
 | `AptOperator` | `sudo apt-get install -y -- <pkgs>` | `sudo apt-get remove -y -- <pkgs>` | `sudo apt-get purge -y -- <pkgs>` |
-| `FlatpakOperator` | `flatpak install -y --user -- <pkg>` | `flatpak uninstall -y -- <pkg>` | N/A |
-| `SnapOperator` | `sudo snap install -- <pkg>` | `sudo snap remove -- <pkg>` | `sudo snap remove --purge -- <pkg>` |
+| `FlatpakOperator` | recorded `remote`, `--user`/`--system`, `--arch`, and `--branch`, or bare `--user` | `flatpak uninstall -y -- <pkg>` | N/A |
+| `SnapOperator` | `sudo snap install --channel=<channel> -- <pkg>`, or bare install | `sudo snap remove -- <pkg>` | `sudo snap remove --purge -- <pkg>` |
+
+---
+
+## Sources Subsystem
+
+`sources/` is a separate concern from installed-package scanners: it records where packages come
+from and reconstructs only eligible third-party sources before package execution. The records are
+frozen Pydantic models because they are manifest-boundary data.
+
+### Data Model and Identity
+
+`SourcesConfig` carries the captured `SourcePlatform(distro_id, codename)` and manager subsections:
+
+- `AptSources.entries` keeps the capture path, format (`legacy` or `deb822`), ordinal, verbatim
+  stanza, `SignedByBinding`, referenced `AptKey` IDs, replay mode, and optional PPA display value.
+  Each entry has two identities: its capture `(path, ordinal)` locator and its durable
+  `managed_target` locator used after popctl writes a generated `sources.list.d` file.
+- `AptSources.keys` stores only public armored material, full uppercase fingerprints, and a managed
+  `/etc/apt/keyrings/<id>.asc` target. `SignedByBinding` preserves resolved source paths,
+  fingerprint selectors (including `!`), or embedded armor.
+- `FlatpakSources.remotes` are located by `(scope, name)` and retain URL, GPG verification state,
+  verified public armor/fingerprints, and replay mode. `FlatpakSources.apps` are located by
+  `(scope, id, arch, branch)`, so identical app IDs and branches never collapse.
+- `SnapSources.packages` are located by name and retain the full tracking channel and replay mode.
+
+Every APT source, Flatpak remote, and Snap channel is `report-only`, `replay`, or `blocked`; Flatpak
+apps supply installation context and inherit their remote's eligibility. The APT classifier is
+deliberately bounded: it normalizes URI hosts and paths, requires current-codename suites, and
+accepts only the explicit canonical Debian, Ubuntu, or Pop!_OS archive URI and available Origin sets.
+A match is `report-only` regardless of its captured filename; every nonmatch or unrecognized platform
+is `replay`. Insecure APT options or `no-gpg-verify` Flatpak remotes are `blocked`. Only `replay`
+records are provisioned.
+
+### Capture and Key Trust
+
+`capture_sources()` selects APT, Flatpak, and/or Snap managers, captures the platform identity, and
+returns one `SourcesConfig`. Its gates run before serializing a candidate:
+
+1. The dependency-free APT parser reads `/etc/apt/sources.list` and `.list` / paragraph-aware
+   `.sources` files under `sources.list.d`, retaining enabled stanzas, comments/options, and their
+   ordinal. Malformed source syntax fails closed.
+2. It rejects URI userinfo or queries, known APT authentication options, and URI host/path matches
+   from selector-only `/etc/apt/auth.conf{,.d}` parsing. An unreadable auth store is a capture error;
+   auth values are never retained. APT entries without `Signed-By` are refused.
+3. `keytrust.py` uses `lstat` plus realpath and accepts only regular key files beneath supported
+   keyring roots. It rejects secret OpenPGP packets before import, then uses an isolated temporary
+   `GNUPGHOME` to inspect, minimally export, and fingerprint public material. A selector exports
+   exactly its selected fingerprints; no selector exports the complete public set.
+4. Flatpak capture reads only remote `name`, `url`, and `options` in each user and system scope, then
+   records apps with origin/scope/architecture/branch. It rejects authenticated options and exports
+   the scope-local OSTree `<remote>.trustedkeys.gpg` keyring as the primary anchor. A verified
+   `.flatpakrepo` `GPGKey` is a fallback only when that keyring cannot provide material.
+5. Snap capture reads the `Tracking` column from `snap list`, omitting runtime snaps. A missing
+   tracking channel is an error.
+
+`capture_and_trust_sources()` is used by `init` and sync bootstrap. It shows each replayable
+third-party identity and fingerprint before an interactive trust confirmation. It rejects blocked
+records, and a non-interactive or `--yes` bootstrap cannot create a new trust record. Dry-run returns
+the ephemeral captured section without a prompt or manifest save.
+
+### Diff, Preflight, and Provisioning
+
+`compute_source_diff()` compares stable locators separately from their attributes and reports
+`missing`, `extra`, and `changed`. A changed URI, suite, key fingerprint, remote URL, or channel
+stays `changed` rather than becoming a removal/addition pair; a locator-changing scope is naturally
+an addition/removal pair. Extra sources are report-only:
+the provisioner has no removal action. For unrecorded live APT sources, the bounded read-only
+`apt-cache policy <package>` resolver maps a candidate origin to an APT capture locator when the
+mapping is unique; ambiguous or unavailable provenance is `unknown`.
+
+`run_source_phase()` is the shared entry point for `sync`, `apply`, and package-bearing restore:
+
+1. It treats `Manifest.sources is None` or an empty selected manager set as a successful no-op.
+2. It determines selected managers from `SourceChoice`, requires each manager, captures live source
+   state, and runs platform, suite, key, remote, and channel checks as one all-source barrier before
+   any write. APT requires matching distro IDs plus either matching distro-tied suites/codename or a
+   `stable` suite; when the target already has the same managed `stable` record, its URI must match.
+3. It computes source drift and renders one preview containing source states, fingerprints, and
+   planned source commands. Dry-run stops after this read-only stage.
+4. It asks per changed source before trust-relevant replacement; `--yes` and non-interactive mode
+   fail closed for a new or changed relationship. `sync` additionally runs its selected-manager live
+   refresh before this phase in normal existing-manifest mode, asks per live addition/change, and
+   atomically persists only confirmed replacements while leaving extras untouched.
+5. Provisioning writes only missing records, skips exact matches, and replaces a changed APT target
+   only when popctl owns its generated managed target. An unmanaged conflict fails without a duplicate
+   stanza. It writes public APT keys as root-owned mode `0644`, re-reads and fingerprint-verifies them,
+   rewrites exactly one `signed-by=` managed stanza, and imports the exact Flatpak key before adding
+   the scoped remote. `apt-key` and the primary distribution source file are never used.
+6. When APT is selected, `sudo apt-get update --error-on=any` is mandatory after reconciliation. A
+   source command or strict-index failure returns retained operation-owned artifacts and stops all
+   later package and home work; there is intentionally no rollback.
 
 ---
 
@@ -642,58 +773,65 @@ The advisor maintains persistent memory at `~/.local/state/popctl/advisor/memory
 
 ## The Sync Pipeline
 
-The `sync` command (`cli/commands/sync.py`) is the main orchestrator. It runs up to 18 phases:
+The `sync` command (`cli/commands/sync.py`) is the main orchestrator. Its source work always
+precedes package and home work:
 
 ```
 sync()
-├── Phase 1:  _ensure_manifest()          — auto-init if missing
+├── _ensure_manifest()                    — auto-init if missing
+│   └── capture_manifest()                 — package scan + capture_and_trust_sources()
+├── refresh_manifest_sources()             — existing manifest, normal mode only
+│   └── capture selected live sources → confirm additions/changes → atomic merge
+├── run_source_phase()
+│   └── manager/platform/trust preflight → source diff/preview → reconcile → strict APT update
 ├── _sync_packages()
-│   ├── Phase 2:  compute_system_diff()   — NEW/MISSING/EXTRA
-│   ├── Phase 3:  _run_advisor()          — AI classifies NEW packages
-│   ├── Phase 4:  _apply_advisor_decisions() — write to manifest
-│   ├── Phase 5:  compute_system_diff()   — re-diff after changes
-│   ├── Phase 6:  diff_to_actions()       — convert + user confirm
-│   ├── Phase 7:  execute_actions()       — install/remove/purge
-│   └── Phase 8:  record_actions_to_history()
+│   ├── compute_system_diff()              — NEW/MISSING/EXTRA
+│   ├── _run_advisor()                     — AI classifies NEW packages
+│   ├── _apply_advisor_decisions()         — write to manifest
+│   ├── compute_system_diff()              — re-diff after changes
+│   ├── diff_to_actions()                  — source-aware actions + user confirmation
+│   ├── execute_actions()                  — install/remove/purge
+│   └── record_actions_to_history()
 ├── _run_orphan_phases("filesystem")
-│   ├── Phase 9:  _domain_scan()          — FilesystemScanner
-│   ├── Phase 10: _domain_run_advisor()   — AI classifies orphans
-│   ├── Phase 11: _domain_apply_decisions() — write to manifest
-│   ├── Phase 12: _domain_clean()         — delete paths
-│   └── Phase 13: _record_orphan_history()
+│   ├── _domain_scan()                     — FilesystemScanner
+│   ├── _domain_run_advisor()              — AI classifies orphans
+│   ├── _domain_apply_decisions()          — write to manifest
+│   ├── _domain_clean()                    — delete paths
+│   └── _record_orphan_history()
 └── _run_orphan_phases("configs")
-    ├── Phase 14: _domain_scan()          — ConfigScanner
-    ├── Phase 15: _domain_run_advisor()   — AI classifies orphans
-    ├── Phase 16: _domain_apply_decisions() — write to manifest
-    ├── Phase 17: _domain_clean()         — backup + delete
-    └── Phase 18: _record_orphan_history()
+    ├── _domain_scan()                     — ConfigScanner
+    ├── _domain_run_advisor()              — AI classifies orphans
+    ├── _domain_apply_decisions()          — write to manifest
+    ├── _domain_clean()                    — backup + delete
+    └── _record_orphan_history()
 ```
 
 ### Error Handling Philosophy
 
 | Phase | Severity | Behavior |
 |-------|----------|----------|
-| Init (1) | **Fatal** | No manifest → `Exit(1)` |
-| Diff (2) | **Fatal** | Scanner/manifest error → `Exit(1)` |
-| Advisor (3-5) | **Non-fatal** | Warning printed, sync continues with existing manifest |
-| Confirm (6) | **User abort** | `Exit(0)`, propagates past orphan phases |
-| Execute (7) | **Per-action** | Failed actions collected, successful ones recorded |
-| History (8) | **Non-fatal** | Warning on write failure |
-| Scan (9,14) | **Non-fatal** | Scan failure returns `None` (skip remaining phases with warning); clean system returns `[]` (no orphans, skip silently) |
-| Orphans (10-18) | **Non-fatal** | Each sub-phase catches own errors |
+| Init / source capture | **Fatal** | Capture or trust failure → `Exit(1)`; dry-run capture is ephemeral |
+| Source refresh / preflight / provision | **Fatal** | A manager, compatibility, trust, source command, or strict APT index failure → `Exit(1)` before package or orphan work |
+| Package diff | **Fatal** | Scanner/manifest error → `Exit(1)` |
+| Advisor | **Non-fatal** | Warning printed, sync continues with existing manifest |
+| Package confirmation | **User abort** | `Exit(0)`, propagates past orphan phases |
+| Package execution | **Per-action** | Failed or unhandled actions are collected; unhandled actions make sync exit 1 |
+| History | **Non-fatal** | Warning on write failure |
+| Orphan scan | **Non-fatal** | Scan failure returns `None` (skip remaining phase with warning); a clean system returns `[]` |
+| Orphan phases | **Non-fatal** | Each sub-phase catches its own errors |
 
 ### CLI Flags
 
 | Flag | Effect |
 |------|--------|
-| `--yes` / `-y` | Skip all confirmation prompts |
-| `--dry-run` / `-n` | Show diff/scan results only, no changes |
-| `--source` / `-s` | Filter to APT/Flatpak/Snap/All |
+| `--yes` / `-y` | Skip ordinary confirmations; it cannot approve a new or changed source trust relationship |
+| `--dry-run` / `-n` | Run read-only source preflight/preview and show package/diff results without mutation |
+| `--source` / `-s` | Filter both source records and package work to APT/Flatpak/Snap/All |
 | `--purge` / `-p` | Use purge instead of remove (APT/Snap) |
 | `--no-advisor` | Skip all AI advisor phases |
 | `--auto` / `-a` | Use headless advisor (no interaction) |
-| `--no-filesystem` | Skip filesystem orphan phases (9-13) |
-| `--no-configs` | Skip config orphan phases (14-18) |
+| `--no-filesystem` | Skip filesystem orphan phases |
+| `--no-configs` | Skip config orphan phases |
 
 ---
 
@@ -718,7 +856,10 @@ prompting.
 | `--dry-run` | Preview without creating |
 | `--force` | Overwrite existing manifest |
 
-Scans all available package managers, filters to manual packages, excludes protected packages, creates and saves manifest.
+Scans available package managers, filters to manual packages, excludes protected packages, then uses
+the shared capture-and-trust workflow to attach selected source records before atomically saving the
+manifest. `--dry-run` returns the captured manifest only in memory and never confirms or saves a
+source trust relationship.
 
 ### scan (`cli/commands/scan.py`)
 
@@ -739,6 +880,10 @@ Scans all available package managers, filters to manual packages, excludes prote
 | `--brief` | Show counts only |
 | `--json` | JSON output |
 
+The command combines the package diff with `compute_source_system_diff()`. Source rows preserve
+their stable locators and add `missing`, `extra`, and `changed` states; JSON places the source result
+under `sources`.
+
 ### apply (`cli/commands/apply.py`)
 
 | Option | Description |
@@ -747,6 +892,10 @@ Scans all available package managers, filters to manual packages, excludes prote
 | `--source` | Apply only specific source |
 | `--purge` | Use purge instead of remove |
 | `--dry-run` | Preview only |
+
+`apply` invokes `run_source_phase()` before calculating package actions, passing the selected
+`SourceChoice`, dry-run state, and interactive policy. A failed source phase exits before package
+operators are selected.
 
 ### advisor (`cli/commands/advisor.py`)
 
@@ -805,7 +954,13 @@ skip confirmation.
 
 **`popctl backup create`** — Create an encrypted backup (tar|zstd|age pipeline). Supports local paths and rclone remotes. Auto-prunes old backups based on `max_backups` config.
 
-**`popctl backup restore <source>`** — Restore from an encrypted backup. Decrypts, decompresses, restores files and/or installs packages. Supports `--files-only` and `--packages-only` modes.
+**`popctl backup restore <source>`** — Restore from an encrypted backup. It exposes `--source` and
+`--dry-run` in addition to `--files-only` and `--packages-only`. After extraction, it loads
+`staging/files/popctl/manifest.toml` once and passes that in-memory manifest to both the source and
+package phases; it never switches to the target machine's manifest after state restore. Package
+bearing modes run state → sources → packages → home, while files-only runs state → home → permissions
+with no source work. Dry-run carries through every state, source, package, home, permission, and
+history mutation.
 
 **`popctl backup list`** — List available backups at a target location.
 
@@ -1047,6 +1202,17 @@ sync()
   ├─ _ensure_manifest()
   │    └─ manifest_exists() → True (skip)
   │
+  ├─ refresh_manifest_sources()
+  │    └─ capture_sources(ALL) → confirm live additions/changes → save only confirmed merge
+  │
+  ├─ run_source_phase(manifest, ALL)
+  │    ├─ selected managers → availability barrier
+  │    ├─ capture_platform() + capture_sources(ALL)
+  │    ├─ preflight_sources() → platform / suite / public-key checks
+  │    ├─ compute_source_diff() → preview + changed-source confirmation
+  │    ├─ provision_sources() → managed APT keys/stanzas, scoped Flatpak remotes
+  │    └─ sudo apt-get update --error-on=any
+  │
   ├─ _sync_packages()
   │    ├─ compute_system_diff(ALL)
   │    │    ├─ require_manifest() → Manifest
@@ -1070,7 +1236,7 @@ sync()
   │    ├─ compute_system_diff(ALL)  (re-diff)
   │    │    └─ DiffResult(new=0, missing=2, extra=3)
   │    │
-  │    ├─ diff_to_actions(purge=False) → [INSTALL×2, REMOVE×3]
+  │    ├─ diff_to_actions(purge=False, sources=manifest.sources) → [INSTALL×2, REMOVE×3]
   │    │
   │    ├─ execute_actions(actions, operators)
   │    │    ├─ AptOperator.install(["pkg1", "pkg2"])
@@ -1123,24 +1289,25 @@ undo.py
 
 ## On-Disk Format Stability
 
-popctl persists the manifest, four feature configs (advisor, alerts, backup, dotfiles), and the
-append-only `history.jsonl` (see the file-locations table). Their
+popctl persists the manifest (including optional source records), four feature configs (advisor,
+alerts, backup, dotfiles), and the append-only `history.jsonl` (see the file-locations table). Their
 compatibility contract:
 
 - **Stable within a major version.** Fields are only added, never renamed or removed.
   Manifest metadata and selected leaf models (`ManifestMeta`, `SystemConfig`, and
   `PackageEntry`) ignore unknown keys (`extra="ignore"`). The manifest containers
-  (`Manifest`, `PackageConfig`, and `DomainConfig`) and `DomainEntry` are intentionally
-  strict (`extra="forbid"`): a typo or unrecognized structural manifest field must fail
-  loudly instead of being silently dropped. A manifest that uses a new structural field
+  (`Manifest`, `PackageConfig`, `DomainConfig`, and all `SourcesConfig` models) and `DomainEntry`
+  are intentionally strict (`extra="forbid"`): a typo or unrecognized structural manifest field
+  must fail loudly instead of being silently dropped. A manifest that uses a new structural field
   therefore requires a popctl upgrade first.
 - **Versioning anchor.** The manifest's `[meta]` section is the designated home for a
   `schema_version` sentinel should a breaking change ever become necessary; today no
   format has needed one (deliberate YAGNI — popctl has no database and all formats are
   human-readable TOML/JSONL).
-- **Round-trip guarantee.** Save/load round-trips are covered by tests
-  (`tests/unit/core/test_manifest.py`); `backup.toml` produced by `popctl backup init` is verified
-  through `load_backup_config`, and `dotfiles.toml` through `load_dotfiles_config`.
+- **Round-trip guarantee.** Save/load round-trips include every source platform, replay, binding,
+  and public-key field (`tests/unit/sources/test_models.py`); the manifest is copied into backups.
+  `backup.toml` produced by `popctl backup init` is verified through `load_backup_config`, and
+  `dotfiles.toml` through `load_dotfiles_config`.
 - **Escape hatch.** Every file is plain text under the XDG paths — export/import is a
   file copy; encrypted backups additionally capture them via `popctl backup create`.
 
@@ -1195,8 +1362,9 @@ This prevents accidental deletion even if CLI-level filtering is bypassed or ref
 
 | Category | Location | Target |
 |----------|----------|--------|
-| Unit tests | `tests/unit/` | 81% aggregate floor (current baseline: 81.6%) |
+| Unit tests | `tests/unit/` | 81% aggregate coverage floor |
 | Shared fixtures | `tests/unit/conftest.py` | `sample_manifest` with APT + Flatpak packages |
+| Source subsystem | `tests/unit/sources/` | Capture, refusal, key trust, diff, preflight, provision, and dry-run paths |
 
 **Key patterns:**
 - `typer.testing.CliRunner` for CLI tests
@@ -1204,6 +1372,8 @@ This prevents accidental deletion even if CLI-level filtering is bypassed or ref
 - `mocker.patch("subprocess.run")` for shell command tests
 - Never call real package managers in tests
 - Parametrized domain tests: `@pytest.mark.parametrize("domain", ["filesystem", "configs"])`
+- Source tests use fixture APT trees and mocked command boundaries; the dedicated branch coverage
+  measurement covers `popctl.sources` success, failure, refusal, and dry-run paths.
 
 **Quality gates:** the project runs its quality gates in CI. The aggregate coverage floor and
 current baseline are documented above; Pyright and Ruff results are not recorded here.
