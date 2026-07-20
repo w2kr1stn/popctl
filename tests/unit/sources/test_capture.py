@@ -4,6 +4,7 @@ from unittest.mock import patch
 import pytest
 from popctl.models.package import PackageSource, SourceChoice
 from popctl.sources.capture import (
+    CANONICAL_BASE_ARCHIVES,
     AptSourceParseError,
     CredentialedSourceError,
     FlatpakPaths,
@@ -12,6 +13,7 @@ from popctl.sources.capture import (
     capture_flatpak_sources,
     capture_snap_sources,
     capture_sources,
+    classify_apt_archive,
     parse_apt_source_file,
     resolve_apt_candidate_origins,
 )
@@ -248,8 +250,22 @@ def test_base_classification_uses_resolved_release_origin(
             "sid",
             "Debian Ports",
         ),
+        (
+            "debian",
+            "sid",
+            "http://ftp.ports.debian.org/debian-ports",
+            "sid",
+            "Debian Ports",
+        ),
     ],
-    ids=("ubuntu", "pop-ubuntu", "pop-release", "pop-proprietary", "debian-ports"),
+    ids=(
+        "ubuntu",
+        "pop-ubuntu",
+        "pop-release",
+        "pop-proprietary",
+        "debian-ports",
+        "debian-ports-host-alias",
+    ),
 )
 def test_canonical_archives_from_real_release_metadata_are_report_only(
     apt_root: Path,
@@ -277,6 +293,29 @@ def test_canonical_archives_from_real_release_metadata_are_report_only(
         captured = capture_apt_sources(apt_root, platform)
 
     assert captured.entries[0].replay_mode is ReplayMode.REPORT_ONLY
+
+
+@pytest.mark.parametrize(
+    ("distro_id", "codename"),
+    (("debian", "sid"), ("ubuntu", "noble"), ("pop", "jammy")),
+)
+def test_every_canonical_archive_entry_classifies_report_only(
+    distro_id: str, codename: str
+) -> None:
+    platform = SourcePlatform(distro_id=distro_id, codename=codename)
+    canonical = CANONICAL_BASE_ARCHIVES[distro_id]
+
+    assert all(
+        classify_apt_archive(
+            platform,
+            uris=(uri,),
+            suites=(codename,),
+            origins=(origin,),
+        )
+        is ReplayMode.REPORT_ONLY
+        for uri in canonical.uris
+        for origin in canonical.origins
+    )
 
 
 def test_deb822_disabled_stanza_is_preserved_by_parser_and_not_captured(
@@ -672,6 +711,69 @@ def test_invalid_apt_uri_port_fails_closed_before_key_capture(
     captured_keys.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("format", "uri"),
+    (("legacy", "http://"), ("deb822", "nonsense")),
+)
+def test_structurally_invalid_apt_uri_fails_closed_before_key_capture(
+    apt_root: Path, platform: SourcePlatform, format: str, uri: str
+) -> None:
+    if format == "legacy":
+        source = apt_root / "sources.list"
+        content = f"deb [signed-by=/etc/apt/keyrings/vendor.gpg] {uri} stable main\n"
+    else:
+        source = apt_root / "sources.list.d" / "invalid.sources"
+        content = (
+            "Types: deb\n"
+            f"URIs: {uri}\n"
+            "Suites: stable\n"
+            "Components: main\n"
+            "Signed-By: /etc/apt/keyrings/vendor.gpg\n"
+        )
+    source.write_text(content, encoding="utf-8")
+
+    with (
+        patch("popctl.sources.capture.capture_apt_keys") as captured_keys,
+        pytest.raises(AptSourceParseError, match="Malformed APT source URI"),
+    ):
+        capture_apt_sources(apt_root, platform)
+
+    captured_keys.assert_not_called()
+
+
+@pytest.mark.parametrize("suffix", (".list", ".sources"))
+def test_non_utf8_apt_source_file_fails_closed_before_key_capture(
+    apt_root: Path, platform: SourcePlatform, suffix: str
+) -> None:
+    (apt_root / "sources.list.d" / f"invalid{suffix}").write_bytes(b"\xff")
+
+    with (
+        patch("popctl.sources.capture.capture_apt_keys") as captured_keys,
+        pytest.raises(SourceCaptureError, match="Unable to read APT source file"),
+    ):
+        capture_apt_sources(apt_root, platform)
+
+    captured_keys.assert_not_called()
+
+
+def test_non_utf8_apt_auth_file_fails_closed_before_key_capture(
+    apt_root: Path, platform: SourcePlatform
+) -> None:
+    (apt_root / "auth.conf").write_bytes(b"\xff")
+    (apt_root / "sources.list").write_text(
+        "deb [signed-by=/etc/apt/keyrings/vendor.gpg] https://vendor.example stable main\n",
+        encoding="utf-8",
+    )
+
+    with (
+        patch("popctl.sources.capture.capture_apt_keys") as captured_keys,
+        pytest.raises(SourceCaptureError, match="APT auth store is unreadable"),
+    ):
+        capture_apt_sources(apt_root, platform)
+
+    captured_keys.assert_not_called()
+
+
 def test_apt_candidate_provenance_maps_ambiguous_and_unknown() -> None:
     binding = SignedByBinding(key_paths=("/etc/apt/keyrings/vendor.gpg",))
     vendor = AptSource(
@@ -850,6 +952,27 @@ def test_flatpak_key_capture_and_authenticator_fail_closed(tmp_path: Path) -> No
         pytest.raises(CredentialedSourceError, match="Authenticated Flatpak"),
     ):
         capture_flatpak_sources(paths)
+
+
+def test_flatpak_descriptor_fallback_rejects_an_invalid_uri_before_key_capture(
+    tmp_path: Path,
+) -> None:
+    paths = FlatpakPaths(user_repo=tmp_path / "user-repo", system_repo=tmp_path / "system-repo")
+    remotes = CommandResult(
+        stdout="vendor\tnot-a-url\tgpg-verify\n", stderr="", returncode=0
+    )
+
+    with (
+        patch("popctl.sources.capture.command_exists", return_value=True),
+        patch("popctl.sources.capture.run_command", return_value=remotes),
+        patch("popctl.sources.capture._capture_flatpak_remote_key") as capture_key,
+        patch("popctl.sources.capture.urlopen") as open_descriptor,
+        pytest.raises(AptSourceParseError, match="Malformed APT source URI"),
+    ):
+        capture_flatpak_sources(paths)
+
+    capture_key.assert_not_called()
+    open_descriptor.assert_not_called()
 
 
 def test_flatpak_no_gpg_verify_is_captured_as_blocked(tmp_path: Path) -> None:

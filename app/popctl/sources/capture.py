@@ -60,6 +60,8 @@ INSECURE_APT_OPTION_NAMES = frozenset(
     {"allow-downgrade-to-insecure", "allow-insecure", "trusted"}
 )
 _FLATPAK_AUTH_OPTION_PREFIXES = ("authenticator", "credential", "token", "password")
+_APT_URI_SCHEMES = frozenset({"file", "http", "https"})
+_FLATPAK_URI_SCHEMES = frozenset({"http", "https", "oci"})
 _ORIGIN_FIELD = "origin"
 _LEGACY_SIGNED_BY_PATTERN = re.compile(
     r"(signed-by\s*=\s*)(?:\"[^\"]*\"|'[^']*'|[^\s\]]+)",
@@ -91,6 +93,7 @@ CANONICAL_BASE_ARCHIVES: dict[str, CanonicalArchive] = {
                 "https://deb.debian.org/debian-ports",
                 "http://ftp.debian-ports.org/debian-ports",
                 "https://ftp.debian-ports.org/debian-ports",
+                "http://ftp.ports.debian.org/debian-ports",
             }
         ),
         origins=frozenset({"debian", "debian ports"}),
@@ -496,7 +499,7 @@ def apt_source_has_insecure_options(source: AptSource) -> bool:
 def _read_source_file(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
-    except OSError as error:
+    except (OSError, UnicodeDecodeError) as error:
         raise SourceCaptureError("Unable to read APT source file") from error
 
 
@@ -602,7 +605,7 @@ def _read_auth_selectors(apt_root: Path) -> tuple[AptAuthSelector, ...]:
             if not mode & 0o444:
                 raise SourceCaptureError("APT auth store is unreadable")
             content = path.read_text(encoding="utf-8")
-        except OSError as error:
+        except (OSError, UnicodeDecodeError) as error:
             raise SourceCaptureError("APT auth store is unreadable") from error
         for line in content.splitlines():
             statement, _ = _split_comment(line)
@@ -641,12 +644,19 @@ def _uri_matches_selector(uri: str, selector: AptAuthSelector) -> bool:
     return normalized_path.startswith(selector.path)
 
 
-def _assert_public_uri(uri: str, *, auth_selectors: tuple[AptAuthSelector, ...]) -> None:
+def _assert_public_uri(
+    uri: str,
+    *,
+    auth_selectors: tuple[AptAuthSelector, ...],
+    supported_schemes: frozenset[str],
+) -> None:
     try:
         parsed = urlsplit(uri)
         _ = parsed.port
     except ValueError as error:
         raise AptSourceParseError("Malformed APT source URI") from error
+    if parsed.scheme.lower() not in supported_schemes or not parsed.hostname:
+        raise AptSourceParseError("Malformed APT source URI")
     if parsed.username is not None or parsed.password is not None or "?" in uri:
         raise CredentialedSourceError("Credential-bearing source URI cannot be captured")
     if any(_uri_matches_selector(uri, selector) for selector in auth_selectors):
@@ -659,7 +669,11 @@ def _assert_public_apt_descriptor(
     auth_selectors: tuple[AptAuthSelector, ...],
 ) -> None:
     for uri in descriptor.uris:
-        _assert_public_uri(uri, auth_selectors=auth_selectors)
+        _assert_public_uri(
+            uri,
+            auth_selectors=auth_selectors,
+            supported_schemes=_APT_URI_SCHEMES,
+        )
     if _AUTH_OPTION_NAMES & descriptor.options.keys():
         raise CredentialedSourceError("Credential-bearing APT source options cannot be captured")
 
@@ -907,14 +921,14 @@ def _export_flatpak_keyring(keyring: Path) -> VerifiedPublicKey | None:
 
 
 def _load_flatpakrepo_key(url: str) -> bytes:
-    parsed = urlsplit(url)
     try:
+        parsed = urlsplit(url)
         if parsed.scheme == "file":
             content = Path(unquote(parsed.path)).read_bytes()
         else:
             with urlopen(url, timeout=10) as response:  # noqa: S310
                 content = response.read()
-    except OSError as error:
+    except (OSError, ValueError) as error:
         raise SourceCaptureError("Unable to read Flatpak repository descriptor") from error
 
     parser = configparser.ConfigParser(interpolation=None)
@@ -946,7 +960,11 @@ def _capture_flatpak_scope(
     remote_rows = _parse_tab_rows(remotes_result.stdout, 3, "flatpak remotes")
     remotes: list[FlatpakRemote] = []
     for name, url, options in remote_rows:
-        _assert_public_uri(url, auth_selectors=())
+        _assert_public_uri(
+            url,
+            auth_selectors=(),
+            supported_schemes=_FLATPAK_URI_SCHEMES,
+        )
         if _flatpak_options_are_authenticated(options):
             raise CredentialedSourceError("Authenticated Flatpak remote cannot be captured")
         verified = _capture_flatpak_remote_key(name, url, repository)
