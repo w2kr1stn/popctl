@@ -9,14 +9,15 @@ from popctl.dotfiles.secret_filter import MAX_CANDIDATE_BYTES
 
 DESKTOP_SETTINGS_ARTIFACT_PATH: Final = ".config/popctl/desktop-settings.dconf"
 DESKTOP_SETTINGS_ARTIFACT_MODE: Final = "100644"
+# The bare GNOME Shell root includes extension state, so it is intentionally excluded.
 DEFAULT_ROOTS: Final = (
-    "/org/gnome/desktop/wm/keybindings/",
-    "/org/gnome/settings-daemon/plugins/media-keys/",
-    "/org/gnome/desktop/interface/",
-    "/org/gnome/desktop/wm/preferences/",
-    "/org/gnome/desktop/input-sources/",
-    "/org/gnome/desktop/background/",
-    "/org/gnome/desktop/screensaver/",
+    "/org/gnome/desktop/wm/keybindings/",  # window-manager keybindings
+    "/org/gnome/settings-daemon/plugins/media-keys/",  # media and custom keybindings
+    "/org/gnome/desktop/interface/",  # interface and theme
+    "/org/gnome/desktop/wm/preferences/",  # window-manager preferences
+    "/org/gnome/desktop/input-sources/",  # input sources
+    "/org/gnome/desktop/background/",  # background appearance
+    "/org/gnome/desktop/screensaver/",  # screensaver appearance
 )
 MAX_DESKTOP_SETTINGS_ARTIFACT_BYTES: Final = MAX_CANDIDATE_BYTES
 _ARTIFACT_MAGIC: Final = "# popctl-desktop-settings v1"
