@@ -6,6 +6,7 @@ import unicodedata
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Final, Protocol
 
 from popctl.dotfiles.secret_filter import MAX_CANDIDATE_BYTES
@@ -78,6 +79,43 @@ class DesktopCaptureResult:
     @property
     def changed(self) -> bool:
         return self.status is DesktopCaptureStatus.CHANGED
+
+
+class DesktopLoadStatus(str, Enum):
+    DISABLED = "disabled"
+    NO_ARTIFACT = "no-artifact"
+    NO_DCONF = "no-dconf"
+    NO_SESSION = "no-session"
+    FAMILY_MISMATCH = "family-mismatch"
+    UNKNOWN_FAMILY = "unknown-family"
+    INVALID_ARTIFACT = "invalid-artifact"
+    PREVIEW = "preview"
+    APPLIED = "applied"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopLoadResult:
+    status: DesktopLoadStatus
+    family: DesktopFamily | None = None
+    artifact_family: DesktopFamily | None = None
+    parsed_roots: tuple[str, ...] = ()
+    suppressed_roots: tuple[str, ...] = ()
+    applied_roots: tuple[str, ...] = ()
+    root: str | None = None
+    detail: str = ""
+
+    @property
+    def skipped(self) -> bool:
+        return self.status in {
+            DesktopLoadStatus.DISABLED,
+            DesktopLoadStatus.NO_ARTIFACT,
+            DesktopLoadStatus.NO_DCONF,
+            DesktopLoadStatus.NO_SESSION,
+            DesktopLoadStatus.FAMILY_MISMATCH,
+            DesktopLoadStatus.UNKNOWN_FAMILY,
+            DesktopLoadStatus.INVALID_ARTIFACT,
+        }
 
 
 class _CaptureSettings(Protocol):
@@ -180,6 +218,142 @@ def capture_desktop_settings(
         prior_retained=prior is not None,
         ambiguous_root_allowlist=tuple(sorted(set(ambiguous_root_allowlist))),
     )
+
+
+def load_desktop_settings(
+    settings: _CaptureSettings,
+    *,
+    existing_artifact: ArtifactReader,
+    dry_run: bool = False,
+) -> DesktopLoadResult:
+    if not settings.enabled:
+        return DesktopLoadResult(DesktopLoadStatus.DISABLED)
+
+    content = existing_artifact()
+    if content is None:
+        return DesktopLoadResult(DesktopLoadStatus.NO_ARTIFACT)
+    try:
+        artifact = parse_desktop_settings_artifact(content)
+        artifact_family = DesktopFamily(artifact.family)
+    except (DesktopSettingsArtifactError, ValueError) as e:
+        return DesktopLoadResult(DesktopLoadStatus.INVALID_ARTIFACT, detail=str(e))
+
+    parsed_roots = artifact.roots
+    family = normalize_desktop_family(
+        os.environ.get("XDG_CURRENT_DESKTOP"),
+        os.environ.get("XDG_SESSION_DESKTOP"),
+    )
+    if family is DesktopFamily.UNKNOWN:
+        return DesktopLoadResult(
+            DesktopLoadStatus.UNKNOWN_FAMILY,
+            family=family,
+            artifact_family=artifact_family,
+            parsed_roots=parsed_roots,
+        )
+    if artifact_family is not family:
+        return DesktopLoadResult(
+            DesktopLoadStatus.FAMILY_MISMATCH,
+            family=family,
+            artifact_family=artifact_family,
+            parsed_roots=parsed_roots,
+        )
+
+    allowed_roots = set(settings.effective_roots)
+    sections = tuple(section for section in artifact.sections if section.root in allowed_roots)
+    suppressed_roots = tuple(
+        section.root for section in artifact.sections if section.root not in allowed_roots
+    )
+    if dry_run:
+        return DesktopLoadResult(
+            DesktopLoadStatus.PREVIEW,
+            family=family,
+            artifact_family=artifact_family,
+            parsed_roots=parsed_roots,
+            suppressed_roots=suppressed_roots,
+        )
+    if shutil.which("dconf") is None:
+        return DesktopLoadResult(
+            DesktopLoadStatus.NO_DCONF,
+            family=family,
+            artifact_family=artifact_family,
+            parsed_roots=parsed_roots,
+        )
+    if not _has_session_hint():
+        return DesktopLoadResult(
+            DesktopLoadStatus.NO_SESSION,
+            family=family,
+            artifact_family=artifact_family,
+            parsed_roots=parsed_roots,
+        )
+
+    applied_roots: list[str] = []
+    for section in sections:
+        result = run_command(
+            ["dconf", "load", "-f", section.root],
+            input_text=section.body.decode("utf-8"),
+            env={"LC_ALL": "C"},
+        )
+        if not result.success:
+            detail = result.stderr.strip()
+            if _is_no_session_transport_error(detail):
+                return DesktopLoadResult(
+                    DesktopLoadStatus.NO_SESSION,
+                    family=family,
+                    artifact_family=artifact_family,
+                    parsed_roots=parsed_roots,
+                    suppressed_roots=suppressed_roots,
+                    applied_roots=tuple(applied_roots),
+                    root=section.root,
+                    detail=detail,
+                )
+            return DesktopLoadResult(
+                DesktopLoadStatus.FAILED,
+                family=family,
+                artifact_family=artifact_family,
+                parsed_roots=parsed_roots,
+                suppressed_roots=suppressed_roots,
+                applied_roots=tuple(applied_roots),
+                root=section.root,
+                detail=detail,
+            )
+        applied_roots.append(section.root)
+    return DesktopLoadResult(
+        DesktopLoadStatus.APPLIED,
+        family=family,
+        artifact_family=artifact_family,
+        parsed_roots=parsed_roots,
+        suppressed_roots=suppressed_roots,
+        applied_roots=tuple(applied_roots),
+    )
+
+
+def _has_session_hint() -> bool:
+    if os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+        return True
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime_dir:
+        return False
+    try:
+        return (Path(runtime_dir) / "bus").exists()
+    except OSError:
+        return False
+
+
+def _is_no_session_transport_error(stderr: str) -> bool:
+    message = stderr.casefold()
+    dbus_signal = "d-bus" in message or "dbus" in message or "session bus" in message
+    transport_signal = any(
+        marker in message
+        for marker in (
+            "could not connect",
+            "failed to connect",
+            "connection refused",
+            "connection reset",
+            "no such file or directory",
+            "cannot autolaunch d-bus",
+        )
+    )
+    return dbus_signal and transport_signal
 
 
 def canonical_dconf_root(root: str) -> str:

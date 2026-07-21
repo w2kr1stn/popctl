@@ -39,7 +39,10 @@ from popctl.dotfiles.desktop import (
     MAX_DESKTOP_SETTINGS_ARTIFACT_BYTES,
     DesktopCaptureResult,
     DesktopCaptureStatus,
+    DesktopLoadResult,
+    DesktopLoadStatus,
     capture_desktop_settings,
+    load_desktop_settings,
 )
 from popctl.dotfiles.discovery import DiscoveryResult, discover_dotfiles
 from popctl.dotfiles.materialize import (
@@ -206,20 +209,24 @@ def _record_dotfiles_action(
     paths: Collection[str],
     *,
     repo: DotfilesRepo,
+    metadata: dict[str, str] | None = None,
 ) -> None:
     names = tuple(sorted({path for path in paths if path != DESKTOP_SETTINGS_ARTIFACT_PATH}))
-    if not names:
+    if not names and metadata is None:
         return
     try:
+        action_metadata = {
+            "main": repo.ref_oid(MAIN_REF) or "",
+            "remote_main": repo.ref_oid(REMOTE_MAIN_REF) or "",
+        }
+        if metadata is not None:
+            action_metadata.update(metadata)
         record_action(
             create_history_entry(
                 action_type,
                 [HistoryItem(name=path) for path in names],
                 reversible=False,
-                metadata={
-                    "main": repo.ref_oid(MAIN_REF) or "",
-                    "remote_main": repo.ref_oid(REMOTE_MAIN_REF) or "",
-                },
+                metadata=action_metadata,
             )
         )
     except (OSError, RuntimeError) as e:
@@ -709,6 +716,108 @@ def _report_desktop_capture(result: DesktopCaptureResult) -> None:
             "Desktop-settings capture is stale: the generated artifact was rejected by the secret "
             f"gate ({result.detail}). Existing artifact was preserved."
         )
+
+
+def _load_desktop_settings_for_apply(
+    repo: DotfilesRepo,
+    config: DotfilesConfig,
+    tree: TreeRead,
+    *,
+    dry_run: bool,
+) -> DesktopLoadResult:
+    entry = partition_tree_entries(tree.entries).desktop_settings_entry
+
+    def existing_artifact() -> bytes | None:
+        return repo.read_blob(entry.oid) if entry is not None else None
+
+    result = load_desktop_settings(
+        config.desktop_settings,
+        existing_artifact=existing_artifact,
+        dry_run=dry_run,
+    )
+    _report_desktop_load(result)
+    return result
+
+
+def _report_desktop_load(result: DesktopLoadResult) -> None:
+    if result.status is DesktopLoadStatus.DISABLED:
+        print_info(
+            "Desktop-settings load is disabled; enable it in dotfiles.toml and rerun "
+            "dotfiles apply."
+        )
+    elif result.status is DesktopLoadStatus.NO_ARTIFACT:
+        print_warning(
+            "Desktop-settings load skipped: no artifact was captured; run dotfiles sync on the "
+            "source desktop, then rerun dotfiles apply."
+        )
+    elif result.status is DesktopLoadStatus.NO_DCONF:
+        print_warning(
+            "Desktop-settings load skipped: dconf is unavailable; install dconf-cli and rerun "
+            "dotfiles apply."
+        )
+    elif result.status is DesktopLoadStatus.NO_SESSION:
+        print_warning(
+            "Desktop-settings load skipped: no reachable desktop session; enter a desktop session "
+            "and rerun dotfiles apply."
+        )
+    elif result.status is DesktopLoadStatus.FAMILY_MISMATCH:
+        print_warning(
+            "Desktop-settings load skipped: artifact family "
+            f"{result.artifact_family.value if result.artifact_family else 'unknown'} "
+            "does not match "
+            f"the current {result.family.value if result.family else 'unknown'} family; use the "
+            "matching desktop family and rerun dotfiles apply."
+        )
+    elif result.status is DesktopLoadStatus.UNKNOWN_FAMILY:
+        print_warning(
+            "Desktop-settings load skipped: the desktop family is unknown; enter a supported "
+            "desktop session and rerun dotfiles apply."
+        )
+    elif result.status is DesktopLoadStatus.INVALID_ARTIFACT:
+        print_warning(
+            "Desktop-settings load skipped: the artifact is invalid "
+            f"({result.detail}); repair or regenerate it with dotfiles sync, then rerun "
+            "dotfiles apply."
+        )
+    elif result.status is DesktopLoadStatus.FAILED:
+        prior_roots = (
+            f" Roots already submitted: {', '.join(result.applied_roots)}."
+            if result.applied_roots
+            else ""
+        )
+        print_warning(
+            "Desktop-settings load failed for "
+            f"{result.root}: {result.detail or 'no diagnostic'}. Repair the artifact or desktop "
+            f"session and rerun dotfiles apply.{prior_roots}"
+        )
+    elif result.status is DesktopLoadStatus.PREVIEW:
+        print_info(
+            "Desktop-settings dry-run: artifact family "
+            f"{result.artifact_family.value if result.artifact_family else 'unknown'}, "
+            f"current family {result.family.value if result.family else 'unknown'}, "
+            f"roots {', '.join(result.parsed_roots) or 'none'}."
+        )
+    else:
+        print_info(
+            "Desktop-settings load submitted roots: "
+            f"{', '.join(result.applied_roots) or 'none'}. dconf load -f skips locked keys; "
+            "dconf submission is best-effort, and unknown schemas may leave settings ineffective."
+        )
+    if result.suppressed_roots:
+        print_warning(
+            "Desktop-settings load skipped roots no longer allowed locally: "
+            f"{', '.join(result.suppressed_roots)}. Update dotfiles.toml to allow them and rerun "
+            "dotfiles apply."
+        )
+
+
+def _desktop_load_history_metadata(result: DesktopLoadResult) -> dict[str, str] | None:
+    if not result.applied_roots:
+        return None
+    return {
+        "desktop_settings_applied_roots": ",".join(result.applied_roots),
+        "desktop_settings_family": result.family.value if result.family is not None else "",
+    }
 
 
 def _push_or_refuse(
@@ -1368,17 +1477,7 @@ def _apply_source(
     if dry_run:
         for line in render_materialization_plan(plan):
             console.print(line)
-        return
-    needs_write = any(entry.action != "noop" for entry in plan.entries)
-    if not needs_write and relation is RefRelation.EQUAL:
-        complete_materialization_state_for_source(
-            PlanOperation.APPLY,
-            source_ref=source_oid,
-            source_tree_oid=source_tree.tree_oid,
-            state_dir=_state_dir(),
-            recover_plan_only=True,
-        )
-        print_info("Dotfiles already match the validated source.")
+        _load_desktop_settings_for_apply(repo, config, source_tree, dry_run=True)
         return
     changed = execute_materialization_plan(
         plan,
@@ -1386,13 +1485,18 @@ def _apply_source(
         home=repo.home,
         state_dir=_state_dir(),
     )
+    desktop_load = _load_desktop_settings_for_apply(repo, config, source_tree, dry_run=False)
     if not repo.conditional_advance_ref(MAIN_REF, source_oid, expected):
         _refuse("Dotfiles main ref changed while applying; retry apply.")
     complete_materialization_state(plan, _state_dir())
+    history_paths = changed
+    if not history_paths and relation is not RefRelation.EQUAL:
+        history_paths = tuple(entry.path for entry in plan.entries)
     _record_dotfiles_action(
         HistoryActionType.DOTFILES_APPLY,
-        changed or tuple(entry.path for entry in plan.entries),
+        history_paths,
         repo=repo,
+        metadata=_desktop_load_history_metadata(desktop_load),
     )
     if changed:
         print_success("Applied validated dotfiles.")

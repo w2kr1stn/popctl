@@ -70,7 +70,11 @@ class HistoryEntry:
         if not self.timestamp:
             msg = "Timestamp cannot be empty"
             raise ValueError(msg)
-        if not self.items:
+        desktop_load_without_file_changes = (
+            self.action_type is HistoryActionType.DOTFILES_APPLY
+            and bool(self.metadata.get("desktop_settings_applied_roots"))
+        )
+        if not self.items and not desktop_load_without_file_changes:
             msg = "History entry must have at least one item"
             raise ValueError(msg)
         if self.action_type in _DOTFILES_ACTION_TYPES and self.reversible:

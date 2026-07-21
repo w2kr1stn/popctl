@@ -124,6 +124,15 @@ class TestRunCommandBytes:
 
 
 class TestRunCommand:
+    @patch("popctl.utils.shell._run_subprocess")
+    def test_passes_text_stdin(self, run_subprocess: MagicMock) -> None:
+        run_subprocess.return_value = MagicMock(stdout="", stderr="", returncode=0)
+
+        result = run_command(["dconf", "load", "-f", "/org/example/"], input_text="[x]\ny=1\n")
+
+        assert result.success
+        assert run_subprocess.call_args.kwargs["input_data"] == "[x]\ny=1\n"
+
     @patch("popctl.utils.shell._run_subprocess", side_effect=FileNotFoundError)
     def test_missing_binary_returns_failed_result(self, _run_subprocess: MagicMock) -> None:
         result = run_command(["missing-binary"])

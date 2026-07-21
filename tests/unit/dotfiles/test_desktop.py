@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from popctl.dotfiles import desktop
 from popctl.dotfiles.desktop import (
     DEFAULT_ROOTS,
     MAX_DESKTOP_SETTINGS_ARTIFACT_BYTES,
     DesktopCaptureStatus,
+    DesktopLoadStatus,
     DesktopSettingsArtifactError,
     DesktopSettingsSection,
     canonical_dconf_root,
     capture_desktop_settings,
+    load_desktop_settings,
     parse_desktop_settings_artifact,
     render_desktop_settings_artifact,
 )
@@ -344,3 +348,302 @@ def test_capture_secret_gate_rejection_keeps_prior_artifact_and_passes_root_ack(
     assert result.artifact is None
     assert result.prior_retained
     assert acknowledgements == [(root,)]
+
+
+class _LoadSettings:
+    def __init__(self, roots: tuple[str, ...], *, enabled: bool = True) -> None:
+        self.enabled = enabled
+        self.effective_roots = roots
+
+
+def _load_artifact(*sections: DesktopSettingsSection, family: str = "GNOME") -> bytes:
+    return render_desktop_settings_artifact(family, sections)
+
+
+def _enable_load_gnome(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
+    monkeypatch.delenv("XDG_SESSION_DESKTOP", raising=False)
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
+    monkeypatch.setattr(
+        desktop.shutil,
+        "which",
+        lambda name: "/usr/bin/dconf" if name == "dconf" else None,
+    )
+
+
+def test_load_is_disabled_before_every_operational_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(desktop, "normalize_desktop_family", lambda *_args: pytest.fail("family"))
+    monkeypatch.setattr(desktop.shutil, "which", lambda _name: pytest.fail("binary"))
+
+    result = load_desktop_settings(
+        _LoadSettings(("/org/example/root/",), enabled=False),
+        existing_artifact=lambda: pytest.fail("artifact"),
+    )
+
+    assert result.status is DesktopLoadStatus.DISABLED
+
+
+def test_load_reports_no_artifact_before_dconf(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(desktop.shutil, "which", lambda _name: pytest.fail("binary"))
+
+    result = load_desktop_settings(
+        _LoadSettings(("/org/example/root/",)), existing_artifact=lambda: None
+    )
+
+    assert result.status is DesktopLoadStatus.NO_ARTIFACT
+
+
+def test_load_reports_invalid_artifact_before_family_or_dconf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(desktop, "normalize_desktop_family", lambda *_args: pytest.fail("family"))
+    monkeypatch.setattr(desktop.shutil, "which", lambda _name: pytest.fail("binary"))
+
+    result = load_desktop_settings(
+        _LoadSettings(("/org/example/root/",)), existing_artifact=lambda: b"not an artifact\n"
+    )
+
+    assert result.status is DesktopLoadStatus.INVALID_ARTIFACT
+
+
+def test_load_reports_unknown_or_mismatched_family_without_dconf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = _load_artifact(DesktopSettingsSection("/org/example/root/", b""))
+    monkeypatch.setattr(desktop.shutil, "which", lambda _name: pytest.fail("binary"))
+    monkeypatch.setattr(desktop, "run_command", lambda *_args, **_kwargs: pytest.fail("dconf"))
+
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "unsupported")
+    unknown = load_desktop_settings(
+        _LoadSettings(("/org/example/root/",)), existing_artifact=lambda: artifact
+    )
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "COSMIC")
+    mismatch = load_desktop_settings(
+        _LoadSettings(("/org/example/root/",)), existing_artifact=lambda: artifact
+    )
+
+    assert unknown.status is DesktopLoadStatus.UNKNOWN_FAMILY
+    assert mismatch.status is DesktopLoadStatus.FAMILY_MISMATCH
+
+
+def test_load_reports_missing_dconf_after_parsing_and_family_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = "/org/example/root/"
+    _enable_load_gnome(monkeypatch)
+    monkeypatch.setattr(desktop.shutil, "which", lambda _name: None)
+
+    result = load_desktop_settings(
+        _LoadSettings((root,)),
+        existing_artifact=lambda: _load_artifact(DesktopSettingsSection(root, b"")),
+    )
+
+    assert result.status is DesktopLoadStatus.NO_DCONF
+    assert result.parsed_roots == (root,)
+
+
+def test_load_absent_session_hint_makes_zero_dconf_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = "/org/example/root/"
+    _enable_load_gnome(monkeypatch)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS")
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(desktop, "run_command", lambda *_args, **_kwargs: pytest.fail("dconf"))
+
+    result = load_desktop_settings(
+        _LoadSettings((root,)),
+        existing_artifact=lambda: _load_artifact(DesktopSettingsSection(root, b"")),
+    )
+
+    assert result.status is DesktopLoadStatus.NO_SESSION
+
+
+@pytest.mark.parametrize(
+    "stderr",
+    (
+        "Error: Failed to connect to D-Bus: Could not connect: No such file or directory",
+        "Error: Failed to connect to D-Bus: Could not connect: Connection refused",
+    ),
+)
+def test_load_classifies_stale_address_and_dead_socket_as_no_session(
+    monkeypatch: pytest.MonkeyPatch,
+    stderr: str,
+) -> None:
+    root = "/org/example/root/"
+    _enable_load_gnome(monkeypatch)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fail(args: list[str], **kwargs: object) -> CommandResult:
+        calls.append((args, kwargs))
+        return CommandResult("", stderr, 1)
+
+    monkeypatch.setattr(desktop, "run_command", fail)
+    result = load_desktop_settings(
+        _LoadSettings((root,)),
+        existing_artifact=lambda: _load_artifact(DesktopSettingsSection(root, b"[x]\ny=1\n")),
+    )
+
+    assert result.status is DesktopLoadStatus.NO_SESSION
+    assert result.root == root
+    assert calls[0][0] == ["dconf", "load", "-f", root]
+    assert calls[0][1] == {"input_text": "[x]\ny=1\n", "env": {"LC_ALL": "C"}}
+
+
+def test_load_classifies_a_dead_runtime_bus_socket_as_no_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = "/org/example/root/"
+    _enable_load_gnome(monkeypatch)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS")
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "bus").touch()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setattr(
+        desktop,
+        "run_command",
+        lambda *_args, **_kwargs: CommandResult(
+            "", "Error: Failed to connect to D-Bus: Connection refused", 1
+        ),
+    )
+
+    result = load_desktop_settings(
+        _LoadSettings((root,)),
+        existing_artifact=lambda: _load_artifact(DesktopSettingsSection(root, b"")),
+    )
+
+    assert result.status is DesktopLoadStatus.NO_SESSION
+
+
+def test_load_malformed_gvariant_nonzero_is_a_failed_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    root = "/org/example/root/"
+    _enable_load_gnome(monkeypatch)
+    monkeypatch.setattr(
+        desktop,
+        "run_command",
+        lambda *_args, **_kwargs: CommandResult("", "error: malformed GVariant body", 1),
+    )
+
+    result = load_desktop_settings(
+        _LoadSettings((root,)),
+        existing_artifact=lambda: _load_artifact(DesktopSettingsSection(root, b"[x]\ny=broken\n")),
+    )
+
+    assert result.status is DesktopLoadStatus.FAILED
+    assert result.root == root
+    assert result.detail == "error: malformed GVariant body"
+
+
+def test_load_applies_each_authorized_root_with_verbatim_argv_and_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = "/org/example/first/"
+    second = "/org/example/second/"
+    _enable_load_gnome(monkeypatch)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def load(args: list[str], **kwargs: object) -> CommandResult:
+        calls.append((args, kwargs))
+        return CommandResult("", "", 0)
+
+    monkeypatch.setattr(desktop, "run_command", load)
+    result = load_desktop_settings(
+        _LoadSettings((first, second)),
+        existing_artifact=lambda: _load_artifact(
+            DesktopSettingsSection(second, b"[second]\nvalue=2\n"),
+            DesktopSettingsSection(first, b"[first]\nvalue=1\n"),
+        ),
+    )
+
+    assert result.status is DesktopLoadStatus.APPLIED
+    assert result.applied_roots == (first, second)
+    assert calls == [
+        (
+            ["dconf", "load", "-f", first],
+            {"input_text": "[first]\nvalue=1\n", "env": {"LC_ALL": "C"}},
+        ),
+        (
+            ["dconf", "load", "-f", second],
+            {"input_text": "[second]\nvalue=2\n", "env": {"LC_ALL": "C"}},
+        ),
+    ]
+    assert all(call[0][-1].endswith("/") and not call[0][-1].endswith("//") for call in calls)
+
+
+def test_load_suppresses_currently_unapproved_roots_without_dconf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = "/org/example/root/"
+    crafted = "/org/crafted/root/"
+    _enable_load_gnome(monkeypatch)
+    calls: list[list[str]] = []
+
+    def load(args: list[str], **_kwargs: object) -> CommandResult:
+        calls.append(args)
+        return CommandResult("", "", 0)
+
+    monkeypatch.setattr(desktop, "run_command", load)
+    result = load_desktop_settings(
+        _LoadSettings((root,)),
+        existing_artifact=lambda: _load_artifact(
+            DesktopSettingsSection(root, b""), DesktopSettingsSection(crafted, b"")
+        ),
+    )
+
+    assert result.status is DesktopLoadStatus.APPLIED
+    assert result.applied_roots == (root,)
+    assert result.suppressed_roots == (crafted,)
+    assert calls == [["dconf", "load", "-f", root]]
+
+
+def test_load_retains_applied_roots_and_stops_on_later_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = "/org/example/first/"
+    second = "/org/example/second/"
+    third = "/org/example/third/"
+    _enable_load_gnome(monkeypatch)
+    calls: list[list[str]] = []
+
+    def load(args: list[str], **_kwargs: object) -> CommandResult:
+        calls.append(args)
+        if args[-1] == second:
+            return CommandResult("", "dconf rejected this root", 1)
+        return CommandResult("", "", 0)
+
+    monkeypatch.setattr(desktop, "run_command", load)
+    result = load_desktop_settings(
+        _LoadSettings((first, second, third)),
+        existing_artifact=lambda: _load_artifact(
+            DesktopSettingsSection(first, b""),
+            DesktopSettingsSection(second, b""),
+            DesktopSettingsSection(third, b""),
+        ),
+    )
+
+    assert result.status is DesktopLoadStatus.FAILED
+    assert result.root == second
+    assert result.detail == "dconf rejected this root"
+    assert result.applied_roots == (first,)
+    assert calls == [["dconf", "load", "-f", first], ["dconf", "load", "-f", second]]
+
+
+def test_dry_run_previews_without_dconf_lookup_or_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    root = "/org/example/root/"
+    _enable_load_gnome(monkeypatch)
+    monkeypatch.setattr(desktop.shutil, "which", lambda _name: pytest.fail("binary"))
+    monkeypatch.setattr(desktop, "run_command", lambda *_args, **_kwargs: pytest.fail("dconf"))
+
+    result = load_desktop_settings(
+        _LoadSettings((root,)),
+        existing_artifact=lambda: _load_artifact(DesktopSettingsSection(root, b"")),
+        dry_run=True,
+    )
+
+    assert result.status is DesktopLoadStatus.PREVIEW
+    assert result.parsed_roots == (root,)
