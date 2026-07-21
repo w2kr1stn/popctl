@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -105,6 +106,27 @@ def _desktop_artifact(root: str = DEFAULT_ROOTS[0], body: bytes = b"") -> bytes:
         "GNOME",
         (DesktopSettingsSection(root, body),),
     )
+
+
+@pytest.fixture
+def legacy_pre_desktop_tree_validator() -> Callable[[TreeEntry, bytes, Callable[[], None]], None]:
+    """Frozen pre-feature tree gate: every path used the public byte scanner."""
+
+    def validate_then_continue(
+        entry: TreeEntry,
+        content: bytes,
+        continuation: Callable[[], None],
+    ) -> None:
+        if entry.mode not in {"100644", "100755"}:
+            raise TreeValidationError(f"Unsupported tree mode for {entry.path}: {entry.mode}")
+        verdict = scan_dotfile_bytes(entry.path, content)
+        if not verdict.allowed:
+            raise TreeValidationError(
+                f"Legacy tree validation rejected {entry.path}: {verdict.kind}"
+            )
+        continuation()
+
+    return validate_then_continue
 
 
 @pytest.mark.real_git
@@ -832,6 +854,7 @@ def test_reserved_oversize_is_rejected_before_its_blob_is_read(
 def test_pinned_legacy_path_gate_rejects_a_scanner_clean_empty_artifact(
     real_git: RealGitEnvironment,
     tmp_path: Path,
+    legacy_pre_desktop_tree_validator: Callable[[TreeEntry, bytes, Callable[[], None]], None],
 ) -> None:
     repository = _repository(real_git, tmp_path)
     artifact = _desktop_artifact()
@@ -846,6 +869,14 @@ def test_pinned_legacy_path_gate_rejects_a_scanner_clean_empty_artifact(
         DESKTOP_SETTINGS_ARTIFACT_PATH,
         artifact,
     ).kind is SecretVerdictKind.DENIED_PATH
+    materialization_or_sync: list[str] = []
+    with pytest.raises(TreeValidationError, match="Legacy tree validation rejected"):
+        legacy_pre_desktop_tree_validator(
+            TreeEntry("100644", DESKTOP_SETTINGS_ARTIFACT_PATH, "0" * 40),
+            artifact,
+            lambda: materialization_or_sync.append("continued"),
+        )
+    assert materialization_or_sync == []
     assert repository.validate_tree(tree_oid).tree_oid == tree_oid
 
 

@@ -77,6 +77,41 @@ def test_root_grammar_rejects_noncanonical_directories(root: str, message: str) 
 
 
 @pytest.mark.parametrize(
+    "root",
+    (
+        "relative/root/",
+        "/org/example",
+        "/org//example/",
+        "/org/./example/",
+        "/org/../example/",
+        "/org\\example/",
+        "/org/example root/",
+        "/org/example\x1froot/",
+    ),
+)
+def test_load_rejects_raw_artifact_root_grammar_before_dconf(
+    root: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root = root.encode("utf-8")
+    artifact = (
+        b"# popctl-desktop-settings v1\n# family: GNOME\n# root: "
+        + raw_root
+        + b"\n# end-header\n# root: "
+        + raw_root
+        + b"\n"
+    )
+    monkeypatch.setattr(desktop, "run_command", lambda *_args, **_kwargs: pytest.fail("dconf"))
+
+    result = load_desktop_settings(
+        _CaptureSettings(("/org/example/",)),
+        existing_artifact=lambda: artifact,
+    )
+
+    assert result.status is DesktopLoadStatus.INVALID_ARTIFACT
+
+
+@pytest.mark.parametrize(
     "content",
     (
         b"# popctl-desktop-settings v2\n# family: GNOME\n# end-header\n",
@@ -426,6 +461,29 @@ def test_load_reports_unknown_or_mismatched_family_without_dconf(
     assert mismatch.status is DesktopLoadStatus.FAMILY_MISMATCH
 
 
+def test_load_reports_suppressed_roots_before_a_family_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authorized = "/org/example/authorized/"
+    disabled = "/org/example/disabled/"
+    artifact = _load_artifact(
+        DesktopSettingsSection(authorized, b""),
+        DesktopSettingsSection(disabled, b""),
+    )
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "COSMIC")
+    monkeypatch.delenv("XDG_SESSION_DESKTOP", raising=False)
+    monkeypatch.setattr(desktop.shutil, "which", lambda _name: pytest.fail("binary"))
+    monkeypatch.setattr(desktop, "run_command", lambda *_args, **_kwargs: pytest.fail("dconf"))
+
+    result = load_desktop_settings(
+        _LoadSettings((authorized,)),
+        existing_artifact=lambda: artifact,
+    )
+
+    assert result.status is DesktopLoadStatus.FAMILY_MISMATCH
+    assert result.suppressed_roots == (disabled,)
+
+
 def test_load_reports_missing_dconf_after_parsing_and_family_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -465,8 +523,9 @@ def test_load_absent_session_hint_makes_zero_dconf_calls(
 @pytest.mark.parametrize(
     "stderr",
     (
-        "Error: Failed to connect to D-Bus: Could not connect: No such file or directory",
-        "Error: Failed to connect to D-Bus: Could not connect: Connection refused",
+        "Could not connect: No such file or directory",
+        "Could not connect: Connection refused",
+        "The given address is empty",
     ),
 )
 def test_load_classifies_stale_address_and_dead_socket_as_no_session(
@@ -507,9 +566,7 @@ def test_load_classifies_a_dead_runtime_bus_socket_as_no_session(
     monkeypatch.setattr(
         desktop,
         "run_command",
-        lambda *_args, **_kwargs: CommandResult(
-            "", "Error: Failed to connect to D-Bus: Connection refused", 1
-        ),
+        lambda *_args, **_kwargs: CommandResult("", "Could not connect: Connection refused", 1),
     )
 
     result = load_desktop_settings(

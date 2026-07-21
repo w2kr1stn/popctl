@@ -239,6 +239,11 @@ def load_desktop_settings(
         return DesktopLoadResult(DesktopLoadStatus.INVALID_ARTIFACT, detail=str(e))
 
     parsed_roots = artifact.roots
+    allowed_roots = set(settings.effective_roots)
+    sections = tuple(section for section in artifact.sections if section.root in allowed_roots)
+    suppressed_roots = tuple(
+        section.root for section in artifact.sections if section.root not in allowed_roots
+    )
     family = normalize_desktop_family(
         os.environ.get("XDG_CURRENT_DESKTOP"),
         os.environ.get("XDG_SESSION_DESKTOP"),
@@ -249,6 +254,7 @@ def load_desktop_settings(
             family=family,
             artifact_family=artifact_family,
             parsed_roots=parsed_roots,
+            suppressed_roots=suppressed_roots,
         )
     if artifact_family is not family:
         return DesktopLoadResult(
@@ -256,13 +262,9 @@ def load_desktop_settings(
             family=family,
             artifact_family=artifact_family,
             parsed_roots=parsed_roots,
+            suppressed_roots=suppressed_roots,
         )
 
-    allowed_roots = set(settings.effective_roots)
-    sections = tuple(section for section in artifact.sections if section.root in allowed_roots)
-    suppressed_roots = tuple(
-        section.root for section in artifact.sections if section.root not in allowed_roots
-    )
     if dry_run:
         return DesktopLoadResult(
             DesktopLoadStatus.PREVIEW,
@@ -277,6 +279,7 @@ def load_desktop_settings(
             family=family,
             artifact_family=artifact_family,
             parsed_roots=parsed_roots,
+            suppressed_roots=suppressed_roots,
         )
     if not has_desktop_session_hint():
         return DesktopLoadResult(
@@ -284,6 +287,7 @@ def load_desktop_settings(
             family=family,
             artifact_family=artifact_family,
             parsed_roots=parsed_roots,
+            suppressed_roots=suppressed_roots,
         )
 
     applied_roots: list[str] = []
@@ -341,19 +345,17 @@ def has_desktop_session_hint() -> bool:
 
 def _is_no_session_transport_error(stderr: str) -> bool:
     message = stderr.casefold()
-    dbus_signal = "d-bus" in message or "dbus" in message or "session bus" in message
-    transport_signal = any(
+    return any(
         marker in message
         for marker in (
-            "could not connect",
-            "failed to connect",
-            "connection refused",
-            "connection reset",
-            "no such file or directory",
-            "cannot autolaunch d-bus",
+            "could not connect: no such file or directory",
+            "could not connect: connection refused",
+            "failed to connect: no such file or directory",
+            "failed to connect: connection refused",
+            "failed to connect to bus: no such file or directory",
+            "the given address is empty",
         )
     )
-    return dbus_signal and transport_signal
 
 
 def canonical_dconf_root(root: str) -> str:

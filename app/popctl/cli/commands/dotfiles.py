@@ -34,6 +34,7 @@ from popctl.dotfiles.config import (
     save_dotfiles_config,
 )
 from popctl.dotfiles.desktop import (
+    DEFAULT_ROOTS,
     DESKTOP_SETTINGS_ARTIFACT_MODE,
     DESKTOP_SETTINGS_ARTIFACT_PATH,
     MAX_DESKTOP_SETTINGS_ARTIFACT_BYTES,
@@ -111,6 +112,13 @@ class ReviewResult:
     finalization: DotfilesReviewFinalization
     config: DotfilesConfig
     cancelled: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TreeAcknowledgements:
+    path_allowlist: tuple[str, ...]
+    desktop_extra_roots: tuple[str, ...]
+    desktop_ambiguous_root_allowlist: tuple[str, ...]
 
 
 def _interactive() -> bool:
@@ -392,14 +400,25 @@ def _acknowledge_tree_ambiguities(
     tree: TreeRead,
     *,
     allowlist: Collection[str],
+    desktop_extra_roots: Collection[str] = (),
     interactive: bool,
-) -> tuple[str, ...]:
+    allow_unconfigured_desktop_extra_roots: bool = False,
+) -> TreeAcknowledgements:
     accepted = set(allowlist)
+    acknowledged_desktop_roots: tuple[str, ...] = ()
+    resolved_desktop_extra_roots = tuple(sorted(set(desktop_extra_roots)))
     for entry in sorted(tree.entries, key=lambda item: item.path):
         if entry.path == DESKTOP_SETTINGS_ARTIFACT_PATH:
-            if repo.blob_size(entry.oid) > MAX_DESKTOP_SETTINGS_ARTIFACT_BYTES:
-                _refuse("Invalid desktop settings artifact: artifact exceeds the size limit")
-            repo.admit_desktop_settings_artifact(entry, repo.read_blob(entry.oid))
+            (
+                acknowledged_desktop_roots,
+                resolved_desktop_extra_roots,
+            ) = _acknowledge_desktop_artifact_ambiguities(
+                repo,
+                entry,
+                desktop_extra_roots=resolved_desktop_extra_roots,
+                interactive=interactive,
+                allow_unconfigured_extra_roots=allow_unconfigured_desktop_extra_roots,
+            )
             continue
         verdict = scan_dotfile_bytes(
             entry.path,
@@ -420,7 +439,106 @@ def _acknowledge_tree_ambiguities(
         if not confirmed:
             _refuse(f"Ambiguous remote content acknowledgement declined for {entry.path}.")
         accepted.add(entry.path)
-    return tuple(sorted(accepted))
+    return TreeAcknowledgements(
+        tuple(sorted(accepted)),
+        resolved_desktop_extra_roots,
+        acknowledged_desktop_roots,
+    )
+
+
+def _acknowledge_desktop_artifact_ambiguities(
+    repo: DotfilesRepo,
+    entry: TreeEntry,
+    *,
+    desktop_extra_roots: Collection[str],
+    interactive: bool,
+    allow_unconfigured_extra_roots: bool = False,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if repo.blob_size(entry.oid) > MAX_DESKTOP_SETTINGS_ARTIFACT_BYTES:
+        _refuse("Invalid desktop settings artifact: artifact exceeds the size limit")
+    content = repo.read_blob(entry.oid)
+    extra_roots = set(desktop_extra_roots)
+    if allow_unconfigured_extra_roots:
+        try:
+            artifact = parse_desktop_settings_artifact(content)
+        except DesktopSettingsArtifactError:
+            pass
+        else:
+            extra_roots.update(
+                section.root for section in artifact.sections if section.root not in DEFAULT_ROOTS
+            )
+
+    acknowledged_roots: set[str] = set()
+    while True:
+        try:
+            repo.admit_desktop_settings_artifact(
+                entry,
+                content,
+                desktop_extra_roots=extra_roots,
+                desktop_ambiguous_root_allowlist=acknowledged_roots,
+            )
+        except TreeValidationError as e:
+            root = _unacknowledged_extra_root(str(e), extra_roots)
+            if root is None:
+                raise
+            if not interactive:
+                _refuse(
+                    "Remote desktop settings has unacknowledged ambiguous content at "
+                    f"{root}; rerun interactively."
+                )
+            if not typer.confirm(
+                f"Allow ambiguous desktop-settings content for {root}?",
+                default=False,
+            ):
+                _refuse(f"Ambiguous desktop-settings acknowledgement declined for {root}.")
+            acknowledged_roots.add(root)
+            continue
+        return tuple(sorted(acknowledged_roots)), tuple(sorted(extra_roots))
+
+
+def _validate_tree_with_desktop_acknowledgement(
+    repo: DotfilesRepo,
+    ref: str,
+    *,
+    allowlist: Collection[str],
+    desktop_extra_roots: Collection[str],
+    interactive: bool,
+) -> TreeRead:
+    raw_tree = repo.read_tree(ref)
+    partition = partition_tree_entries(raw_tree.entries)
+    acknowledged_roots: tuple[str, ...] = ()
+    resolved_extra_roots = tuple(sorted(set(desktop_extra_roots)))
+    if partition.desktop_settings_entry is not None:
+        (
+            acknowledged_roots,
+            resolved_extra_roots,
+        ) = _acknowledge_desktop_artifact_ambiguities(
+            repo,
+            partition.desktop_settings_entry,
+            desktop_extra_roots=resolved_extra_roots,
+            interactive=interactive,
+        )
+    return repo.validate_tree(
+        ref,
+        **_desktop_tree_validation_kwargs(
+            allowlist,
+            resolved_extra_roots,
+            acknowledged_roots,
+        ),
+    )
+
+
+def _desktop_tree_validation_kwargs(
+    allowlist: Collection[str],
+    desktop_extra_roots: Collection[str],
+    desktop_ambiguous_root_allowlist: Collection[str],
+) -> dict[str, Collection[str]]:
+    kwargs: dict[str, Collection[str]] = {"ambiguous_content_allowlist": allowlist}
+    if desktop_extra_roots:
+        kwargs["desktop_extra_roots"] = desktop_extra_roots
+    if desktop_ambiguous_root_allowlist:
+        kwargs["desktop_ambiguous_root_allowlist"] = desktop_ambiguous_root_allowlist
+    return kwargs
 
 
 def _review_candidates(
@@ -543,10 +661,18 @@ def _remote_tree_or_refuse(
     tracked: Collection[str],
     allowlist: Collection[str],
     *,
+    desktop_extra_roots: Collection[str] = (),
+    interactive: bool = False,
     source_ref: str = REMOTE_MAIN_REF,
     require_tracked_paths: bool = True,
 ) -> TreeRead:
-    tree = repo.validate_tree(source_ref, ambiguous_content_allowlist=allowlist)
+    tree = _validate_tree_with_desktop_acknowledgement(
+        repo,
+        source_ref,
+        allowlist=allowlist,
+        desktop_extra_roots=desktop_extra_roots,
+        interactive=interactive,
+    )
     if not require_tracked_paths:
         return tree
     source_paths = {entry.path for entry in tree.entries}
@@ -672,6 +798,19 @@ def _capture_desktop_settings_for_sync(
         )
     _report_desktop_capture(result)
     return result
+
+
+def _desktop_capture_history_metadata(result: DesktopCaptureResult) -> dict[str, str] | None:
+    if result.status is not DesktopCaptureStatus.CHANGED or result.artifact is None:
+        return None
+    try:
+        artifact = parse_desktop_settings_artifact(result.artifact)
+    except DesktopSettingsArtifactError:
+        return None
+    return {
+        "desktop_settings_family": artifact.family,
+        "desktop_settings_root_count": str(len(artifact.roots)),
+    }
 
 
 def _unacknowledged_extra_root(detail: str, extra_roots: Collection[str]) -> str | None:
@@ -863,8 +1002,9 @@ def _sync_empty_remote(repo: DotfilesRepo, config: DotfilesConfig, *, interactiv
         tree,
         interactive=interactive,
     )
+    committed_paths: tuple[str, ...] = ()
     if desktop_capture.changed:
-        repo.checked_commit(
+        result = repo.checked_commit(
             (DESKTOP_SETTINGS_ARTIFACT_PATH,),
             "Capture desktop settings",
             ambiguous_content_allowlist=config.ambiguous_content_allowlist,
@@ -873,7 +1013,16 @@ def _sync_empty_remote(repo: DotfilesRepo, config: DotfilesConfig, *, interactiv
             desktop_extra_roots=config.desktop_settings.extra_roots,
             desktop_ambiguous_root_allowlist=desktop_capture.ambiguous_root_allowlist,
         )
+        committed_paths = result.paths
     _push_pending_empty_remote(repo, config, interactive=interactive)
+    capture_metadata = _desktop_capture_history_metadata(desktop_capture)
+    if committed_paths or capture_metadata is not None:
+        _record_dotfiles_action(
+            HistoryActionType.DOTFILES_SYNC,
+            committed_paths,
+            repo=repo,
+            metadata=capture_metadata,
+        )
 
 
 def _is_missing_remote_main_ref(transport_stderr: str) -> bool:
@@ -908,7 +1057,12 @@ def init(
                     "'popctl dotfiles init --from <url>' on a fresh machine."
                 )
             if from_url is not None:
-                _init_from(from_url, interactive=interactive, final_store=probe.bare_repo)
+                _init_from(
+                    from_url,
+                    interactive=interactive,
+                    final_store=probe.bare_repo,
+                    desktop_extra_roots=probe.desktop_settings.extra_roots,
+                )
             else:
                 _init_new(
                     remote,
@@ -1027,7 +1181,13 @@ def _init_new(
             _cleanup_unpromoted_store(temporary_store)
 
 
-def _init_from(from_url: str, *, interactive: bool, final_store: Path) -> None:
+def _init_from(
+    from_url: str,
+    *,
+    interactive: bool,
+    final_store: Path,
+    desktop_extra_roots: Collection[str] = (),
+) -> None:
     try:
         canonical_url = validate_remote_url(from_url)
     except DotfilesRepoError as e:
@@ -1054,17 +1214,26 @@ def _init_from(from_url: str, *, interactive: bool, final_store: Path) -> None:
                 "(main ref or format marker missing)."
             )
         raw_tree = repo.read_tree(REMOTE_MAIN_REF)
-        allowlist = _acknowledge_tree_ambiguities(
+        acknowledgements = _acknowledge_tree_ambiguities(
             repo,
             raw_tree,
             allowlist=(),
+            desktop_extra_roots=desktop_extra_roots,
             interactive=interactive,
+            allow_unconfigured_desktop_extra_roots=True,
         )
-        tree = repo.validate_tree(REMOTE_MAIN_REF, ambiguous_content_allowlist=allowlist)
+        tree = repo.validate_tree(
+            REMOTE_MAIN_REF,
+            **_desktop_tree_validation_kwargs(
+                acknowledgements.path_allowlist,
+                acknowledgements.desktop_extra_roots,
+                acknowledgements.desktop_ambiguous_root_allowlist,
+            ),
+        )
         config = DotfilesConfig(
             bare_repo=final_store,
             remote_url=canonical_url,
-            ambiguous_content_allowlist=list(allowlist),
+            ambiguous_content_allowlist=list(acknowledgements.path_allowlist),
             remote_privacy=privacy,
         )
         _promote_initialized_store(
@@ -1106,10 +1275,12 @@ def status() -> None:
         if repo.ref_oid(REMOTE_MAIN_REF) is None:
             _refuse("No cached remote dotfiles ref is available.")
         try:
-            source_tree = repo.validate_tree(
+            source_tree = _validate_tree_with_desktop_acknowledgement(
+                repo,
                 REMOTE_MAIN_REF,
-                ambiguous_content_allowlist=config.ambiguous_content_allowlist,
+                allowlist=config.ambiguous_content_allowlist,
                 desktop_extra_roots=config.desktop_settings.extra_roots,
+                interactive=_interactive(),
             )
         except TreeValidationError:
             raw_source_tree = repo.read_tree(REMOTE_MAIN_REF)
@@ -1232,6 +1403,8 @@ def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: boo
         repo,
         tracked,
         config.ambiguous_content_allowlist,
+        desktop_extra_roots=config.desktop_settings.extra_roots,
+        interactive=interactive,
         source_ref=source_oid,
         require_tracked_paths=relation in {RefRelation.EQUAL, RefRelation.BEHIND},
     )
@@ -1326,8 +1499,14 @@ def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: boo
         if repo.merge_base_relation() is RefRelation.AHEAD:
             _push_or_refuse(repo, config, interactive=interactive)
         affected = tuple(sorted(set(inbound_paths) | set(committed_paths)))
-        if affected:
-            _record_dotfiles_action(HistoryActionType.DOTFILES_SYNC, affected, repo=repo)
+        capture_metadata = _desktop_capture_history_metadata(desktop_capture)
+        if affected or capture_metadata is not None:
+            _record_dotfiles_action(
+                HistoryActionType.DOTFILES_SYNC,
+                affected,
+                repo=repo,
+                metadata=capture_metadata,
+            )
         return
     changed = _safe_changed_tracked_paths(repo, tracked)
     commit_paths = tuple(sorted(set(changed) | set(review.finalization.tracked_paths)))
@@ -1354,8 +1533,14 @@ def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: boo
     affected = tuple(
         sorted(set(inbound_paths) | set(committed_paths) | set(review.finalization.ignored_paths))
     )
-    if affected:
-        _record_dotfiles_action(HistoryActionType.DOTFILES_SYNC, affected, repo=repo)
+    capture_metadata = _desktop_capture_history_metadata(desktop_capture)
+    if affected or capture_metadata is not None:
+        _record_dotfiles_action(
+            HistoryActionType.DOTFILES_SYNC,
+            affected,
+            repo=repo,
+            metadata=capture_metadata,
+        )
     if committed_paths:
         print_success("Dotfiles synchronized and pushed.")
     elif relation_after is RefRelation.EQUAL:
@@ -1375,6 +1560,7 @@ def _sync_offline(repo: DotfilesRepo, config: DotfilesConfig) -> None:
         repo,
         tracked,
         config.ambiguous_content_allowlist,
+        desktop_extra_roots=config.desktop_settings.extra_roots,
         require_tracked_paths=relation in {RefRelation.EQUAL, RefRelation.BEHIND},
     )
     classifications = repo.classify_paths(tracked) if base_entries else ()
@@ -1409,7 +1595,12 @@ def _sync_offline(repo: DotfilesRepo, config: DotfilesConfig) -> None:
         desktop_extra_roots=config.desktop_settings.extra_roots,
         desktop_ambiguous_root_allowlist=desktop_capture.ambiguous_root_allowlist,
     )
-    _record_dotfiles_action(HistoryActionType.DOTFILES_SYNC, result.paths, repo=repo)
+    _record_dotfiles_action(
+        HistoryActionType.DOTFILES_SYNC,
+        result.paths,
+        repo=repo,
+        metadata=_desktop_capture_history_metadata(desktop_capture),
+    )
     print_success("Committed local dotfiles changes offline; push is pending.")
 
 
@@ -1491,6 +1682,8 @@ def _apply_source(
         repo,
         tracked,
         config.ambiguous_content_allowlist,
+        desktop_extra_roots=config.desktop_settings.extra_roots,
+        interactive=_interactive(),
         source_ref=source_oid,
         require_tracked_paths=relation in {RefRelation.EQUAL, RefRelation.BEHIND},
     )
