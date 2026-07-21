@@ -613,6 +613,89 @@ def test_init_from_promotes_validated_temporary_store(
     assert load_dotfiles_config().remote_url == _REMOTE
 
 
+@pytest.mark.real_git
+@pytest.mark.parametrize(
+    ("root", "source_extra_roots", "source_acknowledgements", "expected_exit_code"),
+    (
+        pytest.param(DEFAULT_ROOTS[0], (), (), 0, id="built-in-root-admits-transiently"),
+        pytest.param(
+            "/org/example/bootstrap-extra/",
+            ("/org/example/bootstrap-extra/",),
+            ("/org/example/bootstrap-extra/",),
+            1,
+            id="extra-root-refuses-without-acknowledgement",
+        ),
+    ),
+)
+def test_cli_init_from_noninteractive_desktop_ambiguity_admission(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    root: str,
+    source_extra_roots: tuple[str, ...],
+    source_acknowledgements: tuple[str, ...],
+    expected_exit_code: int,
+) -> None:
+    remote_store = DotfilesRepo(
+        tmp_path / "remote.git",
+        home=real_git.home,
+        state_dir=real_git.state_home / "popctl" / "remote",
+    )
+    remote_store.initialize_bare()
+    source = DotfilesRepo(
+        tmp_path / "source.git",
+        home=real_git.home,
+        state_dir=real_git.state_home / "popctl" / "source",
+    )
+    source.initialize_bare()
+    _write(real_git.home, b"bootstrap source\n")
+    artifact = render_desktop_settings_artifact(
+        "GNOME",
+        (DesktopSettingsSection(root, b"custom-keybindings=[]\n"),),
+    )
+    source_oid = source.checked_commit(
+        (_PATH, DESKTOP_SETTINGS_ARTIFACT_PATH),
+        "bootstrap ambiguous desktop settings",
+        desktop_settings_artifact=artifact,
+        desktop_extra_roots=source_extra_roots,
+        desktop_ambiguous_root_allowlist=source_acknowledgements,
+    ).commit_oid
+    source.create_marker(source_oid)
+    local_url = f"file://{remote_store.bare_repo}"
+    source._install_test_remote(local_url)
+    pushed = source._network_git(
+        ["push", local_url, f"{MAIN_REF}:{MAIN_REF}", "refs/tags/popctl-dotfiles-format-v1"],
+        local_url,
+    )
+    assert pushed.success
+    _route_network_to_local_remote(monkeypatch, remote_store)
+    monkeypatch.setattr(
+        dotfiles,
+        "_acquire_private_remote",
+        lambda url, **_kwargs: (
+            RemotePrivacyRecord(canonical_remote_url=url, method="verified"),
+            False,
+        ),
+    )
+
+    result = runner.invoke(app, ["dotfiles", "init", "--from", _REMOTE])
+
+    assert result.exit_code == expected_exit_code, result.output
+    final_store = DotfilesConfig().bare_repo
+    if expected_exit_code == 0:
+        config = load_dotfiles_config()
+        assert final_store.is_dir()
+        assert config.remote_url == _REMOTE
+        assert config.ambiguous_content_allowlist == []
+        assert config.desktop_settings.extra_roots == ()
+    else:
+        assert f"unacknowledged ambiguous content at {root}" in result.output
+        assert "rerun interactively" in result.output
+        assert not final_store.exists()
+        assert not get_dotfiles_config_path().exists()
+        assert get_history()[0] == []
+
+
 def test_offline_sync_commits_only_safe_cached_local_change(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1729,6 +1812,7 @@ def test_noop_reapply_retries_desktop_load_and_records_metadata(
     real_git: RealGitEnvironment,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     root = DEFAULT_ROOTS[0]
     artifact = render_desktop_settings_artifact("GNOME", (DesktopSettingsSection(root, b""),))
@@ -1753,20 +1837,42 @@ def test_noop_reapply_retries_desktop_load_and_records_metadata(
     monkeypatch.setattr(desktop.shutil, "which", lambda _name: "/usr/bin/dconf")
     outcomes = iter(
         (
-            CommandResult("", "Could not connect: Connection refused", 1),
+            CommandResult("", "error: Could not connect: Connection refused", 1),
             CommandResult("", "", 0),
         )
     )
-    monkeypatch.setattr(desktop, "run_command", lambda *_args, **_kwargs: next(outcomes))
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def load(args: list[str], **kwargs: object) -> CommandResult:
+        calls.append((args, kwargs))
+        return next(outcomes)
+
+    monkeypatch.setattr(desktop, "run_command", load)
     config = DotfilesConfig(bare_repo=repository.bare_repo, remote_url=_REMOTE)
 
     dotfiles._apply_source(repository, config, dry_run=False)
+    first_capture = capsys.readouterr()
+    first_apply_output = first_capture.out + first_capture.err
     dotfiles._apply_source(repository, config, dry_run=False)
+    second_capture = capsys.readouterr()
+    second_apply_output = second_capture.out + second_capture.err
 
     history, _ = get_history()
     assert len(history) == 2
     assert history[0].items == ()
     assert history[0].metadata["desktop_settings_applied_roots"] == root
+    assert "Desktop-settings load skipped: no reachable desktop session" in first_apply_output
+    assert "Desktop-settings load submitted roots" in second_apply_output
+    assert calls == [
+        (
+            ["dconf", "load", "-f", root],
+            {"input_text": "", "env": {"LC_ALL": "C"}},
+        ),
+        (
+            ["dconf", "load", "-f", root],
+            {"input_text": "", "env": {"LC_ALL": "C"}},
+        ),
+    ]
 
 
 @pytest.mark.real_git
