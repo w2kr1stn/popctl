@@ -34,8 +34,12 @@ from popctl.dotfiles.config import (
     save_dotfiles_config,
 )
 from popctl.dotfiles.desktop import (
+    DESKTOP_SETTINGS_ARTIFACT_MODE,
     DESKTOP_SETTINGS_ARTIFACT_PATH,
     MAX_DESKTOP_SETTINGS_ARTIFACT_BYTES,
+    DesktopCaptureResult,
+    DesktopCaptureStatus,
+    capture_desktop_settings,
 )
 from popctl.dotfiles.discovery import DiscoveryResult, discover_dotfiles
 from popctl.dotfiles.materialize import (
@@ -611,6 +615,102 @@ def _safe_changed_tracked_paths(repo: DotfilesRepo, tracked: Collection[str]) ->
     return tuple(present)
 
 
+def _capture_desktop_settings_for_sync(
+    repo: DotfilesRepo,
+    config: DotfilesConfig,
+    tree: TreeRead,
+    *,
+    interactive: bool,
+) -> DesktopCaptureResult:
+    settings = config.desktop_settings
+
+    def existing_artifact() -> bytes | None:
+        entry = partition_tree_entries(tree.entries).desktop_settings_entry
+        return repo.read_blob(entry.oid) if entry is not None else None
+
+    def admit_artifact(content: bytes, acknowledged_roots: Collection[str]) -> None:
+        repo.admit_desktop_settings_artifact(
+            TreeEntry(DESKTOP_SETTINGS_ARTIFACT_MODE, DESKTOP_SETTINGS_ARTIFACT_PATH, "0" * 40),
+            content,
+            desktop_extra_roots=settings.extra_roots,
+            desktop_ambiguous_root_allowlist=acknowledged_roots,
+        )
+
+    acknowledged_roots: set[str] = set()
+    result = capture_desktop_settings(
+        settings,
+        existing_artifact=existing_artifact,
+        admit_artifact=admit_artifact,
+        ambiguous_root_allowlist=acknowledged_roots,
+    )
+    while (
+        interactive
+        and result.status is DesktopCaptureStatus.SECRET_REJECTED
+        and (root := _unacknowledged_extra_root(result.detail, settings.extra_roots)) is not None
+        and root not in acknowledged_roots
+    ):
+        if not typer.confirm(
+            f"Allow ambiguous desktop-settings content for {root}?",
+            default=False,
+        ):
+            break
+        acknowledged_roots.add(root)
+        result = capture_desktop_settings(
+            settings,
+            existing_artifact=existing_artifact,
+            admit_artifact=admit_artifact,
+            ambiguous_root_allowlist=acknowledged_roots,
+        )
+    _report_desktop_capture(result)
+    return result
+
+
+def _unacknowledged_extra_root(detail: str, extra_roots: Collection[str]) -> str | None:
+    for root in sorted(extra_roots):
+        if f"unacknowledged ambiguous content at {root} (" in detail:
+            return root
+    return None
+
+
+def _report_desktop_capture(result: DesktopCaptureResult) -> None:
+    if result.status is DesktopCaptureStatus.DISABLED:
+        print_info("Desktop-settings capture is disabled.")
+    elif result.status is DesktopCaptureStatus.CHANGED:
+        print_info("Desktop-settings capture is ready to commit.")
+    elif result.status is DesktopCaptureStatus.UNCHANGED:
+        print_info("Desktop-settings artifact is unchanged.")
+    elif result.status is DesktopCaptureStatus.FAMILY_MISMATCH:
+        print_warning(
+            "Desktop-settings capture skipped: the existing artifact is for "
+            f"{result.detail}; rerun sync on that desktop family to update it."
+        )
+    elif result.status is DesktopCaptureStatus.UNKNOWN_FAMILY:
+        print_warning(
+            "Desktop-settings capture skipped: the desktop family is unknown; "
+            "rerun sync inside a supported desktop session."
+        )
+    elif result.status is DesktopCaptureStatus.NO_DCONF:
+        print_warning(
+            "Desktop-settings capture skipped: dconf is unavailable; install dconf-cli and rerun "
+            "sync."
+        )
+    elif result.status is DesktopCaptureStatus.DUMP_FAILED:
+        print_warning(
+            "Desktop-settings capture is stale: dconf dump failed for "
+            f"{result.root}: {result.detail or 'no diagnostic'}. Existing artifact was preserved."
+        )
+    elif result.status is DesktopCaptureStatus.INVALID_ARTIFACT:
+        print_warning(
+            "Desktop-settings capture skipped: the existing artifact is invalid and was preserved "
+            f"({result.detail})."
+        )
+    else:
+        print_warning(
+            "Desktop-settings capture is stale: the generated artifact was rejected by the secret "
+            f"gate ({result.detail}). Existing artifact was preserved."
+        )
+
+
 def _push_or_refuse(
     repo: DotfilesRepo,
     config: DotfilesConfig,
@@ -638,6 +738,31 @@ def _push_pending_empty_remote(
         _refuse("Remote dotfiles main ref is absent and no local commit is available to push.")
     _push_or_refuse(repo, config, interactive=interactive)
     print_success("Pushed pending dotfiles commit to the empty remote.")
+
+
+def _sync_empty_remote(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: bool) -> None:
+    tree = repo.validate_tree(
+        MAIN_REF,
+        ambiguous_content_allowlist=config.ambiguous_content_allowlist,
+        desktop_extra_roots=config.desktop_settings.extra_roots,
+    )
+    desktop_capture = _capture_desktop_settings_for_sync(
+        repo,
+        config,
+        tree,
+        interactive=interactive,
+    )
+    if desktop_capture.changed:
+        repo.checked_commit(
+            (DESKTOP_SETTINGS_ARTIFACT_PATH,),
+            "Capture desktop settings",
+            ambiguous_content_allowlist=config.ambiguous_content_allowlist,
+            expected_base_oid=repo.ref_oid(MAIN_REF),
+            desktop_settings_artifact=desktop_capture.artifact,
+            desktop_extra_roots=config.desktop_settings.extra_roots,
+            desktop_ambiguous_root_allowlist=desktop_capture.ambiguous_root_allowlist,
+        )
+    _push_pending_empty_remote(repo, config, interactive=interactive)
 
 
 def _is_missing_remote_main_ref(transport_stderr: str) -> bool:
@@ -916,7 +1041,7 @@ def sync() -> None:
             repo = DotfilesRepo(config.bare_repo, home=Path.home(), state_dir=_state_dir())
             listing = repo.ls_remote_all_refs(config.remote_url)
             if listing.transport.success and not listing.refs:
-                _push_pending_empty_remote(repo, config, interactive=interactive)
+                _sync_empty_remote(repo, config, interactive=interactive)
                 return
             fetch = repo.fetch(config.remote_url)
             if fetch.success:
@@ -1019,6 +1144,14 @@ def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: boo
     elif relation is RefRelation.BOOTSTRAP_UNBORN:
         _refuse("No local or remote dotfiles main ref is available.")
 
+    resolved_tree = repo.read_tree(MAIN_REF)
+    desktop_capture = _capture_desktop_settings_for_sync(
+        repo,
+        config,
+        resolved_tree,
+        interactive=interactive,
+    )
+
     discovery = discover_dotfiles(
         repo.home,
         tracked_files=tracked,
@@ -1028,14 +1161,33 @@ def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: boo
     _display_discovery(discovery)
     review = _review_candidates(discovery, config, interactive=interactive)
     if review.cancelled:
-        print_info("Dotfiles review cancelled; no local commit was created.")
+        committed_paths: tuple[str, ...] = ()
+        if desktop_capture.changed:
+            result = repo.checked_commit(
+                (DESKTOP_SETTINGS_ARTIFACT_PATH,),
+                "Capture desktop settings",
+                ambiguous_content_allowlist=config.ambiguous_content_allowlist,
+                expected_base_oid=repo.ref_oid(MAIN_REF),
+                desktop_settings_artifact=desktop_capture.artifact,
+                desktop_extra_roots=config.desktop_settings.extra_roots,
+                desktop_ambiguous_root_allowlist=desktop_capture.ambiguous_root_allowlist,
+            )
+            committed_paths = result.paths
+            print_info(
+                "Dotfiles review cancelled; committed the independent desktop-settings capture."
+            )
+        else:
+            print_info("Dotfiles review cancelled; no local commit was created.")
         if repo.merge_base_relation() is RefRelation.AHEAD:
             _push_or_refuse(repo, config, interactive=interactive)
-        if inbound_paths:
-            _record_dotfiles_action(HistoryActionType.DOTFILES_SYNC, inbound_paths, repo=repo)
+        affected = tuple(sorted(set(inbound_paths) | set(committed_paths)))
+        if affected:
+            _record_dotfiles_action(HistoryActionType.DOTFILES_SYNC, affected, repo=repo)
         return
     changed = _safe_changed_tracked_paths(repo, tracked)
     commit_paths = tuple(sorted(set(changed) | set(review.finalization.tracked_paths)))
+    if desktop_capture.changed:
+        commit_paths = tuple(sorted((*commit_paths, DESKTOP_SETTINGS_ARTIFACT_PATH)))
     committed_paths: tuple[str, ...] = ()
     if commit_paths:
         result = repo.checked_commit(
@@ -1043,6 +1195,9 @@ def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: boo
             "Sync popctl dotfiles",
             ambiguous_content_allowlist=review.config.ambiguous_content_allowlist,
             expected_base_oid=repo.ref_oid(MAIN_REF),
+            desktop_settings_artifact=desktop_capture.artifact if desktop_capture.changed else None,
+            desktop_extra_roots=review.config.desktop_settings.extra_roots,
+            desktop_ambiguous_root_allowlist=desktop_capture.ambiguous_root_allowlist,
         )
         committed_paths = result.paths
     if review.config != config:
@@ -1080,19 +1235,34 @@ def _sync_offline(repo: DotfilesRepo, config: DotfilesConfig) -> None:
     classifications = repo.classify_paths(tracked) if base_entries else ()
     _refuse_sync_conflicts(repo, relation, classifications)
     if relation is RefRelation.BEHIND or relation is RefRelation.BOOTSTRAP_BEHIND:
-        print_warning("Cached remote is ahead; local changes were not committed (pending remote).")
+        print_warning(
+            "Cached remote is ahead; local changes and desktop-settings capture were deferred "
+            "(pending remote)."
+        )
         return
     if relation is RefRelation.BOOTSTRAP_UNBORN:
         _refuse("No local or cached remote dotfiles main ref is available.")
+    desktop_capture = _capture_desktop_settings_for_sync(
+        repo,
+        config,
+        repo.read_tree(MAIN_REF),
+        interactive=False,
+    )
     changed = _safe_changed_tracked_paths(repo, tracked)
-    if not changed:
+    commit_paths = tuple(sorted(set(changed)))
+    if desktop_capture.changed:
+        commit_paths = tuple(sorted((*commit_paths, DESKTOP_SETTINGS_ARTIFACT_PATH)))
+    if not commit_paths:
         print_info("No local dotfiles changes to commit while offline.")
         return
     result = repo.checked_commit(
-        changed,
+        commit_paths,
         "Sync popctl dotfiles (offline)",
         ambiguous_content_allowlist=config.ambiguous_content_allowlist,
         expected_base_oid=repo.ref_oid(MAIN_REF),
+        desktop_settings_artifact=desktop_capture.artifact if desktop_capture.changed else None,
+        desktop_extra_roots=config.desktop_settings.extra_roots,
+        desktop_ambiguous_root_allowlist=desktop_capture.ambiguous_root_allowlist,
     )
     _record_dotfiles_action(HistoryActionType.DOTFILES_SYNC, result.paths, repo=repo)
     print_success("Committed local dotfiles changes offline; push is pending.")

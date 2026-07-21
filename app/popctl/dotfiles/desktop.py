@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import os
+import shutil
 import unicodedata
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
-from typing import Final
+from enum import Enum
+from typing import Final, Protocol
 
 from popctl.dotfiles.secret_filter import MAX_CANDIDATE_BYTES
+from popctl.utils.desktop import DesktopFamily, normalize_desktop_family
+from popctl.utils.shell import run_command
 
 DESKTOP_SETTINGS_ARTIFACT_PATH: Final = ".config/popctl/desktop-settings.dconf"
 DESKTOP_SETTINGS_ARTIFACT_MODE: Final = "100644"
@@ -48,8 +53,133 @@ class DesktopSettingsArtifact:
         return tuple(section.root for section in self.sections)
 
 
+class DesktopCaptureStatus(str, Enum):
+    DISABLED = "disabled"
+    UNKNOWN_FAMILY = "unknown-family"
+    NO_DCONF = "no-dconf"
+    FAMILY_MISMATCH = "family-mismatch"
+    INVALID_ARTIFACT = "invalid-artifact"
+    DUMP_FAILED = "dump-failed"
+    SECRET_REJECTED = "secret-rejected"
+    UNCHANGED = "unchanged"
+    CHANGED = "changed"
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopCaptureResult:
+    status: DesktopCaptureStatus
+    family: DesktopFamily | None = None
+    artifact: bytes | None = None
+    root: str | None = None
+    detail: str = ""
+    prior_retained: bool = False
+    ambiguous_root_allowlist: tuple[str, ...] = ()
+
+    @property
+    def changed(self) -> bool:
+        return self.status is DesktopCaptureStatus.CHANGED
+
+
+class _CaptureSettings(Protocol):
+    @property
+    def enabled(self) -> bool: ...
+
+    @property
+    def effective_roots(self) -> tuple[str, ...]: ...
+
+
+ArtifactReader = Callable[[], bytes | None]
+ArtifactAdmitter = Callable[[bytes, Collection[str]], None]
+
+
 def is_desktop_settings_artifact_path(path: str) -> bool:
     return path == DESKTOP_SETTINGS_ARTIFACT_PATH
+
+
+def capture_desktop_settings(
+    settings: _CaptureSettings,
+    *,
+    existing_artifact: ArtifactReader,
+    admit_artifact: ArtifactAdmitter,
+    ambiguous_root_allowlist: Collection[str] = (),
+) -> DesktopCaptureResult:
+    if not settings.enabled:
+        return DesktopCaptureResult(DesktopCaptureStatus.DISABLED)
+
+    family = normalize_desktop_family(
+        os.environ.get("XDG_CURRENT_DESKTOP"),
+        os.environ.get("XDG_SESSION_DESKTOP"),
+    )
+    prior = existing_artifact()
+    if prior is not None:
+        try:
+            prior_family = DesktopFamily(parse_desktop_settings_artifact(prior).family)
+        except (DesktopSettingsArtifactError, ValueError) as e:
+            return DesktopCaptureResult(
+                DesktopCaptureStatus.INVALID_ARTIFACT,
+                family=family,
+                detail=str(e),
+                prior_retained=True,
+            )
+        if prior_family is not family:
+            return DesktopCaptureResult(
+                DesktopCaptureStatus.FAMILY_MISMATCH,
+                family=family,
+                detail=prior_family.value,
+                prior_retained=True,
+            )
+    if family is DesktopFamily.UNKNOWN:
+        return DesktopCaptureResult(DesktopCaptureStatus.UNKNOWN_FAMILY, family=family)
+    if shutil.which("dconf") is None:
+        return DesktopCaptureResult(
+            DesktopCaptureStatus.NO_DCONF,
+            family=family,
+            prior_retained=prior is not None,
+        )
+
+    sections: list[DesktopSettingsSection] = []
+    for root in settings.effective_roots:
+        result = run_command(["dconf", "dump", root], env={"LC_ALL": "C"})
+        if not result.success:
+            return DesktopCaptureResult(
+                DesktopCaptureStatus.DUMP_FAILED,
+                family=family,
+                root=root,
+                detail=result.stderr.strip(),
+                prior_retained=prior is not None,
+            )
+        sections.append(DesktopSettingsSection(root, result.stdout.encode("utf-8")))
+    try:
+        rendered = render_desktop_settings_artifact(family.value, sections)
+    except DesktopSettingsArtifactError as e:
+        return DesktopCaptureResult(
+            DesktopCaptureStatus.SECRET_REJECTED,
+            family=family,
+            detail=str(e),
+            prior_retained=prior is not None,
+        )
+    try:
+        admit_artifact(rendered, ambiguous_root_allowlist)
+    except Exception as e:
+        return DesktopCaptureResult(
+            DesktopCaptureStatus.SECRET_REJECTED,
+            family=family,
+            detail=str(e),
+            prior_retained=prior is not None,
+        )
+    if rendered == prior:
+        return DesktopCaptureResult(
+            DesktopCaptureStatus.UNCHANGED,
+            family=family,
+            ambiguous_root_allowlist=tuple(sorted(set(ambiguous_root_allowlist))),
+        )
+    return DesktopCaptureResult(
+        DesktopCaptureStatus.CHANGED,
+        family=family,
+        artifact=rendered,
+        prior_retained=prior is not None,
+        ambiguous_root_allowlist=tuple(sorted(set(ambiguous_root_allowlist))),
+    )
 
 
 def canonical_dconf_root(root: str) -> str:

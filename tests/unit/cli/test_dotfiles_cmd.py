@@ -10,15 +10,21 @@ from popctl.advisor.runner import AgentResult
 from popctl.cli.commands import dotfiles
 from popctl.cli.main import app
 from popctl.core.state import get_history
-from popctl.dotfiles import materialize, state
+from popctl.dotfiles import desktop, materialize, state
 from popctl.dotfiles.config import (
+    DesktopSettingsConfig,
     DotfilesConfig,
     RemotePrivacyRecord,
     get_dotfiles_config_path,
     load_dotfiles_config,
     save_dotfiles_config,
 )
-from popctl.dotfiles.desktop import DESKTOP_SETTINGS_ARTIFACT_PATH
+from popctl.dotfiles.desktop import (
+    DESKTOP_SETTINGS_ARTIFACT_PATH,
+    DesktopCaptureResult,
+    DesktopCaptureStatus,
+    parse_desktop_settings_artifact,
+)
 from popctl.dotfiles.discovery import Candidate
 from popctl.dotfiles.repo import (
     MAIN_REF,
@@ -502,6 +508,223 @@ def test_offline_sync_commits_only_safe_cached_local_change(
     assert committed == [(_PATH,)]
 
 
+def test_offline_sync_commits_an_artifact_only_capture_when_cache_is_not_ahead(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tree = TreeRead(ref=MAIN_REF, tree_oid="a" * 40, entries=())
+    committed: list[tuple[tuple[str, ...], dict[str, object]]] = []
+
+    class OfflineRepo:
+        bare_repo = tmp_path / "dotfiles.git"
+        home = tmp_path / "home"
+
+        def ref_oid(self, ref: str) -> str | None:
+            return "c" * 40 if ref in {MAIN_REF, REMOTE_MAIN_REF} else None
+
+        def read_tree(self, _ref: str) -> TreeRead:
+            return tree
+
+        def validate_tree(self, _ref: str, *, ambiguous_content_allowlist: object) -> TreeRead:
+            return tree
+
+        def merge_base_relation(self) -> RefRelation:
+            return RefRelation.EQUAL
+
+        def classify_paths(self, _tracked: object) -> tuple[PathClassification, ...]:
+            return ()
+
+        def work_tree_changed_paths(self, _tracked: object) -> frozenset[str]:
+            return frozenset()
+
+        def checked_commit(
+            self,
+            paths: tuple[str, ...],
+            *_args: object,
+            **kwargs: object,
+        ) -> object:
+            committed.append((paths, kwargs))
+            return SimpleNamespace(paths=paths)
+
+    monkeypatch.setattr(
+        dotfiles,
+        "capture_desktop_settings",
+        lambda *_args, **_kwargs: DesktopCaptureResult(
+            DesktopCaptureStatus.CHANGED,
+            artifact=b"desktop artifact",
+        ),
+    )
+    monkeypatch.setattr(dotfiles, "_record_dotfiles_action", lambda *_args, **_kwargs: None)
+
+    dotfiles._sync_offline(OfflineRepo(), DotfilesConfig(remote_url=_REMOTE))
+
+    assert committed == [
+        (
+            (DESKTOP_SETTINGS_ARTIFACT_PATH,),
+            {
+                "ambiguous_content_allowlist": [],
+                "expected_base_oid": "c" * 40,
+                "desktop_settings_artifact": b"desktop artifact",
+                "desktop_extra_roots": (),
+                "desktop_ambiguous_root_allowlist": (),
+            },
+        )
+    ]
+
+
+def test_offline_sync_defers_capture_when_the_cache_is_ahead(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tree = TreeRead(ref=REMOTE_MAIN_REF, tree_oid="a" * 40, entries=())
+
+    class CacheAheadRepo:
+        bare_repo = tmp_path / "dotfiles.git"
+
+        def ref_oid(self, ref: str) -> str | None:
+            return "c" * 40 if ref in {MAIN_REF, REMOTE_MAIN_REF} else None
+
+        def read_tree(self, _ref: str) -> TreeRead:
+            return tree
+
+        def validate_tree(self, _ref: str, *, ambiguous_content_allowlist: object) -> TreeRead:
+            return tree
+
+        def merge_base_relation(self) -> RefRelation:
+            return RefRelation.BEHIND
+
+        def classify_paths(self, _tracked: object) -> tuple[PathClassification, ...]:
+            return ()
+
+    monkeypatch.setattr(
+        dotfiles,
+        "capture_desktop_settings",
+        lambda *_args, **_kwargs: pytest.fail("capture must be deferred while cache is ahead"),
+    )
+
+    dotfiles._sync_offline(CacheAheadRepo(), DotfilesConfig(remote_url=_REMOTE))
+
+
+def test_disabled_desktop_capture_does_not_block_an_ordinary_offline_sync(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    _write(home, b"changed\n")
+    tree = TreeRead(
+        ref=MAIN_REF,
+        tree_oid="a" * 40,
+        entries=(TreeEntry("100644", _PATH, "b" * 40),),
+    )
+    committed: list[tuple[str, ...]] = []
+
+    class OfflineRepo:
+        bare_repo = tmp_path / "dotfiles.git"
+
+        def __init__(self) -> None:
+            self.home = home
+
+        def ref_oid(self, ref: str) -> str | None:
+            return "c" * 40 if ref in {MAIN_REF, REMOTE_MAIN_REF} else None
+
+        def read_tree(self, _ref: str) -> TreeRead:
+            return tree
+
+        def validate_tree(self, _ref: str, *, ambiguous_content_allowlist: object) -> TreeRead:
+            return tree
+
+        def merge_base_relation(self) -> RefRelation:
+            return RefRelation.EQUAL
+
+        def classify_paths(self, _tracked: object) -> tuple[PathClassification, ...]:
+            return ()
+
+        def work_tree_changed_paths(self, _tracked: object) -> frozenset[str]:
+            return frozenset({_PATH})
+
+        def checked_commit(
+            self,
+            paths: tuple[str, ...],
+            *_args: object,
+            **kwargs: object,
+        ) -> object:
+            assert kwargs["desktop_settings_artifact"] is None
+            committed.append(paths)
+            return SimpleNamespace(paths=paths)
+
+    monkeypatch.setattr(
+        desktop,
+        "normalize_desktop_family",
+        lambda *_args: pytest.fail("disabled capture must not detect a family"),
+    )
+    monkeypatch.setattr(
+        desktop,
+        "run_command",
+        lambda *_args, **_kwargs: pytest.fail("disabled capture must not dump dconf"),
+    )
+    monkeypatch.setattr(dotfiles, "_record_dotfiles_action", lambda *_args, **_kwargs: None)
+
+    dotfiles._sync_offline(
+        OfflineRepo(),
+        DotfilesConfig(
+            remote_url=_REMOTE,
+            desktop_settings=DesktopSettingsConfig(enabled=False),
+        ),
+    )
+
+    assert committed == [(_PATH,)]
+
+
+def test_empty_remote_sync_captures_before_pushing_pending_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tree = TreeRead(ref=MAIN_REF, tree_oid="a" * 40, entries=())
+    committed: list[tuple[tuple[str, ...], dict[str, object]]] = []
+    pushed: list[bool] = []
+
+    class EmptyRemoteRepo:
+        def ref_oid(self, _ref: str) -> str:
+            return "c" * 40
+
+        def validate_tree(self, _ref: str, **_kwargs: object) -> TreeRead:
+            return tree
+
+        def checked_commit(
+            self,
+            paths: tuple[str, ...],
+            *_args: object,
+            **kwargs: object,
+        ) -> object:
+            committed.append((paths, kwargs))
+            return SimpleNamespace(paths=paths)
+
+    monkeypatch.setattr(
+        dotfiles,
+        "capture_desktop_settings",
+        lambda *_args, **_kwargs: DesktopCaptureResult(
+            DesktopCaptureStatus.CHANGED,
+            artifact=b"desktop artifact",
+        ),
+    )
+    monkeypatch.setattr(
+        dotfiles,
+        "_push_pending_empty_remote",
+        lambda *_args, **_kwargs: pushed.append(True),
+    )
+
+    dotfiles._sync_empty_remote(
+        EmptyRemoteRepo(),
+        DotfilesConfig(remote_url=_REMOTE),
+        interactive=False,
+    )
+
+    assert committed[0][0] == (DESKTOP_SETTINGS_ARTIFACT_PATH,)
+    assert committed[0][1]["desktop_settings_artifact"] == b"desktop artifact"
+    assert pushed == [True]
+
+
 def test_online_sync_materializes_changed_and_new_remote_leaves(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -592,6 +815,221 @@ def test_online_sync_materializes_changed_and_new_remote_leaves(
     assert (home / _PATH).read_bytes() == b"remote\n"
     assert (home / _NEW_PATH).read_bytes() == b"new\n"
     assert (home / _NEW_PATH).stat().st_mode & 0o777 == 0o755
+
+
+def test_online_sync_commits_and_pushes_capture_when_review_is_cancelled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tree = TreeRead(ref=REMOTE_MAIN_REF, tree_oid="a" * 40, entries=())
+    commits: list[tuple[str, ...]] = []
+    pushes: list[bool] = []
+
+    class OnlineRepo:
+        bare_repo = tmp_path / "dotfiles.git"
+        home = tmp_path / "home"
+
+        def __init__(self) -> None:
+            self.committed = False
+
+        def ref_oid(self, _ref: str) -> str:
+            return "a" * 40
+
+        def read_tree(self, _ref: str) -> TreeRead:
+            return tree
+
+        def validate_tree(self, _ref: str, *, ambiguous_content_allowlist: object) -> TreeRead:
+            return tree
+
+        def merge_base_relation(self, **_kwargs: object) -> RefRelation:
+            return RefRelation.AHEAD if self.committed else RefRelation.EQUAL
+
+        def classify_paths(
+            self, _tracked: object, **_kwargs: object
+        ) -> tuple[PathClassification, ...]:
+            return ()
+
+        def checked_commit(
+            self,
+            paths: tuple[str, ...],
+            *_args: object,
+            **_kwargs: object,
+        ) -> object:
+            self.committed = True
+            commits.append(paths)
+            return SimpleNamespace(paths=paths)
+
+    config = DotfilesConfig(remote_url=_REMOTE)
+    monkeypatch.setattr(
+        dotfiles,
+        "capture_desktop_settings",
+        lambda *_args, **_kwargs: DesktopCaptureResult(
+            DesktopCaptureStatus.CHANGED,
+            artifact=b"desktop artifact",
+        ),
+    )
+    monkeypatch.setattr(
+        dotfiles,
+        "discover_dotfiles",
+        lambda *_args, **_kwargs: dotfiles.DiscoveryResult((), ()),
+    )
+    monkeypatch.setattr(
+        dotfiles,
+        "_review_candidates",
+        lambda *_args, **_kwargs: dotfiles.ReviewResult(
+            DotfilesReviewFinalization((), (), ()), config, cancelled=True
+        ),
+    )
+    monkeypatch.setattr(dotfiles, "_push_or_refuse", lambda *_args, **_kwargs: pushes.append(True))
+    monkeypatch.setattr(dotfiles, "_record_dotfiles_action", lambda *_args, **_kwargs: None)
+
+    dotfiles._sync_online(OnlineRepo(), config, interactive=False)
+
+    assert commits == [(DESKTOP_SETTINGS_ARTIFACT_PATH,)]
+    assert pushes == [True]
+
+
+def test_hard_secret_capture_failure_does_not_block_an_ordinary_sync(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    _write(home, b"changed\n")
+    tree = TreeRead(
+        ref=REMOTE_MAIN_REF,
+        tree_oid="a" * 40,
+        entries=(TreeEntry("100644", _PATH, "b" * 40),),
+    )
+    commits: list[tuple[str, ...]] = []
+    pushes: list[bool] = []
+
+    class OnlineRepo:
+        bare_repo = tmp_path / "dotfiles.git"
+
+        def __init__(self) -> None:
+            self.committed = False
+            self.home = home
+
+        def ref_oid(self, _ref: str) -> str:
+            return "a" * 40
+
+        def read_tree(self, _ref: str) -> TreeRead:
+            return tree
+
+        def validate_tree(self, _ref: str, *, ambiguous_content_allowlist: object) -> TreeRead:
+            return tree
+
+        def read_blob(self, _oid: str) -> bytes:
+            return b"base\n"
+
+        def merge_base_relation(self, **_kwargs: object) -> RefRelation:
+            return RefRelation.AHEAD if self.committed else RefRelation.EQUAL
+
+        def classify_paths(
+            self, _tracked: object, **_kwargs: object
+        ) -> tuple[PathClassification, ...]:
+            return ()
+
+        def work_tree_changed_paths(self, _tracked: object) -> frozenset[str]:
+            return frozenset({_PATH})
+
+        def checked_commit(
+            self,
+            paths: tuple[str, ...],
+            *_args: object,
+            **_kwargs: object,
+        ) -> object:
+            self.committed = True
+            commits.append(paths)
+            return SimpleNamespace(paths=paths)
+
+    config = DotfilesConfig(remote_url=_REMOTE)
+    monkeypatch.setattr(
+        dotfiles,
+        "capture_desktop_settings",
+        lambda *_args, **_kwargs: DesktopCaptureResult(
+            DesktopCaptureStatus.SECRET_REJECTED,
+            detail="authorization",
+            prior_retained=True,
+        ),
+    )
+    monkeypatch.setattr(
+        dotfiles,
+        "discover_dotfiles",
+        lambda *_args, **_kwargs: dotfiles.DiscoveryResult((), ()),
+    )
+    monkeypatch.setattr(
+        dotfiles,
+        "_review_candidates",
+        lambda *_args, **_kwargs: dotfiles.ReviewResult(
+            DotfilesReviewFinalization((), (), ()), config
+        ),
+    )
+    monkeypatch.setattr(dotfiles, "_push_or_refuse", lambda *_args, **_kwargs: pushes.append(True))
+    monkeypatch.setattr(dotfiles, "_record_dotfiles_action", lambda *_args, **_kwargs: None)
+
+    dotfiles._sync_online(OnlineRepo(), config, interactive=False)
+
+    assert commits == [(_PATH,)]
+    assert pushes == [True]
+
+
+@pytest.mark.real_git
+def test_online_sync_commits_a_real_in_memory_desktop_artifact(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = DotfilesRepo(
+        tmp_path / "dotfiles.git",
+        home=real_git.home,
+        state_dir=real_git.state_home / "popctl" / "dotfiles",
+    )
+    repository.initialize_bare()
+    _write(real_git.home, b"base\n")
+    base_oid = repository.checked_commit((_PATH,), "base").commit_oid
+    assert repository.conditional_advance_ref(REMOTE_MAIN_REF, base_oid, None)
+    config = DotfilesConfig(bare_repo=repository.bare_repo, remote_url=_REMOTE)
+    calls: list[tuple[list[str], dict[str, str] | None]] = []
+
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
+    monkeypatch.delenv("XDG_SESSION_DESKTOP", raising=False)
+    monkeypatch.setattr(desktop.shutil, "which", lambda _name: "/usr/bin/dconf")
+
+    def dump(args: list[str], **kwargs: object) -> CommandResult:
+        calls.append((args, kwargs.get("env") if isinstance(kwargs.get("env"), dict) else None))
+        return CommandResult("[settings]\nvalue='captured'\n", "", 0)
+
+    monkeypatch.setattr(desktop, "run_command", dump)
+    monkeypatch.setattr(
+        dotfiles,
+        "discover_dotfiles",
+        lambda *_args, **_kwargs: dotfiles.DiscoveryResult((), ()),
+    )
+    monkeypatch.setattr(
+        dotfiles,
+        "_review_candidates",
+        lambda *_args, **_kwargs: dotfiles.ReviewResult(
+            DotfilesReviewFinalization((), (), ()), config
+        ),
+    )
+    monkeypatch.setattr(dotfiles, "_push_or_refuse", lambda *_args, **_kwargs: config)
+    monkeypatch.setattr(dotfiles, "_record_dotfiles_action", lambda *_args, **_kwargs: None)
+
+    dotfiles._sync_online(repository, config, interactive=False)
+
+    entries = repository.read_tree(MAIN_REF).entries
+    artifact_entry = next(
+        entry for entry in entries if entry.path == DESKTOP_SETTINGS_ARTIFACT_PATH
+    )
+    artifact = parse_desktop_settings_artifact(repository.read_blob(artifact_entry.oid))
+    assert artifact.family == "GNOME"
+    assert artifact.roots == config.desktop_settings.effective_roots
+    assert calls == [
+        (["dconf", "dump", root], {"LC_ALL": "C"})
+        for root in config.desktop_settings.effective_roots
+    ]
 
 
 def test_online_sync_refuses_remote_change_to_locally_deleted_path(tmp_path: Path) -> None:
