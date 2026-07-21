@@ -33,6 +33,10 @@ from popctl.dotfiles.config import (
     load_dotfiles_config,
     save_dotfiles_config,
 )
+from popctl.dotfiles.desktop import (
+    DESKTOP_SETTINGS_ARTIFACT_PATH,
+    MAX_DESKTOP_SETTINGS_ARTIFACT_BYTES,
+)
 from popctl.dotfiles.discovery import DiscoveryResult, discover_dotfiles
 from popctl.dotfiles.materialize import (
     HomeFileSnapshot,
@@ -55,6 +59,7 @@ from popctl.dotfiles.repo import (
     TreeEntry,
     TreeRead,
     TreeValidationError,
+    partition_tree_entries,
     validate_remote_url,
 )
 from popctl.dotfiles.secret_filter import SecretVerdictKind, scan_dotfile, scan_dotfile_bytes
@@ -132,16 +137,17 @@ def _load_initialized() -> DotfilesConfig:
 def _tracked_entries(repo: DotfilesRepo) -> tuple[TreeEntry, ...]:
     if repo.ref_oid(MAIN_REF) is None:
         return ()
-    return repo.read_tree(MAIN_REF).entries
+    return partition_tree_entries(repo.read_tree(MAIN_REF).entries).home_entries
 
 
 def _tracked_paths(entries: Collection[TreeEntry]) -> tuple[str, ...]:
-    return tuple(sorted(entry.path for entry in entries))
+    return tuple(sorted(entry.path for entry in partition_tree_entries(entries).home_entries))
 
 
 def _base_files(repo: DotfilesRepo, entries: Collection[TreeEntry]) -> dict[str, HomeFileSnapshot]:
     return {
         entry.path: HomeFileSnapshot(repo.read_blob(entry.oid), entry.mode) for entry in entries
+        if entry.path != DESKTOP_SETTINGS_ARTIFACT_PATH
     }
 
 
@@ -153,7 +159,10 @@ def _sources(repo: DotfilesRepo, entries: Iterable[TreeEntry]) -> tuple[Material
             mode=entry.mode,
             content=repo.read_blob(entry.oid),
         )
-        for entry in sorted(entries, key=lambda item: item.path)
+        for entry in sorted(
+            partition_tree_entries(entries).home_entries,
+            key=lambda item: item.path,
+        )
     )
 
 
@@ -194,7 +203,9 @@ def _record_dotfiles_action(
     *,
     repo: DotfilesRepo,
 ) -> None:
-    names = tuple(sorted(set(paths))) or ("dotfiles",)
+    names = tuple(sorted({path for path in paths if path != DESKTOP_SETTINGS_ARTIFACT_PATH}))
+    if not names:
+        return
     try:
         record_action(
             create_history_entry(
@@ -372,6 +383,11 @@ def _acknowledge_tree_ambiguities(
 ) -> tuple[str, ...]:
     accepted = set(allowlist)
     for entry in sorted(tree.entries, key=lambda item: item.path):
+        if entry.path == DESKTOP_SETTINGS_ARTIFACT_PATH:
+            if repo.blob_size(entry.oid) > MAX_DESKTOP_SETTINGS_ARTIFACT_BYTES:
+                _refuse("Invalid desktop settings artifact: artifact exceeds the size limit")
+            repo.admit_desktop_settings_artifact(entry, repo.read_blob(entry.oid))
+            continue
         verdict = scan_dotfile_bytes(
             entry.path,
             repo.read_blob(entry.oid),
@@ -825,7 +841,7 @@ def _init_from(from_url: str, *, interactive: bool, final_store: Path) -> None:
         repo = DotfilesRepo(final_store, home=Path.home(), state_dir=_state_dir())
         _record_dotfiles_action(
             HistoryActionType.DOTFILES_INIT,
-            [entry.path for entry in tree.entries],
+            _tracked_paths(tree.entries),
             repo=repo,
         )
         print_success("Bootstrapped private dotfiles repository.")
@@ -967,10 +983,16 @@ def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: boo
             _refuse_remote_changes_to_deleted_paths(repo, classifications, remote_modified)
         else:
             remote_modified = {entry.path for entry in remote_tree.entries}
-        inbound_paths = tuple(sorted(remote_modified))
+        inbound_paths = tuple(
+            sorted(path for path in remote_modified if path != DESKTOP_SETTINGS_ARTIFACT_PATH)
+        )
         sources = _sources(
             repo,
-            (entry for entry in remote_tree.entries if entry.path in remote_modified),
+            (
+                entry
+                for entry in remote_tree.entries
+                if entry.path in remote_modified and entry.path != DESKTOP_SETTINGS_ARTIFACT_PATH
+            ),
         )
         inbound_plan = None
         if sources:
@@ -992,7 +1014,7 @@ def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: boo
             _refuse("Dotfiles main ref changed while synchronizing; retry sync.")
         if inbound_plan is not None:
             complete_materialization_state(inbound_plan, _state_dir())
-        base_entries = repo.read_tree(MAIN_REF).entries
+        base_entries = partition_tree_entries(repo.read_tree(MAIN_REF).entries).home_entries
         tracked = _tracked_paths(base_entries)
     elif relation is RefRelation.BOOTSTRAP_UNBORN:
         _refuse("No local or remote dotfiles main ref is available.")

@@ -12,12 +12,27 @@ from pathlib import Path
 from typing import Final
 
 from popctl.core.paths import get_state_dir
+from popctl.dotfiles.desktop import (
+    DEFAULT_ROOTS,
+    DESKTOP_SETTINGS_ARTIFACT_MODE,
+    DESKTOP_SETTINGS_ARTIFACT_PATH,
+    MAX_DESKTOP_SETTINGS_ARTIFACT_BYTES,
+    DesktopSettingsArtifact,
+    DesktopSettingsArtifactError,
+    is_desktop_settings_artifact_path,
+    parse_desktop_settings_artifact,
+)
 from popctl.dotfiles.materialize import (
     HomePathError,
     canonical_home_relative_path,
     read_home_regular_file,
 )
-from popctl.dotfiles.secret_filter import SecretVerdict, scan_dotfile_bytes
+from popctl.dotfiles.secret_filter import (
+    SecretVerdict,
+    SecretVerdictKind,
+    _scan_dotfile_content_only,  # pyright: ignore[reportPrivateUsage]
+    scan_dotfile_bytes,
+)
 from popctl.utils.shell import BytesCommandResult, run_command, run_command_bytes
 
 MAIN_BRANCH: Final = "main"
@@ -179,6 +194,18 @@ class TreeRead:
 
 
 @dataclass(frozen=True, slots=True)
+class TreeEntryPartition:
+    home_entries: tuple[TreeEntry, ...]
+    reserved_entries: tuple[TreeEntry, ...]
+
+    @property
+    def desktop_settings_entry(self) -> TreeEntry | None:
+        if not self.reserved_entries:
+            return None
+        return self.reserved_entries[0]
+
+
+@dataclass(frozen=True, slots=True)
 class PathClassification:
     path: str
     state: PathState
@@ -207,6 +234,17 @@ def validate_remote_url(url: str) -> str:
     raise RemoteUrlError(
         "Remote URL must be https://github.com/owner/repo.git or git@github.com:owner/repo.git"
     )
+
+
+def partition_tree_entries(entries: Iterable[TreeEntry]) -> TreeEntryPartition:
+    home_entries: list[TreeEntry] = []
+    reserved_entries: list[TreeEntry] = []
+    for entry in entries:
+        if is_desktop_settings_artifact_path(entry.path):
+            reserved_entries.append(entry)
+        else:
+            home_entries.append(entry)
+    return TreeEntryPartition(tuple(home_entries), tuple(reserved_entries))
 
 
 class DotfilesRepo:
@@ -486,17 +524,36 @@ class DotfilesRepo:
         self._require_success(result, f"read blob {oid}")
         return result.stdout
 
+    def blob_size(self, oid: str) -> int:
+        if re.fullmatch(r"[0-9a-f]{40,64}", oid) is None:
+            raise GitCommandError(f"Invalid blob OID: {oid}")
+        result = self._content_git(["cat-file", "-s", oid])
+        self._require_success(result, f"read blob size {oid}")
+        try:
+            return int(result.stdout.decode("ascii").strip())
+        except (UnicodeDecodeError, ValueError) as e:
+            raise GitCommandError(f"Invalid blob size for {oid}") from e
+
     def validate_tree(
         self,
         ref: str,
         *,
         tracked_paths: Collection[str] = (),
         ambiguous_content_allowlist: Collection[str] = (),
+        desktop_extra_roots: Collection[str] = (),
+        desktop_ambiguous_root_allowlist: Collection[str] = (),
     ) -> TreeRead:
         tree = self.read_tree(ref)
         paths: set[str] = set()
         for entry in tree.entries:
-            if entry.mode not in {"100644", "100755"}:
+            is_desktop_settings_artifact = is_desktop_settings_artifact_path(entry.path)
+            if is_desktop_settings_artifact:
+                if entry.mode != DESKTOP_SETTINGS_ARTIFACT_MODE:
+                    raise TreeValidationError(
+                        "Desktop settings artifact must be a regular mode-100644 file: "
+                        f"{entry.path} ({entry.mode})"
+                    )
+            elif entry.mode not in {"100644", "100755"}:
                 raise TreeValidationError(f"Unsupported tree mode for {entry.path}: {entry.mode}")
             try:
                 path = canonical_home_relative_path(entry.path)
@@ -507,19 +564,82 @@ class DotfilesRepo:
             if path in paths:
                 raise TreeValidationError(f"Duplicate tree path: {path}")
             paths.add(path)
-            verdict = scan_dotfile_bytes(
-                path,
-                self.read_blob(entry.oid),
-                ambiguous_content_allowlist=ambiguous_content_allowlist,
-            )
-            if not verdict.allowed:
-                raise TreeValidationError(_secret_failure(path, verdict))
+            if is_desktop_settings_artifact:
+                if self.blob_size(entry.oid) > MAX_DESKTOP_SETTINGS_ARTIFACT_BYTES:
+                    raise TreeValidationError(
+                        "Invalid desktop settings artifact: artifact exceeds the size limit"
+                    )
+                self.admit_desktop_settings_artifact(
+                    entry,
+                    self.read_blob(entry.oid),
+                    desktop_extra_roots=desktop_extra_roots,
+                    desktop_ambiguous_root_allowlist=desktop_ambiguous_root_allowlist,
+                )
+            else:
+                verdict = scan_dotfile_bytes(
+                    path,
+                    self.read_blob(entry.oid),
+                    ambiguous_content_allowlist=ambiguous_content_allowlist,
+                )
+                if not verdict.allowed:
+                    raise TreeValidationError(_secret_failure(path, verdict))
         missing = set(_canonical_paths(tracked_paths)) - paths
         if missing:
             raise TreeValidationError(
                 "Source tree drops tracked path(s): " + ", ".join(sorted(missing))
             )
         return tree
+
+    def admit_desktop_settings_artifact(
+        self,
+        entry: TreeEntry,
+        content: bytes,
+        *,
+        desktop_extra_roots: Collection[str] = (),
+        desktop_ambiguous_root_allowlist: Collection[str] = (),
+    ) -> DesktopSettingsArtifact:
+        if not is_desktop_settings_artifact_path(entry.path):
+            raise TreeValidationError(f"Not a desktop settings artifact: {entry.path}")
+        if entry.mode != DESKTOP_SETTINGS_ARTIFACT_MODE:
+            raise TreeValidationError(
+                "Desktop settings artifact must be a regular mode-100644 file: "
+                f"{entry.path} ({entry.mode})"
+            )
+        try:
+            artifact = parse_desktop_settings_artifact(content)
+        except DesktopSettingsArtifactError as e:
+            raise TreeValidationError(f"Invalid desktop settings artifact: {e}") from e
+
+        structural_verdict = _scan_dotfile_content_only(
+            entry.path,
+            content,
+            ambiguous_content_allowlist=(DESKTOP_SETTINGS_ARTIFACT_PATH,),
+        )
+        if not structural_verdict.allowed:
+            raise TreeValidationError(_secret_failure(entry.path, structural_verdict))
+
+        extra_roots = set(desktop_extra_roots)
+        acknowledged_roots = set(desktop_ambiguous_root_allowlist)
+        for section in artifact.sections:
+            ambiguous_allowed = section.root in DEFAULT_ROOTS or (
+                section.root in extra_roots and section.root in acknowledged_roots
+            )
+            verdict = _scan_dotfile_content_only(
+                entry.path,
+                section.body,
+                ambiguous_content_allowlist=(DESKTOP_SETTINGS_ARTIFACT_PATH,)
+                if ambiguous_allowed
+                else (),
+            )
+            if verdict.allowed:
+                continue
+            if verdict.kind is SecretVerdictKind.DENIED_AMBIGUOUS_CONTENT:
+                raise TreeValidationError(
+                    "Remote desktop settings section has unacknowledged ambiguous content at "
+                    f"{section.root} ({verdict.category}); rerun interactively."
+                )
+            raise TreeValidationError(_secret_failure(entry.path, verdict))
+        return artifact
 
     def checked_commit(
         self,
@@ -529,12 +649,26 @@ class DotfilesRepo:
         base_ref: str = MAIN_REF,
         expected_base_oid: str | None = None,
         ambiguous_content_allowlist: Collection[str] = (),
+        desktop_settings_artifact: bytes | None = None,
+        desktop_extra_roots: Collection[str] = (),
+        desktop_ambiguous_root_allowlist: Collection[str] = (),
     ) -> CommitResult:
         if not message.strip():
             raise DotfilesRepoError("Dotfiles commit message must not be empty")
         canonical_paths = _canonical_paths(paths)
         if not canonical_paths:
             raise DotfilesRepoError("Checked commits require at least one path")
+        includes_desktop_settings_artifact = (
+            DESKTOP_SETTINGS_ARTIFACT_PATH in canonical_paths
+        )
+        if desktop_settings_artifact is not None and not includes_desktop_settings_artifact:
+            raise DotfilesRepoError(
+                "Desktop settings artifact content requires its reserved artifact path"
+            )
+        if includes_desktop_settings_artifact and desktop_settings_artifact is None:
+            raise DotfilesRepoError(
+                "Desktop settings artifact must be supplied from memory, not from $HOME"
+            )
         base_oid = self.ref_oid(base_ref)
         if expected_base_oid is not None and base_oid != expected_base_oid:
             raise RefRaceError(f"Base ref changed before checked commit: {base_ref}")
@@ -551,21 +685,34 @@ class DotfilesRepo:
                 result = self._content_git(["read-tree", base_oid], env_extra=index_env)
             self._require_success(result, "initialize private index")
             for path in canonical_paths:
-                try:
-                    snapshot = read_home_regular_file(self.home, path)
-                except FileNotFoundError as e:
-                    raise DotfilesRepoError(f"Tracked source is missing: {path}") from e
-                except HomePathError as e:
-                    raise DotfilesRepoError(str(e)) from e
-                verdict = scan_dotfile_bytes(
-                    path,
-                    snapshot.content,
-                    ambiguous_content_allowlist=ambiguous_content_allowlist,
-                )
-                if not verdict.allowed:
-                    raise TreeValidationError(_secret_failure(path, verdict))
-                blob_oid = self._hash_snapshot(snapshot.content)
-                cacheinfo = f"{snapshot.mode},{blob_oid},{path}"
+                if path == DESKTOP_SETTINGS_ARTIFACT_PATH:
+                    assert desktop_settings_artifact is not None
+                    self.admit_desktop_settings_artifact(
+                        TreeEntry(DESKTOP_SETTINGS_ARTIFACT_MODE, path, "0" * 40),
+                        desktop_settings_artifact,
+                        desktop_extra_roots=desktop_extra_roots,
+                        desktop_ambiguous_root_allowlist=desktop_ambiguous_root_allowlist,
+                    )
+                    content = desktop_settings_artifact
+                    mode = DESKTOP_SETTINGS_ARTIFACT_MODE
+                else:
+                    try:
+                        snapshot = read_home_regular_file(self.home, path)
+                    except FileNotFoundError as e:
+                        raise DotfilesRepoError(f"Tracked source is missing: {path}") from e
+                    except HomePathError as e:
+                        raise DotfilesRepoError(str(e)) from e
+                    verdict = scan_dotfile_bytes(
+                        path,
+                        snapshot.content,
+                        ambiguous_content_allowlist=ambiguous_content_allowlist,
+                    )
+                    if not verdict.allowed:
+                        raise TreeValidationError(_secret_failure(path, verdict))
+                    content = snapshot.content
+                    mode = snapshot.mode
+                blob_oid = self._hash_snapshot(content)
+                cacheinfo = f"{mode},{blob_oid},{path}"
                 result = self._content_git(
                     ["update-index", "--add", "--cacheinfo", cacheinfo], env_extra=index_env
                 )
@@ -573,7 +720,12 @@ class DotfilesRepo:
             tree_result = self._content_git(["write-tree"], env_extra=index_env)
             self._require_success(tree_result, "write checked tree")
             tree_oid = _single_oid(tree_result.stdout, "checked tree")
-            self.validate_tree(tree_oid, ambiguous_content_allowlist=ambiguous_content_allowlist)
+            self.validate_tree(
+                tree_oid,
+                ambiguous_content_allowlist=ambiguous_content_allowlist,
+                desktop_extra_roots=desktop_extra_roots,
+                desktop_ambiguous_root_allowlist=desktop_ambiguous_root_allowlist,
+            )
             commit_args = ["commit-tree", tree_oid]
             if base_oid is not None:
                 commit_args.extend(["-p", base_oid])

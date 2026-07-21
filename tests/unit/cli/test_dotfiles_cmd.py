@@ -18,6 +18,7 @@ from popctl.dotfiles.config import (
     load_dotfiles_config,
     save_dotfiles_config,
 )
+from popctl.dotfiles.desktop import DESKTOP_SETTINGS_ARTIFACT_PATH
 from popctl.dotfiles.discovery import Candidate
 from popctl.dotfiles.repo import (
     MAIN_REF,
@@ -68,6 +69,43 @@ def _write(home: Path, content: bytes) -> None:
     target = home / _PATH
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(content)
+
+
+def test_reserved_entries_never_become_home_sources_or_history_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    entries = (
+        TreeEntry("100644", _PATH, "a" * 40),
+        TreeEntry("100644", DESKTOP_SETTINGS_ARTIFACT_PATH, "b" * 40),
+    )
+
+    class Repository:
+        bare_repo = tmp_path / "dotfiles.git"
+
+        @staticmethod
+        def read_blob(oid: str) -> bytes:
+            return {"a" * 40: b"home\n", "b" * 40: b"artifact\n"}[oid]
+
+        @staticmethod
+        def ref_oid(_ref: str) -> str:
+            return "c" * 40
+
+    recorded: list[object] = []
+    monkeypatch.setattr(dotfiles, "record_action", recorded.append)
+    repository = Repository()
+
+    assert dotfiles._tracked_paths(entries) == (_PATH,)
+    assert tuple(source.path for source in dotfiles._sources(repository, entries)) == (_PATH,)
+    assert tuple(dotfiles._base_files(repository, entries)) == (_PATH,)
+    dotfiles._record_dotfiles_action(
+        HistoryActionType.DOTFILES_SYNC,
+        (_PATH, DESKTOP_SETTINGS_ARTIFACT_PATH),
+        repo=repository,
+    )
+
+    assert len(recorded) == 1
+    assert tuple(item.name for item in recorded[0].items) == (_PATH,)
 
 
 def _success_transport() -> TransportResult:

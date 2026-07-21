@@ -219,6 +219,22 @@ def scan_dotfile_bytes(
     for pattern in PATH_DENY_PATTERNS:
         if _matches_path_glob(canonical_path, pattern):
             return SecretVerdict(SecretVerdictKind.DENIED_PATH, pattern)
+    return _scan_dotfile_content_only(
+        canonical_path,
+        content,
+        ambiguous_content_allowlist=ambiguous_content_allowlist,
+    )
+
+
+def _scan_dotfile_content_only(
+    canonical_path: str,
+    content: bytes,
+    *,
+    ambiguous_content_allowlist: Collection[str] = (),
+) -> SecretVerdict:
+    """Run content recognizers after a caller has completed structural admission."""
+    if _canonical_relative_path(canonical_path) != canonical_path:
+        return SecretVerdict(SecretVerdictKind.DENIED_UNREADABLE, "non-canonical-path")
     if len(content) > MAX_CANDIDATE_BYTES:
         return SecretVerdict(SecretVerdictKind.DENIED_OVERSIZE)
     if b"\x00" in content:
