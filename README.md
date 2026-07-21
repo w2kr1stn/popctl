@@ -146,8 +146,8 @@ Each phase can also be run independently:
 | `popctl dotfiles init [--remote URL]` | Create a private dotfiles repository |
 | `popctl dotfiles init --from URL` | Bootstrap dotfiles from an existing popctl repository |
 | `popctl dotfiles status` | Report tracked-file and remote state without changing local files |
-| `popctl dotfiles sync` | Safely synchronize and automatically push private dotfiles |
-| `popctl dotfiles apply [--dry-run]` | Restore validated tracked files after packages are ready |
+| `popctl dotfiles sync` | Safely synchronize private dotfiles, capture enabled desktop settings, and automatically push |
+| `popctl dotfiles apply [--dry-run]` | Restore validated tracked files after packages are ready, then load compatible desktop settings |
 | `popctl manifest keep` | Move package to keep list |
 | `popctl manifest remove` | Move package to remove list |
 | `popctl history` | View action history |
@@ -161,9 +161,10 @@ popctl doctor
 ```
 
 `popctl doctor` checks core package-management tools, advisor configuration and CLI availability,
-desktop-alert configuration/notification/sound support, and
-backup and dotfiles readiness. It exits with status 1 only when core package-management tools are
-missing. Optional-feature findings are nonfatal, and advisor configuration or CLI issues are
+desktop-alert configuration/notification/sound support, and backup, dotfiles, and desktop-settings
+readiness. The desktop-settings section reports whether it is enabled, `dconf` availability, a
+user-session hint, and the detected desktop family. It exits with status 1 only when core
+package-management tools are missing. Optional-feature findings are nonfatal, and advisor configuration or CLI issues are
 reported as a warning because `popctl sync --no-advisor` remains available. The dotfiles check also
 distinguishes an offline remote, authentication failure, timeout, and other reachability failure.
 
@@ -287,7 +288,8 @@ restore `--dry-run` writes neither XDG state nor package or home files.
 `popctl dotfiles` versions a reviewed, leaf-file subset of your personal configuration in a
 private GitHub repository. It is deliberately not a general backup or a safe-to-publish dotfiles
 tool: the repository is private by definition, and plaintext secrets are refused before they can
-be offered to the advisor or committed.
+be offered to the advisor or committed. It also captures an allowlisted, text dconf artifact for
+desktop settings; that artifact stays repo-only and is never materialized as a file in `$HOME`.
 
 ```bash
 # Create a new private repository, or select one interactively.
@@ -297,12 +299,17 @@ popctl dotfiles init --remote https://github.com/you/dotfiles.git
 # Bootstrap a fresh machine from a popctl-format repository.
 popctl dotfiles init --from https://github.com/you/dotfiles.git
 
-# Inspect, synchronize, or restore the reviewed files.
+# Inspect, synchronize, or restore the reviewed files and desktop settings.
 popctl dotfiles status
 popctl dotfiles sync
 popctl dotfiles apply --dry-run
 popctl dotfiles apply
 ```
+
+`popctl dotfiles sync` automatically dumps the enabled allowlisted dconf roots and commits the
+result only when the generated artifact changed. `popctl dotfiles apply` automatically submits a
+validated artifact after its normal file materialization succeeds, including when the files were
+already equal. The artifact is loaded only on the same recognized desktop family that captured it.
 
 When `gh` is installed, popctl uses it to verify that the GitHub destination is private before
 initialization and immediately before every automatic push. Without `gh`, initialization requires
@@ -321,9 +328,19 @@ popctl dotfiles init --from https://github.com/you/dotfiles.git
 popctl dotfiles apply
 ```
 
+The final command includes the automatic desktop-settings step. It is a companion to file
+restoration: if the artifact is absent or invalid, `dconf` is unavailable, the desktop family does
+not match, or no reachable desktop session is available, file application still succeeds and popctl
+reports the reason and re-attempt command. After logging into the target desktop, rerun
+`popctl dotfiles apply`; an already-equal file set still re-attempts the pending desktop load.
+
+Desktop loading is best effort. `dconf load -f` can skip locked or non-writable keys, and a
+successful dconf submission does not prove that every schema exists or that every setting became
+effective on the target machine.
+
 On later days, use `popctl dotfiles status` to inspect local and remote state and `popctl dotfiles
-sync` to fetch, safely materialize compatible remote changes, commit reviewed local changes, and
-automatically push them. A failed initial or later push leaves a valid local `pending-push` commit;
+sync` to fetch, safely materialize compatible remote changes, capture the enabled desktop artifact,
+commit reviewed local changes, and automatically push them. A failed initial or later push leaves a valid local `pending-push` commit;
 the next online sync retries it. If a tracked path changed both locally and remotely, or histories
 diverge, sync refuses rather than merging into `$HOME`. Resolve that situation with plain Git using
 the configured bare-repository path, for example:
@@ -334,6 +351,10 @@ git --git-dir="<bare-repo>" --work-tree="$HOME" log --left-right main...origin/m
 ```
 
 Resolve the conflict, then rerun `popctl dotfiles sync`.
+
+> **Upgrade note:** a popctl client that predates desktop-settings support rejects the reserved
+> artifact path when it first appears in the remote tree. After the first desktop-artifact push,
+> upgrade every machine's popctl before using `dotfiles sync` there.
 
 ### Manifest Management
 
@@ -532,6 +553,11 @@ remote_url = "https://github.com/you/dotfiles.git"
 ambiguous_content_allowlist = [".config/example/settings.toml"]
 ignored = [".config/example/generated-cache"]
 
+[desktop_settings]
+enabled = true
+extra_roots = []
+disabled_roots = []
+
 [remote_privacy]
 canonical_remote_url = "https://github.com/you/dotfiles.git"
 method = "verified" # or "acknowledged" when gh was unavailable
@@ -542,6 +568,23 @@ it cannot allow hard secret findings. `ignored` records reviewed files that shou
 again. The file has no token, password, SSH-key, or other credential field: Git and SSH use your
 existing user authentication.
 
+`[desktop_settings]` is strict configuration. `enabled` defaults to `true`; disabling it skips
+operational dconf capture and load but does not relax repository validation. `extra_roots` extends
+the curated default and `disabled_roots` removes roots locally. Every configured root must be an
+absolute, slash-terminated dconf directory with safe path segments; duplicate or overlapping roots
+within either collection are rejected. The bare `/org/gnome/shell/` root is intentionally not
+allowed because it includes extension state.
+
+The curated default roots are credential-free desktop settings:
+
+- `/org/gnome/desktop/wm/keybindings/` — window-manager keybindings
+- `/org/gnome/settings-daemon/plugins/media-keys/` — media and custom keybindings
+- `/org/gnome/desktop/interface/` — interface and theme
+- `/org/gnome/desktop/wm/preferences/` — window-manager preferences
+- `/org/gnome/desktop/input-sources/` — input sources
+- `/org/gnome/desktop/background/` — background appearance
+- `/org/gnome/desktop/screensaver/` — screensaver appearance
+
 ### File Locations
 
 | File | Path | Purpose |
@@ -551,7 +594,7 @@ existing user authentication.
 | Alerts Config | `~/.config/popctl/alerts.toml` | WebSocket alert sink settings |
 | Theme | `~/.config/popctl/theme.toml` | Color theme overrides |
 | Backup Config | `~/.config/popctl/backup.toml` | Backup encryption and target settings |
-| Dotfiles Config | `~/.config/popctl/dotfiles.toml` | Dotfiles repository, remote, allowlist, and ignored paths |
+| Dotfiles Config | `~/.config/popctl/dotfiles.toml` | Dotfiles repository, remote, file allowlist, ignored paths, and desktop-settings policy |
 | Backup Age Identity | `~/.config/age/key.txt` | Private age identity generated by `popctl backup init` |
 | History | `~/.local/state/popctl/history.jsonl` | Action log for undo |
 | Config Backups | `~/.local/state/popctl/config-backups/` | Backed up configs before deletion |
@@ -645,6 +688,7 @@ app/popctl/
 │   └── restore.py           # Backup restoration
 ├── dotfiles/
 │   ├── config.py            # DotfilesConfig TOML I/O
+│   ├── desktop.py           # dconf artifact capture, load, and format
 │   ├── state.py             # Locks, plans, journals, and recovery
 │   ├── secret_filter.py     # Fail-closed content and path checks
 │   ├── discovery.py         # Bounded candidate discovery
@@ -676,6 +720,7 @@ app/popctl/
 │   └── phase.py             # Shared source workflow for init/sync/apply/restore
 ├── utils/
 │   ├── shell.py             # run_command() subprocess wrapper
+│   ├── desktop.py           # XDG desktop-family normalization
 │   └── formatting.py        # Rich console helpers
 └── data/
     ├── theme.toml           # Default color theme
