@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import unicodedata
 from collections.abc import Callable, Collection
@@ -344,16 +345,14 @@ def has_desktop_session_hint() -> bool:
 
 
 def _is_no_session_transport_error(stderr: str) -> bool:
-    message = stderr.casefold()
-    return any(
-        marker in message
-        for marker in (
-            "could not connect: no such file or directory",
-            "could not connect: connection refused",
-            "failed to connect: no such file or directory",
-            "failed to connect: connection refused",
-            "failed to connect to bus: no such file or directory",
-            "the given address is empty",
+    return bool(
+        re.search(
+            r"(?im)^error: (?:"
+            r"could not connect: (?:no such file or directory|connection refused)|"
+            r"failed to connect(?: to bus)?: (?:no such file or directory|connection refused)|"
+            r"the given address is empty"
+            r")\r?\n?\Z",
+            stderr,
         )
     )
 

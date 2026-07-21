@@ -46,6 +46,8 @@ def _run_subprocess(
             cwd=cwd,
             env=env,
             input=input_data,
+            encoding="utf-8" if text else None,
+            errors="replace" if text else None,
         )
     else:
         result = subprocess.run(
@@ -56,6 +58,8 @@ def _run_subprocess(
             timeout=timeout,
             cwd=cwd,
             env=env,
+            encoding="utf-8" if text else None,
+            errors="replace" if text else None,
         )
     return cast(
         "subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]",

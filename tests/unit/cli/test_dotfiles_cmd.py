@@ -491,6 +491,68 @@ def test_fetched_extra_root_acknowledgement_is_transient_and_fail_closed(
     assert bootstrap.desktop_extra_roots == (extra_root,)
 
 
+@pytest.mark.real_git
+def test_empty_remote_and_offline_reprompt_extra_root_acknowledgements(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extra_root = "/org/example/extra/"
+    repository = DotfilesRepo(
+        tmp_path / "dotfiles.git",
+        home=real_git.home,
+        state_dir=real_git.state_home / "popctl" / "dotfiles",
+    )
+    repository.initialize_bare()
+    _write(real_git.home, b"safe\n")
+    artifact = render_desktop_settings_artifact(
+        "GNOME",
+        (DesktopSettingsSection(extra_root, b"custom-keybindings=[]\n"),),
+    )
+    source_oid = repository.checked_commit(
+        (_PATH, DESKTOP_SETTINGS_ARTIFACT_PATH),
+        "acknowledged extra root",
+        desktop_settings_artifact=artifact,
+        desktop_extra_roots=(extra_root,),
+        desktop_ambiguous_root_allowlist=(extra_root,),
+    ).commit_oid
+    assert repository.conditional_advance_ref(REMOTE_MAIN_REF, source_oid, None)
+    config = DotfilesConfig(
+        bare_repo=repository.bare_repo,
+        remote_url=_REMOTE,
+        desktop_settings=DesktopSettingsConfig(enabled=False, extra_roots=(extra_root,)),
+    )
+    confirmations: list[str] = []
+    monkeypatch.setattr(
+        dotfiles.typer,
+        "confirm",
+        lambda prompt, **_kwargs: confirmations.append(prompt) or True,
+    )
+    push_attempts: list[bool] = []
+
+    def fail_then_push(*_args: object, **_kwargs: object) -> None:
+        push_attempts.append(True)
+        if len(push_attempts) == 1:
+            raise dotfiles.DotfilesCommandError("simulated first push failure")
+
+    monkeypatch.setattr(dotfiles, "_push_pending_empty_remote", fail_then_push)
+
+    with pytest.raises(dotfiles.DotfilesCommandError, match="first push failure"):
+        dotfiles._sync_empty_remote(repository, config, interactive=True)
+    dotfiles._sync_empty_remote(repository, config, interactive=True)
+    dotfiles._sync_offline(repository, config, interactive=True)
+    dotfiles._sync_offline(repository, config, interactive=True)
+
+    assert push_attempts == [True, True]
+    assert len(confirmations) == 4
+    assert config.desktop_settings.extra_roots == (extra_root,)
+
+    with pytest.raises(dotfiles.DotfilesCommandError, match="rerun interactively"):
+        dotfiles._sync_empty_remote(repository, config, interactive=False)
+    with pytest.raises(dotfiles.DotfilesCommandError, match="rerun interactively"):
+        dotfiles._sync_offline(repository, config, interactive=False)
+
+
 def test_init_from_promotes_validated_temporary_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -599,7 +661,7 @@ def test_offline_sync_commits_only_safe_cached_local_change(
 
     monkeypatch.setattr(dotfiles, "_record_dotfiles_action", lambda *_args, **_kwargs: None)
 
-    dotfiles._sync_offline(OfflineRepo(), DotfilesConfig(remote_url=_REMOTE))
+    dotfiles._sync_offline(OfflineRepo(), DotfilesConfig(remote_url=_REMOTE), interactive=False)
 
     assert committed == [(_PATH,)]
 
@@ -652,7 +714,7 @@ def test_offline_sync_commits_an_artifact_only_capture_when_cache_is_not_ahead(
     )
     monkeypatch.setattr(dotfiles, "_record_dotfiles_action", lambda *_args, **_kwargs: None)
 
-    dotfiles._sync_offline(OfflineRepo(), DotfilesConfig(remote_url=_REMOTE))
+    dotfiles._sync_offline(OfflineRepo(), DotfilesConfig(remote_url=_REMOTE), interactive=False)
 
     assert committed == [
         (
@@ -700,6 +762,7 @@ def test_artifact_only_sync_records_one_metadata_only_history_entry(
     dotfiles._sync_offline(
         repository,
         DotfilesConfig(bare_repo=repository.bare_repo, remote_url=_REMOTE),
+        interactive=False,
     )
 
     history, _ = get_history()
@@ -740,7 +803,7 @@ def test_offline_sync_defers_capture_when_the_cache_is_ahead(
         lambda *_args, **_kwargs: pytest.fail("capture must be deferred while cache is ahead"),
     )
 
-    dotfiles._sync_offline(CacheAheadRepo(), DotfilesConfig(remote_url=_REMOTE))
+    dotfiles._sync_offline(CacheAheadRepo(), DotfilesConfig(remote_url=_REMOTE), interactive=False)
 
 
 def test_disabled_desktop_capture_does_not_block_an_ordinary_offline_sync(
@@ -809,6 +872,7 @@ def test_disabled_desktop_capture_does_not_block_an_ordinary_offline_sync(
             remote_url=_REMOTE,
             desktop_settings=DesktopSettingsConfig(enabled=False),
         ),
+        interactive=False,
     )
 
     assert committed == [(_PATH,)]
@@ -1001,6 +1065,79 @@ def test_inbound_cosmic_artifacts_are_preserved_without_home_or_history_leaks(
     assert history_after == history
 
 
+@pytest.mark.real_git
+def test_inbound_artifact_deletion_is_not_a_home_or_history_deletion(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_dir = real_git.state_home / "popctl" / "dotfiles"
+    repository = DotfilesRepo(tmp_path / "dotfiles.git", home=real_git.home, state_dir=state_dir)
+    repository.initialize_bare()
+    _write(real_git.home, b"base\n")
+    artifact = render_desktop_settings_artifact(
+        "GNOME",
+        (DesktopSettingsSection(DEFAULT_ROOTS[0], b""),),
+    )
+    base_oid = repository.checked_commit(
+        (_PATH, DESKTOP_SETTINGS_ARTIFACT_PATH),
+        "capture desktop settings",
+        desktop_settings_artifact=artifact,
+    ).commit_oid
+    assert repository.conditional_advance_ref(REMOTE_MAIN_REF, base_oid, None)
+
+    index_env = {"GIT_INDEX_FILE": str(tmp_path / "remove-artifact.index")}
+    assert repository._content_git(  # pyright: ignore[reportPrivateUsage]
+        ["read-tree", base_oid], env_extra=index_env
+    ).success
+    assert repository._content_git(  # pyright: ignore[reportPrivateUsage]
+        ["update-index", "--index-info"],
+        env_extra=index_env,
+        input_data=f"0 {'0' * 40}\t{DESKTOP_SETTINGS_ARTIFACT_PATH}\n".encode(),
+    ).success
+    tree_result = repository._content_git(["write-tree"], env_extra=index_env)  # pyright: ignore[reportPrivateUsage]
+    assert tree_result.success
+    removed_tree = tree_result.stdout.strip().decode("ascii")
+    removal_result = repository._content_git(  # pyright: ignore[reportPrivateUsage]
+        ["commit-tree", removed_tree, "-p", base_oid, "-m", "remove desktop settings"]
+    )
+    assert removal_result.success
+    removal_oid = removal_result.stdout.strip().decode("ascii")
+    assert repository.conditional_advance_ref(REMOTE_MAIN_REF, removal_oid, base_oid)
+
+    home_artifact = real_git.home / DESKTOP_SETTINGS_ARTIFACT_PATH
+    home_artifact.parent.mkdir(parents=True)
+    home_artifact.write_bytes(b"must remain in home\n")
+    config = DotfilesConfig(bare_repo=repository.bare_repo, remote_url=_REMOTE)
+    save_dotfiles_config(config)
+    monkeypatch.setattr(
+        dotfiles,
+        "discover_dotfiles",
+        lambda *_args, **_kwargs: dotfiles.DiscoveryResult((), ()),
+    )
+    monkeypatch.setattr(
+        dotfiles,
+        "_review_candidates",
+        lambda _discovery, current_config, **_kwargs: dotfiles.ReviewResult(
+            DotfilesReviewFinalization((), (), ()), current_config
+        ),
+    )
+
+    dotfiles._sync_online(repository, config, interactive=False)
+
+    assert repository.ref_oid(MAIN_REF) == removal_oid
+    assert home_artifact.read_bytes() == b"must remain in home\n"
+    history, _ = get_history()
+    assert history == []
+
+    monkeypatch.setattr(DotfilesRepo, "fetch", lambda *_args, **_kwargs: _success_transport())
+    status = runner.invoke(app, ["dotfiles", "status"])
+
+    assert status.exit_code == 0, status.output
+    assert "Desktop settings: absent" in status.output
+    assert get_history()[0] == history
+
+
 def test_empty_remote_sync_captures_before_pushing_pending_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1012,6 +1149,9 @@ def test_empty_remote_sync_captures_before_pushing_pending_history(
     class EmptyRemoteRepo:
         def ref_oid(self, _ref: str) -> str:
             return "c" * 40
+
+        def read_tree(self, _ref: str) -> TreeRead:
+            return tree
 
         def validate_tree(self, _ref: str, **_kwargs: object) -> TreeRead:
             return tree
@@ -2327,6 +2467,118 @@ def test_cli_init_from_status_sync_and_apply_bootstraps_a_real_local_remote(
     assert repository.ref_oid(MAIN_REF) == source_oid
     assert repository.ref_oid(REMOTE_MAIN_REF) == source_oid
     assert (real_git.home / _PATH).read_bytes() == b"bootstrap source\n"
+
+
+@pytest.mark.real_git
+def test_bootstrap_extra_root_is_transient_across_later_fetch_commands(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extra_root = "/org/example/bootstrap-extra/"
+    state_dir = real_git.state_home / "popctl" / "dotfiles"
+    remote_store = DotfilesRepo(
+        tmp_path / "remote.git",
+        home=real_git.home,
+        state_dir=real_git.state_home / "popctl" / "remote",
+    )
+    remote_store.initialize_bare()
+    source = DotfilesRepo(
+        tmp_path / "source.git",
+        home=real_git.home,
+        state_dir=real_git.state_home / "popctl" / "source",
+    )
+    source.initialize_bare()
+    _write(real_git.home, b"bootstrap source\n")
+    artifact = render_desktop_settings_artifact(
+        "GNOME",
+        (DesktopSettingsSection(extra_root, b"custom-keybindings=[]\n"),),
+    )
+    source_oid = source.checked_commit(
+        (_PATH, DESKTOP_SETTINGS_ARTIFACT_PATH),
+        "bootstrap unconfigured extra root",
+        desktop_settings_artifact=artifact,
+        desktop_extra_roots=(extra_root,),
+        desktop_ambiguous_root_allowlist=(extra_root,),
+    ).commit_oid
+    source.create_marker(source_oid)
+    local_url = f"file://{remote_store.bare_repo}"
+    source._install_test_remote(local_url)
+    pushed = source._network_git(
+        ["push", local_url, f"{MAIN_REF}:{MAIN_REF}", "refs/tags/popctl-dotfiles-format-v1"],
+        local_url,
+    )
+    assert pushed.success
+    (real_git.home / _PATH).unlink()
+    _route_network_to_local_remote(monkeypatch, remote_store)
+    monkeypatch.setattr(
+        dotfiles,
+        "_acquire_private_remote",
+        lambda url, **_kwargs: (
+            RemotePrivacyRecord(canonical_remote_url=url, method="acknowledged"),
+            False,
+        ),
+    )
+    monkeypatch.setattr(dotfiles, "_interactive", lambda: True)
+    confirmations: list[str] = []
+    monkeypatch.setattr(
+        dotfiles.typer,
+        "confirm",
+        lambda prompt, **_kwargs: confirmations.append(prompt) or True,
+    )
+    monkeypatch.setattr(
+        dotfiles,
+        "discover_dotfiles",
+        lambda *_args, **_kwargs: dotfiles.DiscoveryResult((), ()),
+    )
+    monkeypatch.setattr(
+        dotfiles,
+        "_review_candidates",
+        lambda _discovery, config, **_kwargs: dotfiles.ReviewResult(
+            DotfilesReviewFinalization((), (), ()), config
+        ),
+    )
+    monkeypatch.setattr(
+        dotfiles,
+        "compute_system_diff",
+        lambda *_args, **_kwargs: SimpleNamespace(missing=[]),
+    )
+
+    initialized = runner.invoke(app, ["dotfiles", "init", "--from", _REMOTE])
+    status = runner.invoke(app, ["dotfiles", "status"])
+    synchronized = runner.invoke(app, ["dotfiles", "sync"])
+    applied = runner.invoke(app, ["dotfiles", "apply"])
+    config = load_dotfiles_config()
+    repository = DotfilesRepo(config.bare_repo, home=real_git.home, state_dir=state_dir)
+
+    assert initialized.exit_code == 0, initialized.output
+    assert status.exit_code == 0, status.output
+    assert synchronized.exit_code == 0, synchronized.output
+    assert applied.exit_code == 0, applied.output
+    assert len(confirmations) == 4
+    assert config.desktop_settings.extra_roots == ()
+    assert repository.ref_oid(MAIN_REF) == source_oid
+
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
+    monkeypatch.delenv("XDG_SESSION_DESKTOP", raising=False)
+    artifact_entry = next(
+        entry
+        for entry in repository.read_tree(REMOTE_MAIN_REF).entries
+        if entry.path == DESKTOP_SETTINGS_ARTIFACT_PATH
+    )
+    loaded = desktop.load_desktop_settings(
+        config.desktop_settings,
+        existing_artifact=lambda: repository.read_blob(artifact_entry.oid),
+        dry_run=True,
+    )
+    assert loaded.suppressed_roots == (extra_root,)
+
+    monkeypatch.setattr(dotfiles, "_interactive", lambda: False)
+    for command in (["dotfiles", "status"], ["dotfiles", "sync"], ["dotfiles", "apply"]):
+        refused = runner.invoke(app, command)
+        assert refused.exit_code == 1, refused.output
+        assert "rerun interactively" in refused.output
+    assert load_dotfiles_config().desktop_settings.extra_roots == ()
 
 
 @pytest.mark.real_git

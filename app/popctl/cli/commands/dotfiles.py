@@ -517,6 +517,7 @@ def _validate_tree_with_desktop_acknowledgement(
             partition.desktop_settings_entry,
             desktop_extra_roots=resolved_extra_roots,
             interactive=interactive,
+            allow_unconfigured_extra_roots=interactive,
         )
     return repo.validate_tree(
         ref,
@@ -991,10 +992,12 @@ def _push_pending_empty_remote(
 
 
 def _sync_empty_remote(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: bool) -> None:
-    tree = repo.validate_tree(
+    tree = _validate_tree_with_desktop_acknowledgement(
+        repo,
         MAIN_REF,
-        ambiguous_content_allowlist=config.ambiguous_content_allowlist,
+        allowlist=config.ambiguous_content_allowlist,
         desktop_extra_roots=config.desktop_settings.extra_roots,
+        interactive=interactive,
     )
     desktop_capture = _capture_desktop_settings_for_sync(
         repo,
@@ -1368,7 +1371,7 @@ def sync() -> None:
                     "restore its main ref or use a genuinely empty remote before retrying sync."
                 )
             elif fetch.outcome is TransportOutcome.OFFLINE:
-                _sync_offline(repo, config)
+                _sync_offline(repo, config, interactive=interactive)
             else:
                 _refuse(f"Dotfiles fetch {_transport_detail(fetch.outcome)}.")
     except (
@@ -1547,7 +1550,12 @@ def _sync_online(repo: DotfilesRepo, config: DotfilesConfig, *, interactive: boo
         print_info("Dotfiles are already synchronized.")
 
 
-def _sync_offline(repo: DotfilesRepo, config: DotfilesConfig) -> None:
+def _sync_offline(
+    repo: DotfilesRepo,
+    config: DotfilesConfig,
+    *,
+    interactive: bool,
+) -> None:
     print_warning(
         "Offline: using cached origin/main; remote content will not be materialized or pushed."
     )
@@ -1561,6 +1569,7 @@ def _sync_offline(repo: DotfilesRepo, config: DotfilesConfig) -> None:
         tracked,
         config.ambiguous_content_allowlist,
         desktop_extra_roots=config.desktop_settings.extra_roots,
+        interactive=interactive,
         require_tracked_paths=relation in {RefRelation.EQUAL, RefRelation.BEHIND},
     )
     classifications = repo.classify_paths(tracked) if base_entries else ()
@@ -1577,7 +1586,7 @@ def _sync_offline(repo: DotfilesRepo, config: DotfilesConfig) -> None:
         repo,
         config,
         repo.read_tree(MAIN_REF),
-        interactive=False,
+        interactive=interactive,
     )
     changed = _safe_changed_tracked_paths(repo, tracked)
     commit_paths = tuple(sorted(set(changed)))

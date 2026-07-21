@@ -247,6 +247,46 @@ def test_capture_detects_an_unchanged_rendered_artifact(monkeypatch: pytest.Monk
     assert result.artifact is None
 
 
+def test_capture_and_load_preserve_non_ascii_gvariant_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = "/org/example/utf8/"
+    body = "[settings]\nlabel='café für Änne'\n"
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    _enable_gnome(monkeypatch)
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/test-bus")
+
+    def dconf(args: list[str], **kwargs: object) -> CommandResult:
+        calls.append((args, kwargs))
+        if args[1] == "dump":
+            return CommandResult(body, "", 0)
+        assert kwargs["input_text"] == body
+        return CommandResult("", "", 0)
+
+    monkeypatch.setattr(desktop, "run_command", dconf)
+    captured = capture_desktop_settings(
+        _CaptureSettings((root,)),
+        existing_artifact=lambda: None,
+        admit_artifact=lambda *_args: None,
+    )
+
+    assert captured.status is DesktopCaptureStatus.CHANGED
+    assert captured.artifact is not None
+    parsed = parse_desktop_settings_artifact(captured.artifact)
+    assert parsed.sections[0].body == body.encode("utf-8")
+
+    loaded = load_desktop_settings(
+        _CaptureSettings((root,)),
+        existing_artifact=lambda: captured.artifact,
+    )
+
+    assert loaded.status is DesktopLoadStatus.APPLIED
+    assert calls == [
+        (["dconf", "dump", root], {"env": {"LC_ALL": "C"}}),
+        (["dconf", "load", "-f", root], {"input_text": body, "env": {"LC_ALL": "C"}}),
+    ]
+
+
 def test_capture_is_all_or_nothing_after_one_root_dump_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -523,9 +563,9 @@ def test_load_absent_session_hint_makes_zero_dconf_calls(
 @pytest.mark.parametrize(
     "stderr",
     (
-        "Could not connect: No such file or directory",
-        "Could not connect: Connection refused",
-        "The given address is empty",
+        "error: Could not connect: No such file or directory",
+        "error: Could not connect: Connection refused",
+        "error: The given address is empty",
     ),
 )
 def test_load_classifies_stale_address_and_dead_socket_as_no_session(
@@ -566,7 +606,9 @@ def test_load_classifies_a_dead_runtime_bus_socket_as_no_session(
     monkeypatch.setattr(
         desktop,
         "run_command",
-        lambda *_args, **_kwargs: CommandResult("", "Could not connect: Connection refused", 1),
+        lambda *_args, **_kwargs: CommandResult(
+            "", "error: Could not connect: Connection refused", 1
+        ),
     )
 
     result = load_desktop_settings(
@@ -594,6 +636,28 @@ def test_load_malformed_gvariant_nonzero_is_a_failed_root(monkeypatch: pytest.Mo
     assert result.status is DesktopLoadStatus.FAILED
     assert result.root == root
     assert result.detail == "error: malformed GVariant body"
+
+
+def test_load_malformed_gvariant_with_connect_phrase_is_a_failed_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = "/org/example/root/"
+    detail = "error: malformed GVariant body: Could not connect: Connection refused"
+    _enable_load_gnome(monkeypatch)
+    monkeypatch.setattr(
+        desktop,
+        "run_command",
+        lambda *_args, **_kwargs: CommandResult("", detail, 1),
+    )
+
+    result = load_desktop_settings(
+        _LoadSettings((root,)),
+        existing_artifact=lambda: _load_artifact(DesktopSettingsSection(root, b"[x]\ny=broken\n")),
+    )
+
+    assert result.status is DesktopLoadStatus.FAILED
+    assert result.root == root
+    assert result.detail == detail
 
 
 def test_load_applies_each_authorized_root_with_verbatim_argv_and_stdin(
