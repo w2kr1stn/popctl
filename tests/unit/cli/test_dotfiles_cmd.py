@@ -246,6 +246,7 @@ def test_init_status_sync_and_dry_run_apply_real_git(
 
     assert status.exit_code == 0, status.output
     assert _PATH in status.output
+    assert "Desktop settings: absent" in status.output
 
     _write(real_git.home, b"changed\n")
     synced = runner.invoke(app, ["dotfiles", "sync"])
@@ -1957,7 +1958,14 @@ def test_cli_init_from_status_sync_and_apply_bootstraps_a_real_local_remote(
     )
     source.initialize_bare()
     _write(real_git.home, b"bootstrap source\n")
-    source_oid = source.checked_commit((_PATH,), "bootstrap source").commit_oid
+    artifact = render_desktop_settings_artifact(
+        "GNOME", (DesktopSettingsSection(DEFAULT_ROOTS[0], b"[settings]\nvalue='restored'\n"),)
+    )
+    source_oid = source.checked_commit(
+        (_PATH, DESKTOP_SETTINGS_ARTIFACT_PATH),
+        "bootstrap source",
+        desktop_settings_artifact=artifact,
+    ).commit_oid
     source.create_marker(source_oid)
     local_url = f"file://{remote_store.bare_repo}"
     source._install_test_remote(local_url)
@@ -1992,11 +2000,110 @@ def test_cli_init_from_status_sync_and_apply_bootstraps_a_real_local_remote(
     assert initialized.exit_code == 0, initialized.output
     assert status.exit_code == 0, status.output
     assert "bootstrap is pending" in status.output
+    assert "Desktop settings: present" in status.output
+    assert "family GNOME" in status.output
+    assert "roots 1" in status.output
     assert synchronized.exit_code == 0, synchronized.output
     assert applied.exit_code == 0, applied.output
     assert repository.ref_oid(MAIN_REF) == source_oid
     assert repository.ref_oid(REMOTE_MAIN_REF) == source_oid
     assert (real_git.home / _PATH).read_bytes() == b"bootstrap source\n"
+
+
+@pytest.mark.real_git
+def test_cli_status_reports_invalid_desktop_artifact_header(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_dir = real_git.state_home / "popctl" / "dotfiles"
+    repository = DotfilesRepo(tmp_path / "dotfiles.git", home=real_git.home, state_dir=state_dir)
+    repository.initialize_bare()
+    _write(real_git.home, b"base\n")
+    base_oid = repository.checked_commit((_PATH,), "base").commit_oid
+    blob_result = repository._content_git(  # pyright: ignore[reportPrivateUsage]
+        ["hash-object", "-w", "--stdin"],
+        input_data=b"# malformed desktop settings artifact\n",
+    )
+    assert blob_result.success
+    blob_oid = blob_result.stdout.strip()
+    index_env = {"GIT_INDEX_FILE": str(tmp_path / "invalid-desktop.index")}
+    read_tree_result = repository._content_git(  # pyright: ignore[reportPrivateUsage]
+        ["read-tree", "--empty"],
+        env_extra=index_env,
+    )
+    assert read_tree_result.success
+    update_index_result = repository._content_git(  # pyright: ignore[reportPrivateUsage]
+        [
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            f"100644,{blob_oid.decode('ascii')},{DESKTOP_SETTINGS_ARTIFACT_PATH}",
+        ],
+        env_extra=index_env,
+    )
+    assert update_index_result.success
+    tree_result = repository._content_git(  # pyright: ignore[reportPrivateUsage]
+        ["write-tree"],
+        env_extra=index_env,
+    )
+    assert tree_result.success
+    commit_result = repository._content_git(  # pyright: ignore[reportPrivateUsage]
+        [
+            "commit-tree",
+            tree_result.stdout.strip().decode("ascii"),
+            "-p",
+            base_oid,
+            "-m",
+            "invalid",
+        ],
+    )
+    assert commit_result.success
+    invalid_oid = commit_result.stdout.strip().decode("ascii")
+    assert repository.conditional_advance_ref(REMOTE_MAIN_REF, invalid_oid, None)
+    save_dotfiles_config(DotfilesConfig(bare_repo=repository.bare_repo, remote_url=_REMOTE))
+    monkeypatch.setattr(DotfilesRepo, "fetch", lambda *_args, **_kwargs: _success_transport())
+
+    result = runner.invoke(app, ["dotfiles", "status"])
+
+    assert result.exit_code == 1
+    assert "Desktop settings: invalid" in result.output
+    assert "unsupported format version" in result.output
+
+
+@pytest.mark.real_git
+def test_cli_status_uses_the_desktop_artifact_last_changing_commit_for_revision_age(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_dir = real_git.state_home / "popctl" / "dotfiles"
+    repository = DotfilesRepo(tmp_path / "dotfiles.git", home=real_git.home, state_dir=state_dir)
+    repository.initialize_bare()
+    _write(real_git.home, b"base\n")
+    repository.checked_commit((_PATH,), "base")
+    artifact = render_desktop_settings_artifact(
+        "GNOME", (DesktopSettingsSection(DEFAULT_ROOTS[0], b"[settings]\nvalue='saved'\n"),)
+    )
+    artifact_oid = repository.checked_commit(
+        (DESKTOP_SETTINGS_ARTIFACT_PATH,),
+        "capture desktop settings",
+        desktop_settings_artifact=artifact,
+    ).commit_oid
+    unrelated_path = real_git.home / _NEW_PATH
+    unrelated_path.parent.mkdir(parents=True, exist_ok=True)
+    unrelated_path.write_bytes(b"unrelated\n")
+    head_oid = repository.checked_commit((_NEW_PATH,), "unrelated change").commit_oid
+    assert repository.conditional_advance_ref(REMOTE_MAIN_REF, head_oid, None)
+    save_dotfiles_config(DotfilesConfig(bare_repo=repository.bare_repo, remote_url=_REMOTE))
+    monkeypatch.setattr(DotfilesRepo, "fetch", lambda *_args, **_kwargs: _success_transport())
+
+    result = runner.invoke(app, ["dotfiles", "status"])
+
+    assert result.exit_code == 0, result.output
+    assert "revision age: 1 commit behind source head" in result.output
+    assert artifact_oid[:12] in result.output
+    assert head_oid[:12] not in result.output
 
 
 @pytest.mark.real_git

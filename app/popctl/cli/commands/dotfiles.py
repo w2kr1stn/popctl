@@ -41,8 +41,10 @@ from popctl.dotfiles.desktop import (
     DesktopCaptureStatus,
     DesktopLoadResult,
     DesktopLoadStatus,
+    DesktopSettingsArtifactError,
     capture_desktop_settings,
     load_desktop_settings,
+    parse_desktop_settings_artifact,
 )
 from popctl.dotfiles.discovery import DiscoveryResult, discover_dotfiles
 from popctl.dotfiles.materialize import (
@@ -1103,6 +1105,18 @@ def status() -> None:
             print_warning("Offline: using cached origin/main for dotfiles status.")
         if repo.ref_oid(REMOTE_MAIN_REF) is None:
             _refuse("No cached remote dotfiles ref is available.")
+        try:
+            source_tree = repo.validate_tree(
+                REMOTE_MAIN_REF,
+                ambiguous_content_allowlist=config.ambiguous_content_allowlist,
+                desktop_extra_roots=config.desktop_settings.extra_roots,
+            )
+        except TreeValidationError:
+            raw_source_tree = repo.read_tree(REMOTE_MAIN_REF)
+            if partition_tree_entries(raw_source_tree.entries).desktop_settings_entry is not None:
+                print_warning("Desktop settings: invalid — repair or regenerate the artifact.")
+            raise
+        _display_desktop_settings_status(repo, source_tree)
         entries = _tracked_entries(repo)
         if not entries:
             print_info("Dotfiles bootstrap is pending; run 'popctl dotfiles apply'.")
@@ -1129,6 +1143,28 @@ def status() -> None:
     except (DotfilesCommandError, DotfilesConfigError, DotfilesRepoError, TreeValidationError) as e:
         print_error(str(e))
         raise typer.Exit(code=1) from None
+
+
+def _display_desktop_settings_status(repo: DotfilesRepo, source_tree: TreeRead) -> None:
+    entry = partition_tree_entries(source_tree.entries).desktop_settings_entry
+    if entry is None:
+        print_info("Desktop settings: absent — capture them with 'popctl dotfiles sync'.")
+        return
+    try:
+        artifact = parse_desktop_settings_artifact(repo.read_blob(entry.oid))
+    except DesktopSettingsArtifactError as e:
+        print_warning(f"Desktop settings: invalid — {e}")
+        return
+    revision = repo.path_revision_age(source_tree.ref, entry.path)
+    if revision is None:
+        raise DotfilesRepoError(f"Desktop settings artifact has no revision: {entry.path}")
+    commit_label = "commit" if revision.commits_behind == 1 else "commits"
+    print_info(
+        "Desktop settings: present — "
+        f"family {artifact.family}; roots {len(artifact.roots)}; "
+        f"revision age: {revision.commits_behind} {commit_label} behind source head "
+        f"({revision.commit_oid[:12]})."
+    )
 
 
 def _display_discovery(discovery: DiscoveryResult) -> None:

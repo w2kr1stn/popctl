@@ -224,6 +224,12 @@ class CommitResult:
     paths: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class PathRevisionAge:
+    commit_oid: str
+    commits_behind: int
+
+
 def validate_remote_url(url: str) -> str:
     if not url or url != url.strip():
         raise RemoteUrlError("Remote URL must be a canonical GitHub URL")
@@ -400,6 +406,29 @@ class DotfilesRepo:
         if not result.success:
             return None
         return _single_oid(result.stdout, ref)
+
+    def path_revision_age(self, ref: str, path: str) -> PathRevisionAge | None:
+        try:
+            canonical_path = canonical_home_relative_path(path)
+        except HomePathError as e:
+            raise DotfilesRepoError(str(e)) from e
+        ref_oid = self.ref_oid(ref)
+        if ref_oid is None:
+            raise DotfilesRepoError(f"Ref is absent: {ref}")
+        result = self._content_git(["log", "-1", "--format=%H", ref_oid, "--", canonical_path])
+        self._require_success(result, f"read last change for {canonical_path}")
+        if not result.stdout.strip():
+            return None
+        commit_oid = _single_oid(result.stdout, f"last change for {canonical_path}")
+        count_result = self._content_git(["rev-list", "--count", f"{commit_oid}..{ref_oid}"])
+        self._require_success(count_result, f"read revision age for {canonical_path}")
+        try:
+            commits_behind = int(count_result.stdout.decode("ascii").strip())
+        except (UnicodeDecodeError, ValueError) as e:
+            raise GitCommandError(f"Invalid revision age for {canonical_path}") from e
+        if commits_behind < 0:
+            raise GitCommandError(f"Invalid revision age for {canonical_path}")
+        return PathRevisionAge(commit_oid, commits_behind)
 
     def merge_base_relation(
         self,

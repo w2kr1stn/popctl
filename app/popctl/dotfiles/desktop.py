@@ -278,7 +278,7 @@ def load_desktop_settings(
             artifact_family=artifact_family,
             parsed_roots=parsed_roots,
         )
-    if not _has_session_hint():
+    if not has_desktop_session_hint():
         return DesktopLoadResult(
             DesktopLoadStatus.NO_SESSION,
             family=family,
@@ -327,7 +327,7 @@ def load_desktop_settings(
     )
 
 
-def _has_session_hint() -> bool:
+def has_desktop_session_hint() -> bool:
     if os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
         return True
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
