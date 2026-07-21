@@ -1,10 +1,14 @@
 """Unit tests for shell execution utilities."""
 
 import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 from popctl.utils.shell import run_command, run_command_bytes, run_interactive
+
+_SYSTEM_RUN = subprocess.run
+_SYSTEM_POPEN = subprocess.Popen
 
 
 class TestRunInteractive:
@@ -124,6 +128,50 @@ class TestRunCommandBytes:
 
 
 class TestRunCommand:
+    @patch("popctl.utils.shell._run_subprocess")
+    def test_passes_text_stdin(self, run_subprocess: MagicMock) -> None:
+        run_subprocess.return_value = MagicMock(stdout="", stderr="", returncode=0)
+
+        result = run_command(["dconf", "load", "-f", "/org/example/"], input_text="[x]\ny=1\n")
+
+        assert result.success
+        assert run_subprocess.call_args.kwargs["input_data"] == "[x]\ny=1\n"
+
+    def test_round_trips_utf8_text_through_a_c_locale_child(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        content = "café für Änne\n"
+
+        def run_python_only(args: object, *args_rest: object, **kwargs: object) -> object:
+            if not isinstance(args, list) or not args or args[0] != sys.executable:
+                pytest.fail("UTF-8 round-trip test permits only its Python child")
+            guarded_popen = subprocess.Popen
+            subprocess.Popen = _SYSTEM_POPEN
+            try:
+                return _SYSTEM_RUN(args, *args_rest, **kwargs)
+            finally:
+                subprocess.Popen = guarded_popen
+
+        monkeypatch.setattr("popctl.utils.shell.subprocess.run", run_python_only)
+        result = run_command(
+            [sys.executable, "-c", "import os; os.write(1, os.read(0, 65536))"],
+            input_text=content,
+            env={"LC_ALL": "C"},
+        )
+
+        assert result.success
+        assert result.stdout == content
+
+    @patch("popctl.utils.shell.subprocess.run")
+    def test_uses_utf8_text_io(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+
+        run_command(["dconf", "load"], input_text="café")
+
+        assert mock_run.call_args.kwargs["encoding"] == "utf-8"
+        assert mock_run.call_args.kwargs["errors"] == "replace"
+
     @patch("popctl.utils.shell._run_subprocess", side_effect=FileNotFoundError)
     def test_missing_binary_returns_failed_result(self, _run_subprocess: MagicMock) -> None:
         result = run_command(["missing-binary"])

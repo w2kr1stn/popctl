@@ -196,6 +196,18 @@ class TestHistoryEntry:
                 items=(),
             )
 
+    def test_desktop_apply_metadata_can_record_a_no_file_change_load(self) -> None:
+        entry = HistoryEntry(
+            id="desktop-load",
+            timestamp="2026-01-25T14:30:00+00:00",
+            action_type=HistoryActionType.DOTFILES_APPLY,
+            items=(),
+            reversible=False,
+            metadata={"desktop_settings_applied_roots": "/org/example/"},
+        )
+
+        assert entry.items == ()
+
     def test_history_entry_to_dict(self, sample_entry: HistoryEntry) -> None:
         """to_dict serializes entry correctly."""
         result = sample_entry.to_dict()

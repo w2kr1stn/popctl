@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -15,6 +16,7 @@ from popctl.advisor.config import (
 from popctl.alerts.config import get_alerts_config_path, load_alerts_config
 from popctl.core.paths import get_config_dir
 from popctl.dotfiles.config import DotfilesConfigError, load_dotfiles_config
+from popctl.dotfiles.desktop import has_desktop_session_hint
 from popctl.dotfiles.repo import (
     DotfilesRepo,
     DotfilesRepoError,
@@ -23,6 +25,7 @@ from popctl.dotfiles.repo import (
     validate_remote_url,
 )
 from popctl.dotfiles.state import get_dotfiles_state_dir
+from popctl.utils.desktop import DesktopFamily, normalize_desktop_family
 from popctl.utils.formatting import console
 from popctl.utils.shell import command_exists
 
@@ -44,6 +47,7 @@ _INSTALL_HINTS: dict[str, str] = {
     "tar": "sudo apt install tar",
     "rclone": "sudo apt install rclone",
     "git": "sudo apt install git",
+    "dconf": "sudo apt install dconf-cli",
 }
 _ADVISOR_CONFIG_FIELDS = frozenset({"provider", "model", "api_key", "timeout_seconds"})
 _DOTFILES_REACHABILITY_TIMEOUT_SECONDS = 5.0
@@ -393,6 +397,56 @@ def _dotfiles_checks() -> list[DoctorCheck]:
     return checks
 
 
+def _desktop_settings_checks() -> list[DoctorCheck]:
+    try:
+        enabled = load_dotfiles_config().desktop_settings.enabled
+    except DotfilesConfigError:
+        enabled_check = DoctorCheck(
+            "Enabled",
+            "warning",
+            "Cannot determine enabled state until dotfiles.toml is valid",
+        )
+    else:
+        enabled_check = DoctorCheck(
+            "Enabled",
+            "ready" if enabled else "warning",
+            "Enabled" if enabled else "Disabled in dotfiles.toml; capture and load are skipped",
+        )
+
+    dconf_check = _binary_check("dconf")
+    if dconf_check.status != "ready":
+        dconf_check = DoctorCheck(
+            "dconf",
+            "warning",
+            "Not installed; desktop capture and load will be skipped",
+            dconf_check.hint,
+        )
+    has_session = has_desktop_session_hint()
+    session_check = DoctorCheck(
+        "User session",
+        "ready" if has_session else "warning",
+        (
+            "User-session hint detected"
+            if has_session
+            else "No user-session hint; enter a desktop session before running dotfiles apply"
+        ),
+    )
+    family = normalize_desktop_family(
+        os.environ.get("XDG_CURRENT_DESKTOP"),
+        os.environ.get("XDG_SESSION_DESKTOP"),
+    )
+    family_check = DoctorCheck(
+        "Desktop family",
+        "warning" if family is DesktopFamily.UNKNOWN else "ready",
+        (
+            "Unknown or conflicting desktop family"
+            if family is DesktopFamily.UNKNOWN
+            else f"Detected: {family.value}"
+        ),
+    )
+    return [enabled_check, dconf_check, session_check, family_check]
+
+
 def doctor() -> None:
     package_checks = [
         _binary_check(command) for command in ("dpkg-query", "apt-mark", "apt-get", "sudo")
@@ -443,6 +497,8 @@ def doctor() -> None:
     _print_section("Backup (optional)", _backup_checks())
 
     _print_section("Dotfiles (optional)", _dotfiles_checks())
+
+    _print_section("Desktop settings (optional)", _desktop_settings_checks())
 
     if not package_ready:
         console.print(

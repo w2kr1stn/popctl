@@ -179,18 +179,20 @@ popctl follows a **Modular Monolith** architecture with strict layer separation 
 
 | File | Responsibility |
 |------|----------------|
-| `config.py` | Strict `DotfilesConfig` TOML loading and atomic saving; defaults the bare store from `get_data_dir()` |
+| `config.py` | Strict `DotfilesConfig` TOML loading and atomic saving, including the desktop-settings allowlist and toggle; defaults the bare store from `get_data_dir()` |
+| `desktop.py` | Desktop-settings artifact v1, canonical dconf-root policy, capture/load result models, and all dconf command boundaries |
 | `state.py` | Process lock, immutable apply/inbound-sync plans, completed-paths journals, and init finalization recovery |
 | `secret_filter.py` | Fail-closed path and content admission filter for every candidate, commit, remote tree, and apply source |
 | `discovery.py` | Bounded, deterministic exact-file candidate discovery under the supported `$HOME` roots |
-| `repo.py` | The only controlled Git interface: validation, private-index commits, refs, and isolated transport |
+| `repo.py` | The only controlled Git interface: validation, reserved-entry partition/admission, private-index commits, refs, and isolated transport |
 | `materialize.py` | Ref-tree preflight and fd-anchored, atomic per-file writes into `$HOME` |
 
 ### Infrastructure (`utils/`)
 
 | File | Responsibility |
 |------|----------------|
-| `shell.py` | Text `run_command()` and byte-preserving `run_command_bytes()` subprocess wrappers with typed results and timeouts |
+| `shell.py` | Text `run_command()` (including text stdin) and byte-preserving `run_command_bytes()` subprocess wrappers with typed results and timeouts |
+| `desktop.py` | Pure GNOME/COSMIC/unknown family normalization from XDG desktop signals |
 | `formatting.py` | Rich console helpers (`print_info`, `print_error`, `print_warning`, `print_success`, `console`) |
 
 ---
@@ -974,20 +976,27 @@ a private GitHub repository. `--remote` and `--from` are mutually exclusive.
 
 **`popctl dotfiles init --from URL`** — Bootstrap a fresh machine from an existing popctl-format
 repository after the same privacy gate, marker validation, and full-tree validation. It does not
-run a curation pass; `apply` materializes the validated source and establishes local `main`.
+run a curation pass; `apply` materializes the validated home-file source and establishes local
+`main`. A valid desktop-settings artifact remains in the repository and is not a `$HOME` file.
 
 **`popctl dotfiles status`** — Fetch only remote refs with `--no-write-fetch-head`, then report
 branch relation, tracked-path state, new candidates, and blocked candidates without modifying
-`$HOME`, the local branch, `HEAD`, configuration, or history.
+`$HOME`, the local branch, `HEAD`, configuration, or history. It separately reports the
+desktop-settings artifact as absent, invalid, or present with family, root count, and the artifact
+path's last-changing revision age.
 
 **`popctl dotfiles sync`** — Fetch and classify before any local mutation. It refuses diverged
 histories, both-changed paths, and remote deletion of a tracked path; compatible inbound changes are
 materialized without a checkout, eligible local changes are checked into one commit, then an
-automatic push is attempted. Offline sync can use cached refs and preserves pending work.
+automatic push is attempted. After validation and reconciliation it independently captures enabled
+desktop settings, so an artifact-only change can commit and push even if candidate review is
+cancelled. Offline sync can use cached refs and preserves pending work.
 
 **`popctl dotfiles apply [--dry-run]`** — Enforces package-first ordering, fetches or uses a
 cached validated source, emits the deterministic no-clobber plan for `--dry-run`, and otherwise
-materializes directly from that ref. It never executes repository content or deletes a target.
+materializes directly from that ref. After a successful real materialization, including a no-op, it
+independently attempts the enabled desktop load. Dry-run previews its desktop verdict without a dconf
+call. It never executes repository content or deletes a target.
 
 ### manifest (`cli/commands/manifest.py`)
 
@@ -1019,7 +1028,9 @@ package-management tools cause exit status 1. Its dotfiles section checks Git, c
 repository, remote validity, and a five-second controlled `ls-remote` probe. Offline,
 authentication, timeout, and other reachability results remain distinct warnings. It also explains
 that absent `gh` means automatic pushes cannot recheck GitHub visibility and recommends installing
-it for per-push privacy verification.
+it for per-push privacy verification. Its separate desktop-settings section reports the config
+toggle, `dconf` availability (with the `dconf-cli` install hint), a user-session hint, and the
+normalized desktop family; all are nonfatal optional-feature findings.
 
 ---
 
@@ -1029,22 +1040,89 @@ it for per-push privacy verification.
 the user's `$HOME`, but it has no checkout workflow: the only persistent Git store is the bare
 repository at `get_data_dir() / "dotfiles.git"`. Tracked names are canonical, home-relative,
 regular text files. The subsystem does not manage `/etc`, symlinks, binaries, templating, or merge
-resolution.
+resolution. The sole exception is the generated desktop-settings artifact: it is a repository-only
+entry, not a tracked or materialized home file.
 
 ### Configuration and repository contract
 
 `dotfiles/config.py` owns the strict, atomic `dotfiles.toml` format. Its `DotfilesConfig` records
 the bare repository path, canonical GitHub remote URL, exact-path ambiguous-content allowlist,
-ignored paths, and a remote-privacy record. There are no credential fields. The privacy record is
-either `verified` by `gh repo view --json isPrivate` or `acknowledged` after the user explicitly
-accepts an unverified-private exact URL. The latter is standing consent only for that canonical URL;
-a remote change invalidates it. With `gh`, initialization and every automatic push fail closed unless
-the repository is currently private.
+ignored paths, a remote-privacy record, and a strict `desktop_settings` sub-model. The latter has
+`enabled = true`, `extra_roots = ()`, and `disabled_roots = ()` by default. Candidate roots
+(`DEFAULT_ROOTS + extra_roots`) and reductions (`disabled_roots`) are validated independently for
+the shared canonical dconf-directory grammar, duplicates, and ancestor/descendant overlap; a root
+may validly appear in both collections. The effective roots are the deterministic sorted result of
+defaults plus extras minus disabled roots. Bare `/`, bare `/org/gnome/shell/`, relative roots,
+non-slash-terminated roots, repeated separators, dot segments, backslashes, whitespace, and control
+characters are rejected.
+
+There are no credential fields. The privacy record is either `verified` by
+`gh repo view --json isPrivate` or `acknowledged` after the user explicitly accepts an
+unverified-private exact URL. The latter is standing consent only for that canonical URL; a remote
+change invalidates it. With `gh`, initialization and every automatic push fail closed unless the
+repository is currently private.
 
 `dotfiles/repo.py` owns every Git operation. It permits canonical GitHub HTTPS and GitHub SSH URLs
 only, uses explicit `main` and format-marker refspecs, and verifies the
 `popctl-dotfiles-format-v1` marker before treating a remote as a compatible popctl repository. The
 marker is format compatibility, not cryptographic provenance.
+
+### Desktop-settings artifact, namespace, and admission
+
+`dotfiles/desktop.py` defines the v1 artifact at the exact repository path
+`.config/popctl/desktop-settings.dconf`. It renders UTF-8, LF-only keyfile text with no NUL bytes,
+bounded to 1 MiB:
+
+```text
+# popctl-desktop-settings v1
+# family: GNOME
+# root: /org/gnome/desktop/interface/
+# end-header
+# root: /org/gnome/desktop/interface/
+[interface]
+gtk-theme='Example'
+```
+
+The header records `GNOME`, `COSMIC`, or `UNKNOWN` and the complete ordered root list. Each matching
+`# root:` section contains verbatim `dconf dump <root>` output; an empty body still has its root
+marker. The bounded parser requires the version and complete header, canonical unique roots, matching
+header and section order, and valid UTF-8/LF bodies before any dconf operation. Artifact rendering
+sorts sections by root, so an upstream dconf ordering change can cause a one-time artifact-only
+commit even when the effective settings did not change.
+
+The path is a narrow reserved namespace, not a new home-file policy. `partition_tree_entries()`
+keeps it in the full tree for validation and artifact lookup while passing only home entries to
+tracking, source/base snapshots, classification, conflict/deletion handling, status file accounting,
+inbound sync, materialization, and ordinary history path lists. The artifact is never written to
+`$HOME/.config/popctl/desktop-settings.dconf`. A pre-feature client retains its normal
+`.config/popctl/**` deny rule and therefore refuses a tree containing this artifact; once an
+artifact has been pushed, clients must be upgraded before they can sync that repository.
+
+`DotfilesRepo.validate_tree()` and `checked_commit()` share exact-path admission. The exception
+accepts only this regular mode-`100644` file, asks Git for its blob size before reading it, then
+strictly parses it and invokes the secret filter's private content-only seam. The public scanner
+continues to deny `.config/popctl/**`, so this does not create a general path bypass. Generic hard
+secret findings remain terminal. Parsed bodies retain root provenance: ambiguous content at a
+built-in root is admitted only in memory, while an `extra_roots` section needs an explicit,
+section-scoped interactive acknowledgement and is rejected non-interactively. This validation and
+secret admission remains active when desktop operations are disabled.
+
+The built-in `DEFAULT_ROOTS` deliberately contains only credential-free GNOME desktop state:
+
+- `/org/gnome/desktop/wm/keybindings/`
+- `/org/gnome/settings-daemon/plugins/media-keys/`
+- `/org/gnome/desktop/interface/`
+- `/org/gnome/desktop/wm/preferences/`
+- `/org/gnome/desktop/input-sources/`
+- `/org/gnome/desktop/background/`
+- `/org/gnome/desktop/screensaver/`
+
+The broad `/org/gnome/shell/` root is excluded because it includes extension state.
+
+`utils/desktop.py` has no desktop side effects. It normalizes `XDG_CURRENT_DESKTOP` and
+`XDG_SESSION_DESKTOP` token-by-token: `ubuntu`, `pop`, and `gnome` resolve to GNOME, `cosmic` to
+COSMIC. Missing signals, unknown tokens, conflicts within one signal, or disagreement between the
+two signals resolve to `UNKNOWN`.
 
 ### Checked-commit gateway and secret filtering
 
@@ -1125,22 +1203,66 @@ rolls back already-completed safe files. Initialization has a separate finalizat
 records only popctl-owned temporary/final stores and configuration transition, so interrupted setup
 cleans unfinished owned artifacts and can reuse a created remote without touching foreign state.
 
+### Desktop capture and load lifecycle
+
+Desktop capture is an independent `dotfiles sync` phase. With `enabled = false`, it returns before
+family detection, artifact lookup, dconf, or a capture commit. Otherwise it normalizes the current
+family, inspects the bounded resolved artifact, and preserves it rather than overwriting it when the
+prior artifact is invalid or belongs to a different family. An unknown family or missing `dconf`
+also skips while retaining the prior artifact. For a compatible family it invokes
+`dconf dump <root>` once per sorted effective root, passing the canonical root verbatim and
+`LC_ALL=C`. Any failed dump or secret-gate rejection preserves the prior artifact. A newly rendered
+artifact passes the same exact-path admission as a fetched artifact and is compared byte-for-byte
+with the prior blob; only a difference is eligible for a checked commit.
+
+The phase runs after full-tree validation and reconciliation on the successful online, empty-remote,
+and eligible offline paths. It can share the normal checked commit with home-file changes, or create
+an artifact-only commit; even a cancelled candidate review does not cancel a changed independent
+capture. Offline capture is deferred when the cached remote is ahead, so it never creates a local
+artifact commit on an obsolete base.
+
+Desktop load is an independent `dotfiles apply` finalizer behind the existing package gate. A real
+apply calls it only after `execute_materialization_plan()` returns successfully, including for an
+established no-op, and before the local ref advances and history is recorded. A materialization
+failure cannot invoke it. It begins with the enabled gate, then reads the retained full-tree artifact,
+strictly parses it, checks the normalized local family, and re-authorizes every parsed root against
+the current local effective allowlist. Roots removed locally or crafted outside the allowlist are
+reported as suppressed and never reach dconf.
+
+The loader skips, with a reason and re-attempt guidance, for disabled, absent or invalid artifact,
+unknown/mismatched family, missing `dconf`, and no reachable session. A session hint from
+`DBUS_SESSION_BUS_ADDRESS` or `$XDG_RUNTIME_DIR/bus` is only a preflight: every invocation uses
+`LC_ALL=C`, `dconf load -f <root>`, the canonical root verbatim, and the marker-free section body as
+text stdin. A narrow C-locale D-Bus transport classifier turns only connection/stale-bus failures
+into `no-session`; any other nonzero dconf result is a failed root with stderr retained, and later
+roots are not attempted. Previously submitted roots remain reported. `dconf load -f` may skip locked
+keys, and a successful exit confirms submission rather than schema validity or final setting
+effectiveness; desktop loading is deliberately best effort and does not make file application fail.
+
+`--dry-run` still validates the selected source and renders the ordinary no-clobber plan. For enabled
+desktop settings it parses the artifact and previews its family and roots, but makes no dconf call;
+for disabled settings it reports the disabled state without artifact lookup or parsing. It writes no
+desktop, local, or history state.
+
 ### Sync and apply state machines
 
 `sync` first fetches the explicit remote ref. Online, it validates the complete remote tree, refuses
 diverged history, conflicts, or tracked-file deletions, materializes a compatible behind ref through
 the plan flow above, discovers safe new candidates, and accepts only explicitly reviewed additions.
-It then checked-commits all eligible local changes, persists reviewed ignores/allowlist changes, and
-pushes if local `main` is ahead. A push failure leaves the checked local commit as `pending-push` for
-the next online sync. Offline, it uses only cached refs: it never materializes remote content or
-pushes, and it skips a local commit if the cached remote is ahead.
+It then runs the desktop capture phase, checked-commits all eligible local changes and any changed
+artifact, persists reviewed ignores/allowlist changes, and pushes if local `main` is ahead. A push
+failure leaves the checked local commit as `pending-push` for the next online sync. Offline, it uses
+only cached refs: it never materializes remote content or pushes, and it defers a local commit and
+desktop capture if the cached remote is ahead.
 
 `apply` enforces the package manifest gate before reading dotfiles. It fetches or uses the cached
 remote source, accepts only equal/behind (including bootstrap-behind) ref relations, validates the
 full source tree and tracked-path continuity, and builds the same plan. `--dry-run` renders that
-deterministic plan with zero writes. A real apply materializes every safe entry, journals progress,
-then conditionally advances local `main` only after materialization succeeds. Both sync and apply
-record non-reversible action history only after their successful mutations.
+deterministic plan with zero writes and previews desktop loading. A real apply materializes every
+safe home entry, runs the desktop finalizer, then conditionally advances local `main` only after
+materialization succeeds. Both sync and apply record non-reversible action history only after their
+successful mutations. Reserved artifact paths are filtered out of history items; successful loads add
+the submitted roots and family as metadata on the existing `DOTFILES_APPLY` action.
 
 ---
 

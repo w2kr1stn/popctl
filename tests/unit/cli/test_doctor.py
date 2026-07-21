@@ -4,8 +4,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from popctl.advisor.config import AdvisorConfig, AdvisorConfigError
 from popctl.cli.main import app
-from popctl.dotfiles.config import DotfilesConfig
+from popctl.dotfiles.config import DesktopSettingsConfig, DotfilesConfig
 from popctl.dotfiles.repo import LsRemoteResult, TransportOutcome, TransportResult
+from popctl.utils.desktop import DesktopFamily
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -282,3 +283,49 @@ def test_doctor_recommends_gh_when_dotfiles_privacy_cannot_be_rechecked(
     assert result.exit_code == 0
     assert "cannot recheck repository visibility" in result.output
     assert "Install gh for per-push privacy verification" in result.output
+
+
+@pytest.mark.parametrize(
+    ("enabled", "missing", "has_session", "family", "expected_detail"),
+    (
+        (True, set(), True, DesktopFamily.GNOME, "Enabled"),
+        (False, set(), True, DesktopFamily.COSMIC, "Disabled in dotfiles.toml"),
+        (True, {"dconf"}, True, DesktopFamily.GNOME, "sudo apt install dconf-cli"),
+        (True, set(), False, DesktopFamily.UNKNOWN, "No user-session hint"),
+    ),
+)
+def test_doctor_reports_desktop_settings_readiness_as_nonfatal_warnings(
+    tmp_path: Path,
+    enabled: bool,
+    missing: set[str],
+    has_session: bool,
+    family: DesktopFamily,
+    expected_detail: str,
+) -> None:
+    config = DotfilesConfig(desktop_settings=DesktopSettingsConfig(enabled=enabled))
+    with (
+        patch("popctl.cli.commands.doctor.load_dotfiles_config", return_value=config),
+        patch(
+            "popctl.cli.commands.doctor.has_desktop_session_hint",
+            return_value=has_session,
+        ),
+        patch(
+            "popctl.cli.commands.doctor.normalize_desktop_family",
+            return_value=family,
+        ),
+    ):
+        result = _run_doctor(
+            tmp_path,
+            missing=missing,
+            advisor_config=AdvisorConfig(provider="claude"),
+        )
+
+    assert result.exit_code == 0
+    assert "Desktop settings (optional)" in result.output
+    assert expected_detail in result.output
+    if family is DesktopFamily.UNKNOWN:
+        assert "Unknown or conflicting desktop family" in result.output
+    else:
+        assert f"Detected: {family.value}" in result.output
+    if has_session:
+        assert "User-session hint detected" in result.output

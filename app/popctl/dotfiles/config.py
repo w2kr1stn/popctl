@@ -6,9 +6,14 @@ from tempfile import NamedTemporaryFile
 from typing import Literal, Self
 
 import tomli_w
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from popctl.core.paths import get_config_dir, get_data_dir
+from popctl.dotfiles.desktop import (
+    DEFAULT_ROOTS,
+    DesktopSettingsArtifactError,
+    canonical_dconf_root,
+)
 
 
 class DotfilesConfigError(Exception):
@@ -26,6 +31,51 @@ class RemotePrivacyRecord(BaseModel):
     method: Literal["verified", "acknowledged"]
 
 
+class DesktopSettingsConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = True
+    extra_roots: tuple[str, ...] = ()
+    disabled_roots: tuple[str, ...] = ()
+
+    @field_validator("extra_roots", "disabled_roots")
+    @classmethod
+    def _validate_root_grammar(cls, roots: tuple[str, ...]) -> tuple[str, ...]:
+        for root in roots:
+            try:
+                canonical_dconf_root(root)
+            except DesktopSettingsArtifactError as e:
+                raise ValueError(str(e)) from e
+            if root == "/org/gnome/shell/":
+                raise ValueError("Dconf root must not be the bare GNOME Shell root")
+        return roots
+
+    @model_validator(mode="after")
+    def _validate_root_collections(self) -> Self:
+        _validate_root_collection((*DEFAULT_ROOTS, *self.extra_roots), "candidate")
+        _validate_root_collection(self.disabled_roots, "disabled")
+        return self
+
+    @property
+    def effective_roots(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                set(DEFAULT_ROOTS).union(self.extra_roots).difference(self.disabled_roots)
+            )
+        )
+
+
+def _validate_root_collection(roots: tuple[str, ...], label: str) -> None:
+    if len(roots) != len(set(roots)):
+        raise ValueError(f"Desktop settings {label} roots contain duplicates")
+    sorted_roots = sorted(roots)
+    for ancestor, descendant in zip(sorted_roots, sorted_roots[1:], strict=False):
+        if descendant.startswith(ancestor):
+            raise ValueError(
+                f"Desktop settings {label} roots overlap: {ancestor!r} and {descendant!r}"
+            )
+
+
 class DotfilesConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -34,6 +84,7 @@ class DotfilesConfig(BaseModel):
     ambiguous_content_allowlist: list[str] = Field(default_factory=list)
     ignored: list[str] = Field(default_factory=list)
     remote_privacy: RemotePrivacyRecord | None = None
+    desktop_settings: DesktopSettingsConfig = Field(default_factory=DesktopSettingsConfig)
 
     def has_remote_privacy_record(self, canonical_remote_url: str) -> bool:
         return (

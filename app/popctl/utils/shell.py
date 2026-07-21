@@ -46,6 +46,8 @@ def _run_subprocess(
             cwd=cwd,
             env=env,
             input=input_data,
+            encoding="utf-8" if text else None,
+            errors="replace" if text else None,
         )
     else:
         result = subprocess.run(
@@ -56,6 +58,8 @@ def _run_subprocess(
             timeout=timeout,
             cwd=cwd,
             env=env,
+            encoding="utf-8" if text else None,
+            errors="replace" if text else None,
         )
     return cast(
         "subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]",
@@ -66,6 +70,7 @@ def _run_subprocess(
 def run_command(
     args: list[str],
     *,
+    input_text: str | None = None,
     timeout: float | None = 60.0,
     cwd: str | None = None,
     env: dict[str, str] | None = None,
@@ -78,6 +83,7 @@ def run_command(
             cwd=cwd,
             env=full_env,
             text=True,
+            input_data=input_text,
         )
     except subprocess.TimeoutExpired:
         cmd_str = " ".join(args[:3])

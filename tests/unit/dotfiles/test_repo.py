@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import base64
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from popctl.dotfiles.desktop import (
+    DEFAULT_ROOTS,
+    DESKTOP_SETTINGS_ARTIFACT_PATH,
+    MAX_DESKTOP_SETTINGS_ARTIFACT_BYTES,
+    DesktopSettingsSection,
+    render_desktop_settings_artifact,
+)
 from popctl.dotfiles.materialize import HomePathError, read_home_regular_file
 from popctl.dotfiles.repo import (
     MAIN_BRANCH,
@@ -20,9 +28,12 @@ from popctl.dotfiles.repo import (
     RefRelation,
     RemoteUrlError,
     TransportOutcome,
+    TreeEntry,
     TreeValidationError,
+    partition_tree_entries,
     validate_remote_url,
 )
+from popctl.dotfiles.secret_filter import SecretVerdictKind, scan_dotfile_bytes
 from popctl.utils.shell import BytesCommandResult, run_command_bytes
 
 from .conftest import RealGitEnvironment
@@ -88,6 +99,34 @@ def _literal_tree(repository: DotfilesRepo, mode: str, path: bytes, blob: bytes)
         .stdout.strip()
         .decode("ascii")
     )
+
+
+def _desktop_artifact(root: str = DEFAULT_ROOTS[0], body: bytes = b"") -> bytes:
+    return render_desktop_settings_artifact(
+        "GNOME",
+        (DesktopSettingsSection(root, body),),
+    )
+
+
+@pytest.fixture
+def legacy_pre_desktop_tree_validator() -> Callable[[TreeEntry, bytes, Callable[[], None]], None]:
+    """Frozen pre-feature tree gate: every path used the public byte scanner."""
+
+    def validate_then_continue(
+        entry: TreeEntry,
+        content: bytes,
+        continuation: Callable[[], None],
+    ) -> None:
+        if entry.mode not in {"100644", "100755"}:
+            raise TreeValidationError(f"Unsupported tree mode for {entry.path}: {entry.mode}")
+        verdict = scan_dotfile_bytes(entry.path, content)
+        if not verdict.allowed:
+            raise TreeValidationError(
+                f"Legacy tree validation rejected {entry.path}: {verdict.kind}"
+            )
+        continuation()
+
+    return validate_then_continue
 
 
 @pytest.mark.real_git
@@ -647,6 +686,198 @@ def test_tree_validation_rejects_tracked_path_deletion_and_missing_marker(
     assert not repository.verify_marker()
     with pytest.raises(TreeValidationError, match="drops tracked"):
         repository.validate_tree(MAIN_REF, tracked_paths=[".config/tool/missing"])
+
+
+def test_partition_separates_only_the_exact_desktop_settings_artifact() -> None:
+    entries = (
+        TreeEntry("100644", ".config/tool/config", "a" * 40),
+        TreeEntry("100644", DESKTOP_SETTINGS_ARTIFACT_PATH, "b" * 40),
+        TreeEntry("100644", ".config/popctl/other", "c" * 40),
+    )
+
+    partition = partition_tree_entries(entries)
+
+    assert tuple(entry.path for entry in partition.home_entries) == (
+        ".config/tool/config",
+        ".config/popctl/other",
+    )
+    assert partition.desktop_settings_entry == entries[1]
+
+
+@pytest.mark.real_git
+def test_checked_commit_admits_only_an_in_memory_reserved_artifact(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+) -> None:
+    repository = _repository(real_git, tmp_path)
+    artifact = _desktop_artifact(body=b"custom-keybindings=[]\n")
+
+    result = repository.checked_commit(
+        [DESKTOP_SETTINGS_ARTIFACT_PATH],
+        "Capture desktop settings",
+        desktop_settings_artifact=artifact,
+    )
+
+    assert result.paths == (DESKTOP_SETTINGS_ARTIFACT_PATH,)
+    assert not (real_git.home / DESKTOP_SETTINGS_ARTIFACT_PATH).exists()
+    entry = repository.read_tree(MAIN_REF).entries[0]
+    assert entry.path == DESKTOP_SETTINGS_ARTIFACT_PATH
+    assert repository.read_blob(entry.oid) == artifact
+
+
+@pytest.mark.real_git
+def test_checked_commit_never_reads_a_reserved_artifact_from_home(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+) -> None:
+    repository = _repository(real_git, tmp_path)
+
+    with pytest.raises(DotfilesRepoError, match="supplied from memory"):
+        repository.checked_commit([DESKTOP_SETTINGS_ARTIFACT_PATH], "invalid")
+
+    with pytest.raises(DotfilesRepoError, match="requires its reserved artifact path"):
+        repository.checked_commit(
+            [".config/tool/config"],
+            "invalid",
+            desktop_settings_artifact=_desktop_artifact(),
+        )
+
+
+@pytest.mark.real_git
+def test_reserved_admission_keeps_public_path_denial_and_hard_secret_failure(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+) -> None:
+    repository = _repository(real_git, tmp_path)
+    ambiguous = b"custom-keybindings=[]\n"
+    artifact = _desktop_artifact(body=ambiguous)
+
+    assert scan_dotfile_bytes(
+        DESKTOP_SETTINGS_ARTIFACT_PATH,
+        artifact,
+    ).kind is SecretVerdictKind.DENIED_PATH
+    assert scan_dotfile_bytes(".config/tool/config", ambiguous).kind is (
+        SecretVerdictKind.DENIED_AMBIGUOUS_CONTENT
+    )
+    assert scan_dotfile_bytes(".config/popctl/other", ambiguous).kind is (
+        SecretVerdictKind.DENIED_PATH
+    )
+
+    repository.checked_commit(
+        [DESKTOP_SETTINGS_ARTIFACT_PATH],
+        "safe built-in ambiguity",
+        desktop_settings_artifact=artifact,
+    )
+    with pytest.raises(TreeValidationError, match="authorization"):
+        repository.checked_commit(
+            [DESKTOP_SETTINGS_ARTIFACT_PATH],
+            "hard secret",
+            desktop_settings_artifact=_desktop_artifact(
+                body=b"Authorization: Bearer opaque-value\n"
+            ),
+        )
+
+
+@pytest.mark.real_git
+def test_extra_root_ambiguity_requires_a_section_scoped_acknowledgement(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+) -> None:
+    repository = _repository(real_git, tmp_path)
+    root = "/org/example/extra/"
+    artifact = _desktop_artifact(root, b"custom-keybindings=[]\n")
+
+    with pytest.raises(TreeValidationError, match="unacknowledged ambiguous"):
+        repository.checked_commit(
+            [DESKTOP_SETTINGS_ARTIFACT_PATH],
+            "unacknowledged extra root",
+            desktop_settings_artifact=artifact,
+            desktop_extra_roots=(root,),
+        )
+
+    repository.checked_commit(
+        [DESKTOP_SETTINGS_ARTIFACT_PATH],
+        "acknowledged extra root",
+        desktop_settings_artifact=artifact,
+        desktop_extra_roots=(root,),
+        desktop_ambiguous_root_allowlist=(root,),
+    )
+
+
+@pytest.mark.real_git
+@pytest.mark.parametrize("mode", ("100755", "120000"))
+def test_reserved_modes_and_symlinks_reject_before_admission(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    repository = _repository(real_git, tmp_path)
+    tree_oid = _literal_tree(
+        repository,
+        mode,
+        DESKTOP_SETTINGS_ARTIFACT_PATH.encode(),
+        _desktop_artifact(),
+    )
+    admitted = MagicMock()
+    monkeypatch.setattr(repository, "admit_desktop_settings_artifact", admitted)
+
+    with pytest.raises(TreeValidationError, match="mode-100644"):
+        repository.validate_tree(tree_oid)
+
+    admitted.assert_not_called()
+
+
+@pytest.mark.real_git
+def test_reserved_oversize_is_rejected_before_its_blob_is_read(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _repository(real_git, tmp_path)
+    tree_oid = _literal_tree(
+        repository,
+        "100644",
+        DESKTOP_SETTINGS_ARTIFACT_PATH.encode(),
+        b"x" * (MAX_DESKTOP_SETTINGS_ARTIFACT_BYTES + 1),
+    )
+    read_blob = MagicMock()
+    monkeypatch.setattr(repository, "read_blob", read_blob)
+
+    with pytest.raises(TreeValidationError, match="size limit"):
+        repository.validate_tree(tree_oid)
+
+    read_blob.assert_not_called()
+
+
+@pytest.mark.real_git
+def test_pinned_legacy_path_gate_rejects_a_scanner_clean_empty_artifact(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    legacy_pre_desktop_tree_validator: Callable[[TreeEntry, bytes, Callable[[], None]], None],
+) -> None:
+    repository = _repository(real_git, tmp_path)
+    artifact = _desktop_artifact()
+    tree_oid = _literal_tree(
+        repository,
+        "100644",
+        DESKTOP_SETTINGS_ARTIFACT_PATH.encode(),
+        artifact,
+    )
+
+    assert scan_dotfile_bytes(
+        DESKTOP_SETTINGS_ARTIFACT_PATH,
+        artifact,
+    ).kind is SecretVerdictKind.DENIED_PATH
+    materialization_or_sync: list[str] = []
+    with pytest.raises(TreeValidationError, match="Legacy tree validation rejected"):
+        legacy_pre_desktop_tree_validator(
+            TreeEntry("100644", DESKTOP_SETTINGS_ARTIFACT_PATH, "0" * 40),
+            artifact,
+            lambda: materialization_or_sync.append("continued"),
+        )
+    assert materialization_or_sync == []
+    assert repository.validate_tree(tree_oid).tree_oid == tree_oid
 
 
 @pytest.mark.real_git

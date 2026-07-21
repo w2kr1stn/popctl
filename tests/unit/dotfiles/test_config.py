@@ -3,12 +3,14 @@ from unittest.mock import MagicMock
 
 import pytest
 from popctl.dotfiles.config import (
+    DesktopSettingsConfig,
     DotfilesConfig,
     DotfilesConfigError,
     RemotePrivacyRecord,
     load_dotfiles_config,
     save_dotfiles_config,
 )
+from popctl.dotfiles.desktop import DEFAULT_ROOTS
 from pydantic import ValidationError
 
 
@@ -97,3 +99,86 @@ class TestDotfilesConfig:
         assert config.has_remote_privacy_record(url)
         assert config.remote_privacy is not None
         assert config.remote_privacy.method == "verified"
+
+    def test_rejects_extra_desktop_settings_fields(self) -> None:
+        with pytest.raises(ValidationError):
+            DotfilesConfig.model_validate({"desktop_settings": {"unexpected": True}})
+
+    @pytest.mark.parametrize(
+        ("root", "message"),
+        (
+            ("/", "absolute directory"),
+            ("/org/gnome/shell/", "bare GNOME Shell root"),
+            ("relative/root/", "absolute directory"),
+            ("/org/example", "absolute directory"),
+            ("/org//example/", "unsafe segment"),
+            ("/org/./example/", "unsafe segment"),
+            ("/org/../example/", "unsafe segment"),
+            ("/org\\example/", "backslash"),
+            ("/org/example root/", "whitespace"),
+            ("/org/example\x1froot/", "whitespace"),
+        ),
+    )
+    def test_rejects_noncanonical_desktop_roots(self, root: str, message: str) -> None:
+        with pytest.raises(ValidationError, match=message):
+            DesktopSettingsConfig(extra_roots=(root,))
+
+    @pytest.mark.parametrize(
+        ("field", "roots", "message"),
+        (
+            (
+                "extra_roots",
+                ("/org/example/duplicate/", "/org/example/duplicate/"),
+                "duplicates",
+            ),
+            ("extra_roots", (DEFAULT_ROOTS[0],), "duplicates"),
+            (
+                "disabled_roots",
+                ("/org/example/duplicate/", "/org/example/duplicate/"),
+                "duplicates",
+            ),
+            (
+                "extra_roots",
+                ("/org/example/", "/org/example/child/"),
+                "overlap",
+            ),
+            (
+                "disabled_roots",
+                ("/org/example/", "/org/example/child/"),
+                "overlap",
+            ),
+        ),
+    )
+    def test_rejects_duplicate_or_overlapping_root_collections(
+        self,
+        field: str,
+        roots: tuple[str, ...],
+        message: str,
+    ) -> None:
+        with pytest.raises(ValidationError, match=message):
+            DesktopSettingsConfig(**{field: roots})
+
+    def test_rejects_an_extra_root_that_overlaps_a_default(self) -> None:
+        with pytest.raises(ValidationError, match="overlap"):
+            DesktopSettingsConfig(extra_roots=("/org/gnome/desktop/",))
+
+    def test_accepts_exact_disabled_candidate_root(self) -> None:
+        config = DesktopSettingsConfig(
+            extra_roots=("/org/example/",),
+            disabled_roots=(DEFAULT_ROOTS[0], "/org/example/"),
+        )
+
+        assert DEFAULT_ROOTS[0] not in config.effective_roots
+        assert "/org/example/" not in config.effective_roots
+
+    def test_resolves_sorted_effective_roots_when_disabled(self) -> None:
+        config = DesktopSettingsConfig(
+            enabled=False,
+            extra_roots=("/org/zulu/", "/org/alpha/"),
+            disabled_roots=(DEFAULT_ROOTS[0],),
+        )
+
+        assert not config.enabled
+        assert config.effective_roots == tuple(
+            sorted((*DEFAULT_ROOTS[1:], "/org/alpha/", "/org/zulu/"))
+        )
