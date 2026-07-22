@@ -3047,11 +3047,22 @@ def test_cli_bootstrap_clean_candidate_set_requires_one_batch_adoption_decision(
 
     assert result.exit_code == 0, result.output
     assert len(prompts) == 1
-    assert prompts[0].startswith("Adopt these remote-declared desktop-settings roots")
+    prompt_prefix = (
+        "Adopt these remote-declared desktop-settings roots into "
+        "[desktop_settings].extra_roots: "
+    )
+    assert prompts[0].startswith(prompt_prefix)
+    assert prompts[0].endswith("?")
     assert all(root in prompts[0] for root in candidates)
+    displayed_candidates = tuple(
+        prompts[0].removeprefix(prompt_prefix).removesuffix("?").split(", ")
+    )
+    config = load_dotfiles_config()
     expected = candidates if confirmed else ()
-    assert load_dotfiles_config().desktop_settings.extra_roots == expected
-    assert set(load_dotfiles_config().desktop_settings.extra_roots) <= set(candidates)
+    assert config.desktop_settings.extra_roots == expected
+    assert set(config.desktop_settings.extra_roots) <= set(candidates)
+    if confirmed:
+        assert config.desktop_settings.extra_roots == displayed_candidates
     if not confirmed:
         assert "were not adopted" in result.output
         assert "[desktop_settings].extra_roots" in result.output
