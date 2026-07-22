@@ -1048,7 +1048,7 @@ entry, not a tracked or materialized home file.
 `dotfiles/config.py` owns the strict, atomic `dotfiles.toml` format. Its `DotfilesConfig` records
 the bare repository path, canonical GitHub remote URL, exact-path ambiguous-content allowlist,
 ignored paths, a remote-privacy record, and a strict `desktop_settings` sub-model. The latter has
-`enabled = true`, `extra_roots = ()`, and `disabled_roots = ()` by default. Candidate roots
+`enabled = true`, `extra_roots = ()`, and `disabled_roots = ()` by default. Configured roots
 (`DEFAULT_ROOTS + extra_roots`) and reductions (`disabled_roots`) are validated independently for
 the shared canonical dconf-directory grammar, duplicates, and ancestor/descendant overlap; a root
 may validly appear in both collections. The effective roots are the deterministic sorted result of
@@ -1106,6 +1106,31 @@ secret findings remain terminal. Parsed bodies retain root provenance: ambiguous
 built-in root is admitted only in memory, while an `extra_roots` section needs an explicit,
 section-scoped interactive acknowledgement and is rejected non-interactively. This validation and
 secret admission remains active when desktop operations are disabled.
+
+Bootstrap keeps three concepts separate. A **remote-declared candidate root** is a non-default root
+parsed from the remote artifact and is transient discovery data, not consent. An **adopted root** is
+one of the complete displayed candidate set that an interactive `dotfiles init --from` user confirms
+in its single batch decision; only adopted roots are persisted in
+`[desktop_settings].extra_roots`. A **transient ambiguous-content acknowledgement** is the separate,
+section-scoped admission decision for ambiguous artifact content. It admits that content for the
+operation but neither adopts nor persists a root. An ambiguous candidate therefore needs both the
+content acknowledgement and the independent adoption decision. This preserves slice #4's
+non-persisting acknowledgement contract: it applies to content admission, not to a genuinely adopted
+root.
+
+The strict local `desktop_settings` allowlist is the trust boundary between a remote artifact and
+dconf. A remote declaration cannot cross it merely by being parsed or admitted. Non-interactive
+bootstrap and a declined batch choice persist no candidates; policy-compatible roots can later be
+added deliberately to `extra_roots`, while policy-incompatible declarations must first be corrected
+to a compatible, non-overlapping subset. Before promotion, the confirmed set is reconstructed as a
+`DesktopSettingsConfig`; rejection aborts bootstrap without promoting the store or configuration.
+
+All root-bearing CLI values pass through one literal root display projection. The projection is
+scoped by value type rather than provenance, so it covers remote candidates, adopted local roots,
+capture `root` and `detail` fields, and root-containing validator or admission diagnostics. It
+produces literal markup-disabled text before prompts, reports, and errors render it, while fixed
+copy keeps its own styling. This prevents Rich markup in a root from changing the consent display or
+raising a rendering error.
 
 The built-in `DEFAULT_ROOTS` deliberately contains only credential-free GNOME desktop state:
 
@@ -1227,7 +1252,12 @@ established no-op, and before the local ref advances and history is recorded. A 
 failure cannot invoke it. It begins with the enabled gate, then reads the retained full-tree artifact,
 strictly parses it, checks the normalized local family, and re-authorizes every parsed root against
 the current local effective allowlist. Roots removed locally or crafted outside the allowlist are
-reported as suppressed and never reach dconf.
+reported as suppressed and never reach dconf. Recovery guidance is computed from the actual current
+`DesktopSettingsConfig` and validated against that model before display. A jointly applicable
+aggregate edit is shown only when the resulting configuration validates; otherwise the report labels
+mutually-exclusive alternatives, each individually validated. If a declared root cannot be admitted
+by policy, the compatible recovery keeps the local configuration and directs the remote declaration
+to a compatible, non-overlapping root instead of suggesting an invalid local edit.
 
 The loader skips, with a reason and re-attempt guidance, for disabled, absent or invalid artifact,
 unknown/mismatched family, missing `dconf`, and no reachable session. A session hint from
