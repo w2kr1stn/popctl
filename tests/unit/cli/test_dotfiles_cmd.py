@@ -60,6 +60,7 @@ from popctl.dotfiles.state import (
 )
 from popctl.models.history import HistoryActionType
 from popctl.utils.shell import BytesCommandResult, CommandResult
+from rich.console import Console
 from typer.testing import CliRunner
 
 from tests.unit.dotfiles.conftest import RealGitEnvironment
@@ -206,6 +207,61 @@ def _route_network_to_local_remote(
 
     monkeypatch.setattr(DotfilesRepo, "_network_git", local_network_git)
     return local_url
+
+
+def _publish_bootstrap_desktop_artifact(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sections: tuple[DesktopSettingsSection, ...],
+    *,
+    ambiguous_content_acknowledgements: tuple[str, ...] = (),
+) -> DotfilesRepo:
+    remote_store = DotfilesRepo(
+        tmp_path / "remote.git",
+        home=real_git.home,
+        state_dir=real_git.state_home / "popctl" / "remote",
+    )
+    remote_store.initialize_bare()
+    source = DotfilesRepo(
+        tmp_path / "source.git",
+        home=real_git.home,
+        state_dir=real_git.state_home / "popctl" / "source",
+    )
+    source.initialize_bare()
+    _write(real_git.home, b"bootstrap source\n")
+    artifact = render_desktop_settings_artifact("GNOME", sections)
+    candidate_roots = tuple(
+        sorted(section.root for section in sections if section.root not in DEFAULT_ROOTS)
+    )
+    source_oid = source.checked_commit(
+        (_PATH, DESKTOP_SETTINGS_ARTIFACT_PATH),
+        "bootstrap desktop settings",
+        desktop_settings_artifact=artifact,
+        desktop_extra_roots=candidate_roots,
+        desktop_ambiguous_root_allowlist=ambiguous_content_acknowledgements,
+    ).commit_oid
+    source.create_marker(source_oid)
+    local_url = f"file://{remote_store.bare_repo}"
+    source._install_test_remote(local_url)
+    pushed = source._network_git(
+        ["push", local_url, f"{MAIN_REF}:{MAIN_REF}", "refs/tags/popctl-dotfiles-format-v1"],
+        local_url,
+    )
+    assert pushed.success
+    _route_network_to_local_remote(monkeypatch, remote_store)
+    return remote_store
+
+
+def _allow_bootstrap_privacy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        dotfiles,
+        "_acquire_private_remote",
+        lambda url, **_kwargs: (
+            RemotePrivacyRecord(canonical_remote_url=url, method="verified"),
+            False,
+        ),
+    )
 
 
 def test_init_status_sync_and_dry_run_apply_real_git(
@@ -375,6 +431,7 @@ def test_tree_acknowledgement_and_interactive_review_finalization(
         (".config/tool/config.env",),
         (),
         (),
+        (),
     )
 
     home = tmp_path / "home"
@@ -481,14 +538,15 @@ def test_fetched_extra_root_acknowledgement_is_transient_and_fail_closed(
         repository.read_tree(REMOTE_MAIN_REF),
         allowlist=(),
         interactive=True,
-        allow_unconfigured_desktop_extra_roots=True,
+        admit_remote_declared_candidates=True,
     )
 
     assert validated.ref == REMOTE_MAIN_REF
     assert config.ambiguous_content_allowlist == []
     assert bootstrap.path_allowlist == ()
-    assert bootstrap.desktop_ambiguous_root_allowlist == (extra_root,)
-    assert bootstrap.desktop_extra_roots == (extra_root,)
+    assert bootstrap.desktop_ambiguous_content_acknowledgements == (extra_root,)
+    assert bootstrap.desktop_admission_roots == (extra_root,)
+    assert bootstrap.remote_declared_candidate_roots == (extra_root,)
 
 
 @pytest.mark.real_git
@@ -2576,7 +2634,7 @@ def test_cli_init_from_status_sync_and_apply_bootstraps_a_real_local_remote(
 
 
 @pytest.mark.real_git
-def test_bootstrap_extra_root_is_transient_across_later_fetch_commands(
+def test_bootstrap_adopts_extra_root_but_keeps_ambiguous_content_transient(
     real_git: RealGitEnvironment,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2661,8 +2719,13 @@ def test_bootstrap_extra_root_is_transient_across_later_fetch_commands(
     assert status.exit_code == 0, status.output
     assert synchronized.exit_code == 0, synchronized.output
     assert applied.exit_code == 0, applied.output
-    assert len(confirmations) == 4
-    assert config.desktop_settings.extra_roots == ()
+    assert len(confirmations) == 5
+    assert confirmations[0] == f"Allow ambiguous desktop-settings content for {extra_root}?"
+    assert confirmations[1] == (
+        "Adopt these remote-declared desktop-settings roots into "
+        f"[desktop_settings].extra_roots: {extra_root}?"
+    )
+    assert config.desktop_settings.extra_roots == (extra_root,)
     assert repository.ref_oid(MAIN_REF) == source_oid
 
     monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
@@ -2677,14 +2740,318 @@ def test_bootstrap_extra_root_is_transient_across_later_fetch_commands(
         existing_artifact=lambda: repository.read_blob(artifact_entry.oid),
         dry_run=True,
     )
-    assert loaded.suppressed_roots == (extra_root,)
+    assert loaded.suppressed_roots == ()
 
     monkeypatch.setattr(dotfiles, "_interactive", lambda: False)
     for command in (["dotfiles", "status"], ["dotfiles", "sync"], ["dotfiles", "apply"]):
         refused = runner.invoke(app, command)
         assert refused.exit_code == 1, refused.output
         assert "rerun interactively" in refused.output
+    assert load_dotfiles_config().desktop_settings.extra_roots == (extra_root,)
+
+
+@pytest.mark.real_git
+@pytest.mark.parametrize("confirmed", (True, False))
+def test_cli_bootstrap_clean_candidate_set_requires_one_batch_adoption_decision(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    confirmed: bool,
+) -> None:
+    candidates = ("/org/example/alpha/", "/org/example/zulu/")
+    _publish_bootstrap_desktop_artifact(
+        real_git,
+        tmp_path,
+        monkeypatch,
+        (
+            DesktopSettingsSection(candidates[1], b""),
+            DesktopSettingsSection(candidates[0], b""),
+        ),
+    )
+    _allow_bootstrap_privacy(monkeypatch)
+    monkeypatch.setattr(dotfiles, "_interactive", lambda: True)
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        dotfiles.typer,
+        "confirm",
+        lambda prompt, **_kwargs: prompts.append(prompt) or confirmed,
+    )
+
+    result = runner.invoke(app, ["dotfiles", "init", "--from", _REMOTE])
+
+    assert result.exit_code == 0, result.output
+    assert len(prompts) == 1
+    assert prompts[0].startswith("Adopt these remote-declared desktop-settings roots")
+    assert all(root in prompts[0] for root in candidates)
+    expected = candidates if confirmed else ()
+    assert load_dotfiles_config().desktop_settings.extra_roots == expected
+    assert set(load_dotfiles_config().desktop_settings.extra_roots) <= set(candidates)
+    if not confirmed:
+        assert "were not adopted" in result.output
+        assert "[desktop_settings].extra_roots" in result.output
+
+
+@pytest.mark.real_git
+def test_cli_bootstrap_noninteractive_clean_candidates_are_not_adopted(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = "/org/example/noninteractive/"
+    _publish_bootstrap_desktop_artifact(
+        real_git,
+        tmp_path,
+        monkeypatch,
+        (DesktopSettingsSection(candidate, b""),),
+    )
+    _allow_bootstrap_privacy(monkeypatch)
+    monkeypatch.setattr(dotfiles, "_interactive", lambda: False)
+    monkeypatch.setattr(dotfiles.typer, "confirm", lambda *_args, **_kwargs: pytest.fail("prompt"))
+
+    result = runner.invoke(app, ["dotfiles", "init", "--from", _REMOTE])
+
+    assert result.exit_code == 0, result.output
     assert load_dotfiles_config().desktop_settings.extra_roots == ()
+    assert candidate in result.output
+    assert "were not adopted" in result.output
+    assert "[desktop_settings].extra_roots" in result.output
+
+
+@pytest.mark.real_git
+def test_cli_bootstrap_invalid_confirmed_candidate_aborts_before_promotion(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalid_candidate = "/org/gnome/desktop/"
+    _publish_bootstrap_desktop_artifact(
+        real_git,
+        tmp_path,
+        monkeypatch,
+        (DesktopSettingsSection(invalid_candidate, b""),),
+    )
+    _allow_bootstrap_privacy(monkeypatch)
+    monkeypatch.setattr(dotfiles, "_interactive", lambda: True)
+    monkeypatch.setattr(dotfiles.typer, "confirm", lambda *_args, **_kwargs: True)
+
+    result = runner.invoke(app, ["dotfiles", "init", "--from", _REMOTE])
+
+    assert result.exit_code == 1
+    assert invalid_candidate in result.output
+    assert "cannot be adopted" in result.output
+    assert not DotfilesConfig().bare_repo.exists()
+    assert not get_dotfiles_config_path().exists()
+
+
+@pytest.mark.real_git
+def test_cli_bootstrap_noninteractive_policy_invalid_candidates_report_compatible_subset(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalid_candidate = "/org/gnome/desktop/"
+    _publish_bootstrap_desktop_artifact(
+        real_git,
+        tmp_path,
+        monkeypatch,
+        (DesktopSettingsSection(invalid_candidate, b""),),
+    )
+    _allow_bootstrap_privacy(monkeypatch)
+    monkeypatch.setattr(dotfiles, "_interactive", lambda: False)
+
+    result = runner.invoke(app, ["dotfiles", "init", "--from", _REMOTE])
+
+    assert result.exit_code == 0, result.output
+    assert load_dotfiles_config().desktop_settings.extra_roots == ()
+    assert invalid_candidate in result.output
+    assert "cannot be added unchanged" in result.output
+    assert "policy-compatible, non-overlapping subset" in result.output
+    assert "To adopt them later" not in result.output
+
+
+@pytest.mark.real_git
+def test_cli_bootstrap_with_no_candidates_skips_adoption_prompt(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _publish_bootstrap_desktop_artifact(
+        real_git,
+        tmp_path,
+        monkeypatch,
+        (DesktopSettingsSection(DEFAULT_ROOTS[0], b""),),
+    )
+    _allow_bootstrap_privacy(monkeypatch)
+    monkeypatch.setattr(dotfiles, "_interactive", lambda: True)
+    monkeypatch.setattr(dotfiles.typer, "confirm", lambda *_args, **_kwargs: pytest.fail("prompt"))
+
+    result = runner.invoke(app, ["dotfiles", "init", "--from", _REMOTE])
+
+    assert result.exit_code == 0, result.output
+    assert load_dotfiles_config().desktop_settings.extra_roots == ()
+
+
+@pytest.mark.real_git
+def test_cli_rebootstrap_preserves_the_adopted_root_set(
+    real_git: RealGitEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = "/org/example/idempotent/"
+    _publish_bootstrap_desktop_artifact(
+        real_git,
+        tmp_path,
+        monkeypatch,
+        (DesktopSettingsSection(candidate, b""),),
+    )
+    _allow_bootstrap_privacy(monkeypatch)
+    monkeypatch.setattr(dotfiles, "_interactive", lambda: True)
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        dotfiles.typer,
+        "confirm",
+        lambda prompt, **_kwargs: prompts.append(prompt) or True,
+    )
+
+    initialized = runner.invoke(app, ["dotfiles", "init", "--from", _REMOTE])
+    repeated = runner.invoke(app, ["dotfiles", "init", "--from", _REMOTE])
+
+    assert initialized.exit_code == 0, initialized.output
+    assert repeated.exit_code == 1
+    assert "already initialized" in repeated.output
+    assert prompts == [
+        "Adopt these remote-declared desktop-settings roots into "
+        "[desktop_settings].extra_roots: /org/example/idempotent/?"
+    ]
+    assert load_dotfiles_config().desktop_settings.extra_roots == (candidate,)
+
+
+def test_adopted_root_remains_suppressed_when_disabled() -> None:
+    root = "/org/example/disabled/"
+    settings = DesktopSettingsConfig(extra_roots=(root,), disabled_roots=(root,))
+    artifact = render_desktop_settings_artifact(
+        "GNOME",
+        (DesktopSettingsSection(root, b""),),
+    )
+
+    result = desktop.load_desktop_settings(
+        settings,
+        existing_artifact=lambda: artifact,
+        dry_run=True,
+    )
+
+    assert root not in settings.effective_roots
+    assert result.suppressed_roots == (root,)
+
+
+@pytest.mark.parametrize("root", ("/org/example/[red]x[/]/", "/org/example/[/]/"))
+def test_dconf_root_display_descriptor_preserves_literal_markup(root: str) -> None:
+    descriptor = dotfiles._project_dconf_root_display(root)
+    console = Console(color_system=None)
+
+    with console.capture() as captured:
+        console.print(f"Future root-bearing output: {descriptor.markup}")
+
+    assert descriptor.literal == root
+    assert descriptor.markup != root
+    assert captured.get() == f"Future root-bearing output: {root}\n"
+
+
+@pytest.mark.parametrize("root", ("/org/example/[red]x[/]/", "/org/example/[/]/"))
+def test_root_bearing_desktop_reports_render_markup_delimiters_literally(
+    root: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    detail = f"diagnostic for {root}"
+    dotfiles._report_desktop_capture(
+        DesktopCaptureResult(DesktopCaptureStatus.DUMP_FAILED, root=root, detail=detail)
+    )
+    dotfiles._report_desktop_capture(
+        DesktopCaptureResult(DesktopCaptureStatus.INVALID_ARTIFACT, detail=detail)
+    )
+    dotfiles._report_desktop_load(
+        DesktopLoadResult(
+            DesktopLoadStatus.FAILED,
+            root=root,
+            detail=detail,
+            applied_roots=(root,),
+        )
+    )
+    dotfiles._report_desktop_load(
+        DesktopLoadResult(DesktopLoadStatus.PREVIEW, parsed_roots=(root,))
+    )
+    dotfiles._report_desktop_load(
+        DesktopLoadResult(
+            DesktopLoadStatus.APPLIED,
+            applied_roots=(root,),
+            suppressed_roots=(root,),
+        )
+    )
+
+    captured = capsys.readouterr()
+    assert captured.out.count(root) >= 2
+    assert captured.err.count(root) >= 6
+
+
+@pytest.mark.parametrize("root", ("/org/example/[red]x[/]/", "/org/example/[/]/"))
+def test_bootstrap_root_outputs_render_markup_delimiters_literally(
+    root: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    prompts: list[str] = []
+    monkeypatch.setattr(
+        dotfiles.typer,
+        "confirm",
+        lambda prompt, **_kwargs: prompts.append(prompt) or False,
+    )
+    assert dotfiles._adopt_remote_declared_candidates((root,), interactive=True) == ()
+    assert prompts == [
+        "Adopt these remote-declared desktop-settings roots into "
+        f"[desktop_settings].extra_roots: {root}?"
+    ]
+    dotfiles._report_unadopted_remote_declared_candidates(
+        (root,),
+        preflight_reason=None,
+    )
+    invalid_candidates = (root, f"{root}child/")
+    preflight_reason = dotfiles._preflight_remote_declared_candidates(invalid_candidates)
+    assert preflight_reason is not None
+    dotfiles._report_unadopted_remote_declared_candidates(
+        invalid_candidates,
+        preflight_reason=preflight_reason,
+    )
+    with pytest.raises(dotfiles.DotfilesCommandError) as confirmed_invalid:
+        dotfiles._desktop_settings_from_adopted_roots(invalid_candidates)
+    dotfiles._print_dotfiles_error(confirmed_invalid.value)
+
+    source = MagicMock()
+    source.blob_size.return_value = 0
+    source.read_blob.return_value = b""
+    source.admit_desktop_settings_artifact.side_effect = TreeValidationError(
+        "Remote desktop settings section has unacknowledged ambiguous content at "
+        f"{root} (ambiguous); rerun interactively."
+    )
+    entry = TreeEntry("100644", DESKTOP_SETTINGS_ARTIFACT_PATH, "a" * 40)
+    with pytest.raises(dotfiles.DotfilesCommandError) as declined:
+        dotfiles._acknowledge_desktop_artifact_ambiguities(
+            source,
+            entry,
+            configured_desktop_roots=(root,),
+            interactive=True,
+        )
+    dotfiles._print_dotfiles_error(declined.value)
+    with pytest.raises(dotfiles.DotfilesCommandError) as noninteractive:
+        dotfiles._acknowledge_desktop_artifact_ambiguities(
+            source,
+            entry,
+            configured_desktop_roots=(root,),
+            interactive=False,
+        )
+    dotfiles._print_dotfiles_error(noninteractive.value)
+
+    captured = capsys.readouterr()
+    assert captured.err.count(root) >= 6
 
 
 @pytest.mark.real_git

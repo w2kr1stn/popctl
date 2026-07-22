@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Annotated, Never, cast
 
 import typer
+from pydantic import ValidationError
+from rich.markup import escape
 from rich.table import Table
 
 from popctl.advisor import AgentRunner, get_session_manager, import_decisions
@@ -26,6 +28,7 @@ from popctl.advisor.workspace import create_dotfiles_session_workspace, ensure_a
 from popctl.cli.types import SourceChoice, compute_system_diff
 from popctl.core.state import record_action
 from popctl.dotfiles.config import (
+    DesktopSettingsConfig,
     DotfilesConfig,
     DotfilesConfigError,
     RemotePrivacyRecord,
@@ -117,8 +120,34 @@ class ReviewResult:
 @dataclass(frozen=True, slots=True)
 class TreeAcknowledgements:
     path_allowlist: tuple[str, ...]
-    desktop_extra_roots: tuple[str, ...]
-    desktop_ambiguous_root_allowlist: tuple[str, ...]
+    desktop_admission_roots: tuple[str, ...]
+    desktop_ambiguous_content_acknowledgements: tuple[str, ...]
+    remote_declared_candidate_roots: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DesktopArtifactAdmission:
+    desktop_admission_roots: tuple[str, ...]
+    ambiguous_content_acknowledgements: tuple[str, ...]
+    remote_declared_candidate_roots: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DconfRootDisplay:
+    literal: str
+    markup: str
+
+
+def _project_dconf_root_display(value: str) -> DconfRootDisplay:
+    return DconfRootDisplay(literal=value, markup=escape(value))
+
+
+def _project_dconf_root_list(roots: Collection[str]) -> DconfRootDisplay:
+    return _project_dconf_root_display(", ".join(roots) if roots else "none")
+
+
+def _print_dotfiles_error(error: Exception) -> None:
+    print_error(_project_dconf_root_display(str(error)).markup)
 
 
 def _interactive() -> bool:
@@ -400,25 +429,26 @@ def _acknowledge_tree_ambiguities(
     tree: TreeRead,
     *,
     allowlist: Collection[str],
-    desktop_extra_roots: Collection[str] = (),
+    configured_desktop_roots: Collection[str] = (),
     interactive: bool,
-    allow_unconfigured_desktop_extra_roots: bool = False,
+    admit_remote_declared_candidates: bool = False,
 ) -> TreeAcknowledgements:
     accepted = set(allowlist)
-    acknowledged_desktop_roots: tuple[str, ...] = ()
-    resolved_desktop_extra_roots = tuple(sorted(set(desktop_extra_roots)))
+    desktop_admission_roots = tuple(sorted(set(configured_desktop_roots)))
+    ambiguous_desktop_acknowledgements: tuple[str, ...] = ()
+    remote_declared_candidate_roots: tuple[str, ...] = ()
     for entry in sorted(tree.entries, key=lambda item: item.path):
         if entry.path == DESKTOP_SETTINGS_ARTIFACT_PATH:
-            (
-                acknowledged_desktop_roots,
-                resolved_desktop_extra_roots,
-            ) = _acknowledge_desktop_artifact_ambiguities(
+            admission = _acknowledge_desktop_artifact_ambiguities(
                 repo,
                 entry,
-                desktop_extra_roots=resolved_desktop_extra_roots,
+                configured_desktop_roots=desktop_admission_roots,
                 interactive=interactive,
-                allow_unconfigured_extra_roots=allow_unconfigured_desktop_extra_roots,
+                admit_remote_declared_candidates=admit_remote_declared_candidates,
             )
+            desktop_admission_roots = admission.desktop_admission_roots
+            ambiguous_desktop_acknowledgements = admission.ambiguous_content_acknowledgements
+            remote_declared_candidate_roots = admission.remote_declared_candidate_roots
             continue
         verdict = scan_dotfile_bytes(
             entry.path,
@@ -441,8 +471,9 @@ def _acknowledge_tree_ambiguities(
         accepted.add(entry.path)
     return TreeAcknowledgements(
         tuple(sorted(accepted)),
-        resolved_desktop_extra_roots,
-        acknowledged_desktop_roots,
+        desktop_admission_roots,
+        ambiguous_desktop_acknowledgements,
+        remote_declared_candidate_roots,
     )
 
 
@@ -450,23 +481,31 @@ def _acknowledge_desktop_artifact_ambiguities(
     repo: DotfilesRepo,
     entry: TreeEntry,
     *,
-    desktop_extra_roots: Collection[str],
+    configured_desktop_roots: Collection[str],
     interactive: bool,
-    allow_unconfigured_extra_roots: bool = False,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    admit_remote_declared_candidates: bool = False,
+) -> DesktopArtifactAdmission:
     if repo.blob_size(entry.oid) > MAX_DESKTOP_SETTINGS_ARTIFACT_BYTES:
         _refuse("Invalid desktop settings artifact: artifact exceeds the size limit")
     content = repo.read_blob(entry.oid)
-    extra_roots = set(desktop_extra_roots)
-    if allow_unconfigured_extra_roots:
+    admission_roots = set(configured_desktop_roots)
+    remote_declared_candidate_roots: tuple[str, ...] = ()
+    if admit_remote_declared_candidates:
         try:
             artifact = parse_desktop_settings_artifact(content)
         except DesktopSettingsArtifactError:
             pass
         else:
-            extra_roots.update(
-                section.root for section in artifact.sections if section.root not in DEFAULT_ROOTS
+            remote_declared_candidate_roots = tuple(
+                sorted(
+                    {
+                        section.root
+                        for section in artifact.sections
+                        if section.root not in DEFAULT_ROOTS
+                    }
+                )
             )
+            admission_roots.update(remote_declared_candidate_roots)
 
     acknowledged_roots: set[str] = set()
     while True:
@@ -474,11 +513,11 @@ def _acknowledge_desktop_artifact_ambiguities(
             repo.admit_desktop_settings_artifact(
                 entry,
                 content,
-                desktop_extra_roots=extra_roots,
+                desktop_extra_roots=admission_roots,
                 desktop_ambiguous_root_allowlist=acknowledged_roots,
             )
         except TreeValidationError as e:
-            root = _unacknowledged_extra_root(str(e), extra_roots)
+            root = _unacknowledged_extra_root(str(e), admission_roots)
             if root is None:
                 raise
             if not interactive:
@@ -487,13 +526,21 @@ def _acknowledge_desktop_artifact_ambiguities(
                     f"{root}; rerun interactively."
                 )
             if not typer.confirm(
-                f"Allow ambiguous desktop-settings content for {root}?",
+                "Allow ambiguous desktop-settings content for "
+                f"{_project_dconf_root_display(root).literal}?",
                 default=False,
             ):
-                _refuse(f"Ambiguous desktop-settings acknowledgement declined for {root}.")
+                _refuse(
+                    "Ambiguous desktop-settings acknowledgement declined for "
+                    f"{root}."
+                )
             acknowledged_roots.add(root)
             continue
-        return tuple(sorted(acknowledged_roots)), tuple(sorted(extra_roots))
+        return DesktopArtifactAdmission(
+            tuple(sorted(admission_roots)),
+            tuple(sorted(acknowledged_roots)),
+            remote_declared_candidate_roots,
+        )
 
 
 def _validate_tree_with_desktop_acknowledgement(
@@ -507,23 +554,22 @@ def _validate_tree_with_desktop_acknowledgement(
     raw_tree = repo.read_tree(ref)
     partition = partition_tree_entries(raw_tree.entries)
     acknowledged_roots: tuple[str, ...] = ()
-    resolved_extra_roots = tuple(sorted(set(desktop_extra_roots)))
+    admission_roots = tuple(sorted(set(desktop_extra_roots)))
     if partition.desktop_settings_entry is not None:
-        (
-            acknowledged_roots,
-            resolved_extra_roots,
-        ) = _acknowledge_desktop_artifact_ambiguities(
+        admission = _acknowledge_desktop_artifact_ambiguities(
             repo,
             partition.desktop_settings_entry,
-            desktop_extra_roots=resolved_extra_roots,
+            configured_desktop_roots=admission_roots,
             interactive=interactive,
-            allow_unconfigured_extra_roots=interactive,
+            admit_remote_declared_candidates=interactive,
         )
+        acknowledged_roots = admission.ambiguous_content_acknowledgements
+        admission_roots = admission.desktop_admission_roots
     return repo.validate_tree(
         ref,
         **_desktop_tree_validation_kwargs(
             allowlist,
-            resolved_extra_roots,
+            admission_roots,
             acknowledged_roots,
         ),
     )
@@ -540,6 +586,66 @@ def _desktop_tree_validation_kwargs(
     if desktop_ambiguous_root_allowlist:
         kwargs["desktop_ambiguous_root_allowlist"] = desktop_ambiguous_root_allowlist
     return kwargs
+
+
+def _preflight_remote_declared_candidates(candidates: tuple[str, ...]) -> str | None:
+    try:
+        DesktopSettingsConfig(extra_roots=candidates)
+    except ValidationError as e:
+        return str(e)
+    return None
+
+
+def _adopt_remote_declared_candidates(
+    candidates: tuple[str, ...],
+    *,
+    interactive: bool,
+) -> tuple[str, ...]:
+    if not candidates or not interactive:
+        return ()
+    displayed_candidates = _project_dconf_root_list(candidates)
+    if typer.confirm(
+        "Adopt these remote-declared desktop-settings roots into "
+        "[desktop_settings].extra_roots: "
+        f"{displayed_candidates.literal}?",
+        default=False,
+    ):
+        return candidates
+    return ()
+
+
+def _report_unadopted_remote_declared_candidates(
+    candidates: tuple[str, ...],
+    *,
+    preflight_reason: str | None,
+) -> None:
+    displayed_candidates = _project_dconf_root_list(candidates)
+    if preflight_reason is None:
+        print_warning(
+            "Remote-declared desktop-settings roots were not adopted: "
+            f"{displayed_candidates.markup}. To adopt them later, add the desired roots to "
+            "\\[desktop_settings].extra_roots in dotfiles.toml and run 'popctl dotfiles apply'."
+        )
+        return
+    print_warning(
+        "Remote-declared desktop-settings roots were not adopted: "
+        f"{displayed_candidates.markup}. They cannot be added unchanged because "
+        f"{_project_dconf_root_display(preflight_reason).markup}. Correct the remote "
+        "declaration to a policy-compatible, non-overlapping subset before adopting or "
+        "adding that compatible subset."
+    )
+
+
+def _desktop_settings_from_adopted_roots(
+    adopted_roots: tuple[str, ...],
+) -> DesktopSettingsConfig:
+    try:
+        return DesktopSettingsConfig(extra_roots=adopted_roots)
+    except ValidationError as e:
+        _refuse(
+            "Remote-declared desktop-settings roots cannot be adopted: "
+            f"{e}"
+        )
 
 
 def _review_candidates(
@@ -786,7 +892,8 @@ def _capture_desktop_settings_for_sync(
         and root not in acknowledged_roots
     ):
         if not typer.confirm(
-            f"Allow ambiguous desktop-settings content for {root}?",
+            "Allow ambiguous desktop-settings content for "
+            f"{_project_dconf_root_display(root).literal}?",
             default=False,
         ):
             break
@@ -831,7 +938,8 @@ def _report_desktop_capture(result: DesktopCaptureResult) -> None:
     elif result.status is DesktopCaptureStatus.FAMILY_MISMATCH:
         print_warning(
             "Desktop-settings capture skipped: the existing artifact is for "
-            f"{result.detail}; rerun sync on that desktop family to update it."
+            f"{_project_dconf_root_display(result.detail).markup}; rerun sync on that desktop "
+            "family to update it."
         )
     elif result.status is DesktopCaptureStatus.UNKNOWN_FAMILY:
         print_warning(
@@ -846,17 +954,20 @@ def _report_desktop_capture(result: DesktopCaptureResult) -> None:
     elif result.status is DesktopCaptureStatus.DUMP_FAILED:
         print_warning(
             "Desktop-settings capture is stale: dconf dump failed for "
-            f"{result.root}: {result.detail or 'no diagnostic'}. Existing artifact was preserved."
+            f"{_project_dconf_root_display(result.root or 'unknown root').markup}: "
+            f"{_project_dconf_root_display(result.detail or 'no diagnostic').markup}. "
+            "Existing artifact was preserved."
         )
     elif result.status is DesktopCaptureStatus.INVALID_ARTIFACT:
         print_warning(
             "Desktop-settings capture skipped: the existing artifact is invalid and was preserved "
-            f"({result.detail})."
+            f"({_project_dconf_root_display(result.detail).markup})."
         )
     else:
         print_warning(
             "Desktop-settings capture is stale: the generated artifact was rejected by the secret "
-            f"gate ({result.detail}). Existing artifact was preserved."
+            f"gate ({_project_dconf_root_display(result.detail).markup}). Existing artifact was "
+            "preserved."
         )
 
 
@@ -918,18 +1029,22 @@ def _report_desktop_load(result: DesktopLoadResult) -> None:
     elif result.status is DesktopLoadStatus.INVALID_ARTIFACT:
         print_warning(
             "Desktop-settings load skipped: the artifact is invalid "
-            f"({result.detail}); repair or regenerate it with dotfiles sync, then rerun "
+            f"({_project_dconf_root_display(result.detail).markup}); repair or regenerate it with "
+            "dotfiles sync, then rerun "
             "dotfiles apply."
         )
     elif result.status is DesktopLoadStatus.FAILED:
         prior_roots = (
-            f" Roots already submitted: {', '.join(result.applied_roots)}."
+            " Roots already submitted: "
+            f"{_project_dconf_root_list(result.applied_roots).markup}."
             if result.applied_roots
             else ""
         )
         print_warning(
             "Desktop-settings load failed for "
-            f"{result.root}: {result.detail or 'no diagnostic'}. Repair the artifact or desktop "
+            f"{_project_dconf_root_display(result.root or 'unknown root').markup}: "
+            f"{_project_dconf_root_display(result.detail or 'no diagnostic').markup}. Repair the "
+            "artifact or desktop "
             f"session and rerun dotfiles apply.{prior_roots}"
         )
     elif result.status is DesktopLoadStatus.PREVIEW:
@@ -937,18 +1052,20 @@ def _report_desktop_load(result: DesktopLoadResult) -> None:
             "Desktop-settings dry-run: artifact family "
             f"{result.artifact_family.value if result.artifact_family else 'unknown'}, "
             f"current family {result.family.value if result.family else 'unknown'}, "
-            f"roots {', '.join(result.parsed_roots) or 'none'}."
+            f"roots {_project_dconf_root_list(result.parsed_roots).markup}."
         )
     else:
         print_info(
             "Desktop-settings load submitted roots: "
-            f"{', '.join(result.applied_roots) or 'none'}. dconf load -f skips locked keys; "
+            f"{_project_dconf_root_list(result.applied_roots).markup}. dconf load -f skips locked "
+            "keys; "
             "dconf submission is best-effort, and unknown schemas may leave settings ineffective."
         )
     if result.suppressed_roots:
         print_warning(
             "Desktop-settings load skipped roots no longer allowed locally: "
-            f"{', '.join(result.suppressed_roots)}. Update dotfiles.toml to allow them and rerun "
+            f"{_project_dconf_root_list(result.suppressed_roots).markup}. Update dotfiles.toml to "
+            "allow them and rerun "
             "dotfiles apply."
         )
 
@@ -1064,7 +1181,6 @@ def init(
                     from_url,
                     interactive=interactive,
                     final_store=probe.bare_repo,
-                    desktop_extra_roots=probe.desktop_settings.extra_roots,
                 )
             else:
                 _init_new(
@@ -1081,7 +1197,7 @@ def init(
         DotfilesStateError,
         TreeValidationError,
     ) as e:
-        print_error(str(e))
+        _print_dotfiles_error(e)
         raise typer.Exit(code=1) from None
 
 
@@ -1189,7 +1305,6 @@ def _init_from(
     *,
     interactive: bool,
     final_store: Path,
-    desktop_extra_roots: Collection[str] = (),
 ) -> None:
     try:
         canonical_url = validate_remote_url(from_url)
@@ -1221,23 +1336,39 @@ def _init_from(
             repo,
             raw_tree,
             allowlist=(),
-            desktop_extra_roots=desktop_extra_roots,
             interactive=interactive,
-            allow_unconfigured_desktop_extra_roots=True,
+            admit_remote_declared_candidates=True,
         )
-        tree = repo.validate_tree(
-            REMOTE_MAIN_REF,
-            **_desktop_tree_validation_kwargs(
-                acknowledgements.path_allowlist,
-                acknowledgements.desktop_extra_roots,
-                acknowledgements.desktop_ambiguous_root_allowlist,
-            ),
+        try:
+            tree = repo.validate_tree(
+                REMOTE_MAIN_REF,
+                **_desktop_tree_validation_kwargs(
+                    acknowledgements.path_allowlist,
+                    acknowledgements.desktop_admission_roots,
+                    acknowledgements.desktop_ambiguous_content_acknowledgements,
+                ),
+            )
+        except TreeValidationError as e:
+            _refuse(str(e))
+        candidate_preflight_reason = _preflight_remote_declared_candidates(
+            acknowledgements.remote_declared_candidate_roots
         )
+        adopted_roots = _adopt_remote_declared_candidates(
+            acknowledgements.remote_declared_candidate_roots,
+            interactive=interactive,
+        )
+        desktop_settings = _desktop_settings_from_adopted_roots(adopted_roots)
+        if acknowledgements.remote_declared_candidate_roots and not adopted_roots:
+            _report_unadopted_remote_declared_candidates(
+                acknowledgements.remote_declared_candidate_roots,
+                preflight_reason=candidate_preflight_reason,
+            )
         config = DotfilesConfig(
             bare_repo=final_store,
             remote_url=canonical_url,
             ambiguous_content_allowlist=list(acknowledgements.path_allowlist),
             remote_privacy=privacy,
+            desktop_settings=desktop_settings,
         )
         _promote_initialized_store(
             temporary_store=temporary_store,
@@ -1315,7 +1446,7 @@ def status() -> None:
             _print_recovery(repo, (), divergence=True)
             _refuse("Dotfiles histories have diverged.")
     except (DotfilesCommandError, DotfilesConfigError, DotfilesRepoError, TreeValidationError) as e:
-        print_error(str(e))
+        _print_dotfiles_error(e)
         raise typer.Exit(code=1) from None
 
 
@@ -1327,7 +1458,10 @@ def _display_desktop_settings_status(repo: DotfilesRepo, source_tree: TreeRead) 
     try:
         artifact = parse_desktop_settings_artifact(repo.read_blob(entry.oid))
     except DesktopSettingsArtifactError as e:
-        print_warning(f"Desktop settings: invalid — {e}")
+        print_warning(
+            "Desktop settings: invalid — "
+            f"{_project_dconf_root_display(str(e)).markup}"
+        )
         return
     revision = repo.path_revision_age(source_tree.ref, entry.path)
     if revision is None:
@@ -1384,7 +1518,7 @@ def sync() -> None:
         MaterializationError,
         TreeValidationError,
     ) as e:
-        print_error(str(e))
+        _print_dotfiles_error(e)
         raise typer.Exit(code=1) from None
 
 
@@ -1637,7 +1771,7 @@ def apply(
         MaterializationError,
         TreeValidationError,
     ) as e:
-        print_error(str(e))
+        _print_dotfiles_error(e)
         raise typer.Exit(code=1) from None
 
 
