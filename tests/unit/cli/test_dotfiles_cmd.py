@@ -84,6 +84,11 @@ def _write(home: Path, content: bytes) -> None:
     target.write_bytes(content)
 
 
+def _projected_markup(value: str | None) -> str:
+    assert value is not None
+    return dotfiles._project_dconf_root_display(value).markup
+
+
 def test_reserved_entries_never_become_home_sources_or_history_paths(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1785,7 +1790,7 @@ def test_desktop_load_reports_each_skip_with_a_next_step(
     next_step: str,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    dotfiles._report_desktop_load(result)
+    dotfiles._report_desktop_load(result, DesktopSettingsConfig())
 
     captured = capsys.readouterr()
     assert next_step in captured.out + captured.err
@@ -1799,14 +1804,240 @@ def test_desktop_load_reports_locked_key_and_suppressed_root_guidance(
             DesktopLoadStatus.APPLIED,
             applied_roots=("/org/example/applied/",),
             suppressed_roots=("/org/example/suppressed/",),
-        )
+        ),
+        DesktopSettingsConfig(),
     )
 
     captured = capsys.readouterr()
     output = captured.out + captured.err
     assert "locked keys" in output
     assert "unknown schemas" in output
-    assert "Update dotfiles.toml" in output
+    assert "update dotfiles.toml" in output
+
+
+@pytest.mark.parametrize(
+    ("settings", "root", "expected_edit"),
+    (
+        (
+            DesktopSettingsConfig(
+                extra_roots=("/org/example/configured-disabled/",),
+                disabled_roots=("/org/example/configured-disabled/",),
+            ),
+            "/org/example/configured-disabled/",
+            "remove /org/example/configured-disabled/ from [desktop_settings].disabled_roots",
+        ),
+        (
+            DesktopSettingsConfig(),
+            "/org/example/unconfigured/",
+            "add /org/example/unconfigured/ to [desktop_settings].extra_roots",
+        ),
+        (
+            DesktopSettingsConfig(disabled_roots=("/org/example/unconfigured-disabled/",)),
+            "/org/example/unconfigured-disabled/",
+            "add /org/example/unconfigured-disabled/ to [desktop_settings].extra_roots and "
+            "remove /org/example/unconfigured-disabled/ from "
+            "[desktop_settings].disabled_roots",
+        ),
+    ),
+)
+def test_suppressed_root_recovery_is_validator_proven_and_never_calls_dconf(
+    settings: DesktopSettingsConfig,
+    root: str,
+    expected_edit: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = render_desktop_settings_artifact("GNOME", (DesktopSettingsSection(root, b""),))
+    dconf_calls: list[list[str]] = []
+    messages: list[str] = []
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
+    monkeypatch.delenv("XDG_SESSION_DESKTOP", raising=False)
+    monkeypatch.setattr(desktop.shutil, "which", lambda _name: "/usr/bin/dconf")
+    monkeypatch.setattr(desktop, "has_desktop_session_hint", lambda: True)
+    monkeypatch.setattr(
+        desktop,
+        "run_command",
+        lambda args, **_kwargs: dconf_calls.append(args) or CommandResult("", "", 0),
+    )
+    monkeypatch.setattr(dotfiles, "print_warning", messages.append)
+
+    result = desktop.load_desktop_settings(settings, existing_artifact=lambda: artifact)
+    recovery = dotfiles._suppressed_roots_recovery(settings, result.suppressed_roots)
+    dotfiles._report_desktop_load(result, settings)
+
+    assert result.status is DesktopLoadStatus.APPLIED
+    assert result.suppressed_roots == (root,)
+    assert dconf_calls == []
+    assert recovery.aggregate is not None
+    assert recovery.alternatives == ()
+    assert recovery.aggregate.settings == DesktopSettingsConfig(
+        enabled=settings.enabled,
+        extra_roots=(
+            settings.extra_roots
+            if root in (*DEFAULT_ROOTS, *settings.extra_roots)
+            else (*settings.extra_roots, root)
+        ),
+        disabled_roots=tuple(disabled for disabled in settings.disabled_roots if disabled != root),
+    )
+    assert messages == [
+        "Desktop-settings load skipped roots no longer allowed locally: "
+        f"{root}. To authorize them, update dotfiles.toml to {expected_edit}, then rerun "
+        "dotfiles apply."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("settings", "root"),
+    (
+        (DesktopSettingsConfig(), "/org/gnome/desktop/"),
+        (
+            DesktopSettingsConfig(extra_roots=("/org/example/existing/",)),
+            "/org/example/existing/child/",
+        ),
+        (
+            DesktopSettingsConfig(
+                extra_roots=("/org/example/child/",),
+                disabled_roots=("/org/example/",),
+            ),
+            "/org/example/",
+        ),
+    ),
+)
+def test_rejected_suppressed_root_recovery_keeps_an_accepted_configuration(
+    settings: DesktopSettingsConfig,
+    root: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages: list[str] = []
+    recovery = dotfiles._suppressed_roots_recovery(settings, (root,))
+    monkeypatch.setattr(dotfiles, "print_warning", messages.append)
+
+    dotfiles._report_suppressed_roots_recovery(settings, (root,))
+
+    assert recovery.aggregate is None
+    assert recovery.aggregate_rejected_reason is not None
+    assert len(recovery.alternatives) == 1
+    alternative = recovery.alternatives[0]
+    assert alternative.settings == DesktopSettingsConfig(
+        enabled=settings.enabled,
+        extra_roots=settings.extra_roots,
+        disabled_roots=settings.disabled_roots,
+    )
+    assert alternative.rejected_reason is not None
+    assert messages == [
+        "Desktop-settings load skipped roots no longer allowed locally: "
+        f"{root}. The aggregate recovery is not valid "
+        f"({_projected_markup(recovery.aggregate_rejected_reason)}). Choose exactly one of these "
+        "mutually-exclusive "
+        "alternatives.",
+        f"Alternative 1 for {root}: keep the current local desktop-settings configuration and "
+        "update the remote artifact to declare a policy-compatible, non-overlapping root. The "
+        f"direct authorization is not valid ({_projected_markup(alternative.rejected_reason)}).",
+    ]
+    assert f"add {root} to" not in "\n".join(messages)
+    assert f"remove {root} from" not in "\n".join(messages)
+
+
+def test_parent_child_suppression_uses_mutually_exclusive_valid_alternatives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    roots = ("/org/example/", "/org/example/child/")
+    settings = DesktopSettingsConfig()
+    artifact = render_desktop_settings_artifact(
+        "GNOME", tuple(DesktopSettingsSection(root, b"") for root in roots)
+    )
+    dconf_calls: list[list[str]] = []
+    messages: list[str] = []
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
+    monkeypatch.delenv("XDG_SESSION_DESKTOP", raising=False)
+    monkeypatch.setattr(desktop.shutil, "which", lambda _name: "/usr/bin/dconf")
+    monkeypatch.setattr(desktop, "has_desktop_session_hint", lambda: True)
+    monkeypatch.setattr(
+        desktop,
+        "run_command",
+        lambda args, **_kwargs: dconf_calls.append(args) or CommandResult("", "", 0),
+    )
+    monkeypatch.setattr(dotfiles, "print_warning", messages.append)
+
+    result = desktop.load_desktop_settings(settings, existing_artifact=lambda: artifact)
+    recovery = dotfiles._suppressed_roots_recovery(settings, result.suppressed_roots)
+    dotfiles._report_desktop_load(result, settings)
+
+    assert result.status is DesktopLoadStatus.APPLIED
+    assert result.suppressed_roots == roots
+    assert dconf_calls == []
+    assert recovery.aggregate is None
+    assert recovery.aggregate_rejected_reason is not None
+    assert [alternative.roots for alternative in recovery.alternatives] == [
+        (root,) for root in roots
+    ]
+    assert all(alternative.rejected_reason is None for alternative in recovery.alternatives)
+    assert [alternative.settings for alternative in recovery.alternatives] == [
+        DesktopSettingsConfig(extra_roots=(root,)) for root in roots
+    ]
+    assert messages == [
+        "Desktop-settings load skipped roots no longer allowed locally: "
+        f"{', '.join(roots)}. The aggregate recovery is not valid "
+        f"({_projected_markup(recovery.aggregate_rejected_reason)}). Choose exactly one of these "
+        "mutually-exclusive "
+        "alternatives.",
+        "Alternative 1 for /org/example/: update dotfiles.toml to add /org/example/ to "
+        "[desktop_settings].extra_roots, then rerun dotfiles apply.",
+        "Alternative 2 for /org/example/child/: update dotfiles.toml to add "
+        "/org/example/child/ to [desktop_settings].extra_roots, then rerun dotfiles apply.",
+    ]
+    assert "step" not in "\n".join(messages).lower()
+
+
+def test_authorized_root_loads_while_suppressed_root_never_reaches_dconf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authorized_root = "/org/example/authorized/"
+    suppressed_root = "/org/example/suppressed/"
+    settings = DesktopSettingsConfig(extra_roots=(authorized_root,))
+    artifact = render_desktop_settings_artifact(
+        "GNOME",
+        (
+            DesktopSettingsSection(authorized_root, b"[settings]\nvalue='restored'\n"),
+            DesktopSettingsSection(suppressed_root, b"[settings]\nvalue='skipped'\n"),
+        ),
+    )
+    dconf_calls: list[list[str]] = []
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
+    monkeypatch.delenv("XDG_SESSION_DESKTOP", raising=False)
+    monkeypatch.setattr(desktop.shutil, "which", lambda _name: "/usr/bin/dconf")
+    monkeypatch.setattr(desktop, "has_desktop_session_hint", lambda: True)
+    monkeypatch.setattr(
+        desktop,
+        "run_command",
+        lambda args, **_kwargs: dconf_calls.append(args) or CommandResult("", "", 0),
+    )
+
+    result = desktop.load_desktop_settings(settings, existing_artifact=lambda: artifact)
+
+    assert result.status is DesktopLoadStatus.APPLIED
+    assert result.applied_roots == (authorized_root,)
+    assert result.suppressed_roots == (suppressed_root,)
+    assert dconf_calls == [["dconf", "load", "-f", authorized_root]]
+
+
+def test_fully_adopted_enabled_artifact_has_no_suppression_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = "/org/example/adopted/"
+    settings = DesktopSettingsConfig(extra_roots=(root,))
+    artifact = render_desktop_settings_artifact("GNOME", (DesktopSettingsSection(root, b""),))
+    messages: list[str] = []
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
+    monkeypatch.delenv("XDG_SESSION_DESKTOP", raising=False)
+    monkeypatch.setattr(dotfiles, "print_warning", messages.append)
+
+    result = desktop.load_desktop_settings(
+        settings, existing_artifact=lambda: artifact, dry_run=True
+    )
+    dotfiles._report_desktop_load(result, settings)
+
+    assert result.suppressed_roots == ()
+    assert messages == []
 
 
 @pytest.mark.real_git
@@ -2975,17 +3206,20 @@ def test_root_bearing_desktop_reports_render_markup_delimiters_literally(
             root=root,
             detail=detail,
             applied_roots=(root,),
-        )
+        ),
+        DesktopSettingsConfig(),
     )
     dotfiles._report_desktop_load(
-        DesktopLoadResult(DesktopLoadStatus.PREVIEW, parsed_roots=(root,))
+        DesktopLoadResult(DesktopLoadStatus.PREVIEW, parsed_roots=(root,)),
+        DesktopSettingsConfig(),
     )
     dotfiles._report_desktop_load(
         DesktopLoadResult(
             DesktopLoadStatus.APPLIED,
             applied_roots=(root,),
             suppressed_roots=(root,),
-        )
+        ),
+        DesktopSettingsConfig(),
     )
 
     captured = capsys.readouterr()

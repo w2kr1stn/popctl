@@ -138,6 +138,20 @@ class DconfRootDisplay:
     markup: str
 
 
+@dataclass(frozen=True, slots=True)
+class _DesktopSettingsRecovery:
+    roots: tuple[str, ...]
+    settings: DesktopSettingsConfig
+    rejected_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _SuppressedRootsRecovery:
+    aggregate: _DesktopSettingsRecovery | None
+    aggregate_rejected_reason: str | None = None
+    alternatives: tuple[_DesktopSettingsRecovery, ...] = ()
+
+
 def _project_dconf_root_display(value: str) -> DconfRootDisplay:
     return DconfRootDisplay(literal=value, markup=escape(value))
 
@@ -988,11 +1002,147 @@ def _load_desktop_settings_for_apply(
         existing_artifact=existing_artifact,
         dry_run=dry_run,
     )
-    _report_desktop_load(result)
+    _report_desktop_load(result, config.desktop_settings)
     return result
 
 
-def _report_desktop_load(result: DesktopLoadResult) -> None:
+def _reauthorized_desktop_settings(
+    settings: DesktopSettingsConfig,
+    roots: Collection[str],
+) -> DesktopSettingsConfig:
+    prospective_extra_roots = list(settings.extra_roots)
+    configured_roots = set(DEFAULT_ROOTS).union(prospective_extra_roots)
+    suppressed_roots = set(roots)
+    for root in roots:
+        if root not in configured_roots:
+            prospective_extra_roots.append(root)
+            configured_roots.add(root)
+    return DesktopSettingsConfig(
+        enabled=settings.enabled,
+        extra_roots=tuple(prospective_extra_roots),
+        disabled_roots=tuple(
+            root for root in settings.disabled_roots if root not in suppressed_roots
+        ),
+    )
+
+
+def _validated_reauthorization(
+    settings: DesktopSettingsConfig,
+    roots: Collection[str],
+) -> tuple[DesktopSettingsConfig | None, str | None]:
+    try:
+        return _reauthorized_desktop_settings(settings, roots), None
+    except ValidationError as e:
+        return None, str(e)
+
+
+def _suppressed_roots_recovery(
+    settings: DesktopSettingsConfig,
+    roots: tuple[str, ...],
+) -> _SuppressedRootsRecovery:
+    aggregate, aggregate_rejected_reason = _validated_reauthorization(settings, roots)
+    if aggregate is not None:
+        return _SuppressedRootsRecovery(
+            aggregate=_DesktopSettingsRecovery(roots, aggregate),
+        )
+
+    compatible_settings, compatible_rejected_reason = _validated_reauthorization(settings, ())
+    if compatible_settings is None:
+        raise RuntimeError(compatible_rejected_reason)
+    alternatives: list[_DesktopSettingsRecovery] = []
+    for root in roots:
+        alternative, rejected_reason = _validated_reauthorization(settings, (root,))
+        alternatives.append(
+            _DesktopSettingsRecovery(
+                (root,),
+                alternative if alternative is not None else compatible_settings,
+                rejected_reason,
+            )
+        )
+    return _SuppressedRootsRecovery(
+        aggregate=None,
+        aggregate_rejected_reason=aggregate_rejected_reason,
+        alternatives=tuple(alternatives),
+    )
+
+
+def _recovery_edits(
+    current: DesktopSettingsConfig,
+    recovered: DesktopSettingsConfig,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    added_extra_roots = tuple(
+        root for root in recovered.extra_roots if root not in current.extra_roots
+    )
+    removed_disabled_roots = tuple(
+        root for root in current.disabled_roots if root not in recovered.disabled_roots
+    )
+    return added_extra_roots, removed_disabled_roots
+
+
+def _describe_desktop_settings_recovery(
+    current: DesktopSettingsConfig,
+    recovered: DesktopSettingsConfig,
+) -> str:
+    added_extra_roots, removed_disabled_roots = _recovery_edits(current, recovered)
+    edits: list[str] = []
+    if added_extra_roots:
+        edits.append(
+            "add "
+            f"{_project_dconf_root_list(added_extra_roots).markup} to "
+            "[desktop_settings].extra_roots"
+        )
+    if removed_disabled_roots:
+        edits.append(
+            "remove "
+            f"{_project_dconf_root_list(removed_disabled_roots).markup} from "
+            "[desktop_settings].disabled_roots"
+        )
+    return " and ".join(edits)
+
+
+def _report_suppressed_roots_recovery(
+    settings: DesktopSettingsConfig,
+    roots: tuple[str, ...],
+) -> None:
+    recovery = _suppressed_roots_recovery(settings, roots)
+    root_list = _project_dconf_root_list(roots).markup
+    if recovery.aggregate is not None:
+        edits = _describe_desktop_settings_recovery(settings, recovery.aggregate.settings)
+        print_warning(
+            "Desktop-settings load skipped roots no longer allowed locally: "
+            f"{root_list}. To authorize them, update dotfiles.toml to {edits}, then rerun "
+            "dotfiles apply."
+        )
+        return
+
+    print_warning(
+        "Desktop-settings load skipped roots no longer allowed locally: "
+        f"{root_list}. The aggregate recovery is not valid "
+        f"({
+            _project_dconf_root_display(
+                recovery.aggregate_rejected_reason or 'no diagnostic'
+            ).markup
+        }). "
+        "Choose exactly one of these mutually-exclusive alternatives."
+    )
+    for index, alternative in enumerate(recovery.alternatives, start=1):
+        root = _project_dconf_root_list(alternative.roots).markup
+        if alternative.rejected_reason is None:
+            edits = _describe_desktop_settings_recovery(settings, alternative.settings)
+            print_warning(
+                f"Alternative {index} for {root}: update dotfiles.toml to {edits}, then rerun "
+                "dotfiles apply."
+            )
+        else:
+            print_warning(
+                f"Alternative {index} for {root}: keep the current local desktop-settings "
+                "configuration and update the remote artifact to declare a policy-compatible, "
+                "non-overlapping root. The direct authorization is not valid "
+                f"({_project_dconf_root_display(alternative.rejected_reason).markup})."
+            )
+
+
+def _report_desktop_load(result: DesktopLoadResult, settings: DesktopSettingsConfig) -> None:
     if result.status is DesktopLoadStatus.DISABLED:
         print_info(
             "Desktop-settings load is disabled; enable it in dotfiles.toml and rerun "
@@ -1062,12 +1212,7 @@ def _report_desktop_load(result: DesktopLoadResult) -> None:
             "dconf submission is best-effort, and unknown schemas may leave settings ineffective."
         )
     if result.suppressed_roots:
-        print_warning(
-            "Desktop-settings load skipped roots no longer allowed locally: "
-            f"{_project_dconf_root_list(result.suppressed_roots).markup}. Update dotfiles.toml to "
-            "allow them and rerun "
-            "dotfiles apply."
-        )
+        _report_suppressed_roots_recovery(settings, result.suppressed_roots)
 
 
 def _desktop_load_history_metadata(result: DesktopLoadResult) -> dict[str, str] | None:
