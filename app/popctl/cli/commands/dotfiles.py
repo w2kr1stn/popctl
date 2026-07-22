@@ -1089,13 +1089,13 @@ def _describe_desktop_settings_recovery(
         edits.append(
             "add "
             f"{_project_dconf_root_list(added_extra_roots).markup} to "
-            "[desktop_settings].extra_roots"
+            "\\[desktop_settings].extra_roots"
         )
     if removed_disabled_roots:
         edits.append(
             "remove "
             f"{_project_dconf_root_list(removed_disabled_roots).markup} from "
-            "[desktop_settings].disabled_roots"
+            "\\[desktop_settings].disabled_roots"
         )
     return " and ".join(edits)
 
