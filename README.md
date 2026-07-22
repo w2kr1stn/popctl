@@ -310,6 +310,18 @@ popctl dotfiles apply
 result only when the generated artifact changed. `popctl dotfiles apply` automatically submits a
 validated artifact after its normal file materialization succeeds, including when the files were
 already equal. The artifact is loaded only on the same recognized desktop family that captured it.
+Only roots in the current local allowlist, including roots adopted at bootstrap, are submitted on a
+subsequent `popctl dotfiles apply`.
+
+When `popctl dotfiles init --from` finds non-default roots in the remote desktop-settings artifact,
+they are remote-declared candidates: discovery data, not local configuration. In an interactive
+bootstrap, popctl shows the complete candidate set and asks once whether to adopt that exact set
+into `[desktop_settings].extra_roots`; it does not make a per-root decision. Declining the prompt,
+or bootstrapping non-interactively, still succeeds after the independent content-admission checks
+but adopts no roots. For policy-compatible candidates, add the desired roots to
+`[desktop_settings].extra_roots` in `dotfiles.toml` later, then run `popctl dotfiles apply`.
+Candidates that cannot satisfy the local root policy must instead be corrected in the remote
+artifact to a compatible, non-overlapping subset before they can be adopted or added.
 
 When `gh` is installed, popctl uses it to verify that the GitHub destination is private before
 initialization and immediately before every automatic push. Without `gh`, initialization requires
